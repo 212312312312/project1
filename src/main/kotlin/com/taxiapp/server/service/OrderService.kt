@@ -4,12 +4,14 @@ import com.taxiapp.server.dto.order.CreateOrderRequestDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
-import com.taxiapp.server.model.order.OrderStop // <--- Імпорт
+import com.taxiapp.server.model.order.OrderStop
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.CarTariffRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
+import com.taxiapp.server.repository.DriverRepository
+import com.taxiapp.server.repository.TaxiServiceRepository
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -20,7 +22,10 @@ import java.time.LocalDateTime
 class OrderService(
     private val orderRepository: TaxiOrderRepository,
     private val tariffRepository: CarTariffRepository,
-    private val promoService: PromoService
+    private val promoService: PromoService,
+    private val driverRepository: DriverRepository,
+    private val promoCodeService: PromoCodeService,
+    private val taxiServiceRepository: TaxiServiceRepository
 ) {
 
     @Transactional
@@ -33,19 +38,62 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
-        // Розрахунок знижки
-        var finalPrice = request.price
-        var discountAmount = 0.0
+        // --- ЛОГИКА УСЛУГ ---
+        // Ищем услуги в базе по ID
+        val selectedServicesEntities = if (!request.serviceIds.isNullOrEmpty()) {
+            taxiServiceRepository.findAllById(request.serviceIds)
+        } else {
+            emptyList()
+        }
         
-        val activeReward = promoService.findActiveReward(client)
-        if (activeReward != null) {
-            val percent = activeReward.promoTask.discountPercent
-            discountAmount = finalPrice * (percent / 100.0)
-            finalPrice -= discountAmount
-            if (finalPrice < 0) finalPrice = 0.0
+        // !!! ИСПРАВЛЕНИЕ ЗДЕСЬ !!!
+        // Мы НЕ прибавляем servicesCost к request.price, 
+        // так как клиент уже прислал полную сумму (Тариф + Услуги).
+        // Мы просто используем цену от клиента.
+        var finalPrice = request.price 
+
+        // -----------------------------
+
+        var discountAmount = 0.0
+        var isPromoCodeUsedForThisOrder = false 
+
+        // 1. Промокод
+        val activePromoUsage = promoCodeService.findActiveUsage(client)
+        var promoCodeApplied = false
+
+        if (activePromoUsage != null) {
+            val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
+            if (!isExpired) {
+                val percent = activePromoUsage.promoCode.discountPercent
+                var calcDiscount = finalPrice * (percent / 100.0)
+                val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
+                if (maxAmount != null && calcDiscount > maxAmount) {
+                    calcDiscount = maxAmount
+                }
+                discountAmount = calcDiscount
+                promoCodeApplied = true
+                isPromoCodeUsedForThisOrder = true
+            }
+        } 
+
+        // 2. Акции
+        if (!promoCodeApplied) {
+            val activeReward = promoService.findActiveReward(client)
+            if (activeReward != null) {
+                val task = activeReward.promoTask
+                val percent = task.discountPercent
+                discountAmount = finalPrice * (percent / 100.0)
+                if (task.maxDiscountAmount != null && discountAmount > task.maxDiscountAmount!!) {
+                    discountAmount = task.maxDiscountAmount!!
+                }
+                isPromoCodeUsedForThisOrder = false
+            }
         }
 
-        // 1. Створюємо об'єкт замовлення
+        finalPrice -= discountAmount
+        if (finalPrice < 0) finalPrice = 0.0
+
+        // 3. Создание объекта
         val newOrder = TaxiOrder(
             client = client,
             fromAddress = request.fromAddress,
@@ -54,40 +102,54 @@ class OrderService(
             createdAt = LocalDateTime.now(),
             tariff = tariff, 
             price = finalPrice, 
+            
             appliedDiscount = discountAmount,
+            isPromoCodeUsed = isPromoCodeUsedForThisOrder,
+            
             originLat = request.originLat,
             originLng = request.originLng,
             destLat = request.destLat,
             destLng = request.destLng,
-            googleRoutePolyline = request.googleRoutePolyline
+            googleRoutePolyline = request.googleRoutePolyline,
+            distanceMeters = request.distanceMeters,
+            durationSeconds = request.durationSeconds,
+            
+            tariffName = tariff.name,
+            comment = request.comment,
+            paymentMethod = request.paymentMethod ?: "CASH",
+            addedValue = request.addedValue
         )
         
-        // 2. !!! ОБРОБКА ЗУПИНОК (Waypoints) !!!
+        // Привязываем услуги к заказу (чтобы водитель их видел), но цену не меняем
+        if (selectedServicesEntities.isNotEmpty()) {
+            newOrder.selectedServices.addAll(selectedServicesEntities)
+        }
+
         if (!request.waypoints.isNullOrEmpty()) {
             val stopsList = request.waypoints.mapIndexed { index, wpDto ->
                 OrderStop(
                     address = wpDto.address,
                     lat = wpDto.lat,
                     lng = wpDto.lng,
-                    stopOrder = index + 1, // Порядок: 1, 2, 3...
-                    order = newOrder // Прив'язуємо до замовлення
+                    stopOrder = index + 1,
+                    order = newOrder
                 )
             }
-            // Додаємо в список сутності
             newOrder.stops.addAll(stopsList)
         }
         
-        // 3. Зберігаємо (Cascade збереже і зупинки)
         val savedOrder = orderRepository.save(newOrder)
         return TaxiOrderDto(savedOrder)
     }
 
-    // ... (решта методів getOrderById, cancelOrder, completeOrder, acceptOrder без змін) ...
-    // ... просто залиште їх як є в вашому файлі
-    
     fun getOrderById(id: Long): TaxiOrderDto {
         val order = orderRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
         return TaxiOrderDto(order)
+    }
+
+    fun getClientHistory(client: Client): List<TaxiOrderDto> {
+        val orders = orderRepository.findAllByClientId(client.id) 
+        return orders.map { TaxiOrderDto(it) }
     }
 
     @Transactional
@@ -100,23 +162,41 @@ class OrderService(
     }
     
     @Transactional
-    fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
-        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
-        if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.IN_PROGRESS) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення не в процесі")
-        order.status = OrderStatus.COMPLETED
-        order.completedAt = LocalDateTime.now()
-        if (order.appliedDiscount > 0.0) promoService.markRewardAsUsed(order.client)
-        promoService.updateProgressOnRideCompletion(order.client)
-        return TaxiOrderDto(orderRepository.save(order))
-    }
-
-    @Transactional
     fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
         if (order.status != OrderStatus.REQUESTED) throw ResponseStatusException(HttpStatus.CONFLICT, "Замовлення вже не активне")
         order.driver = driver
         order.status = OrderStatus.ACCEPTED
         return TaxiOrderDto(orderRepository.save(order))
+    }
+
+    @Transactional
+    fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+        
+        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.IN_PROGRESS) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення не в процесі")
+        
+        order.status = OrderStatus.COMPLETED
+        order.completedAt = LocalDateTime.now()
+        
+        if (order.appliedDiscount > 0.0) {
+            if (order.isPromoCodeUsed) {
+                val activePromoUsage = promoCodeService.findActiveUsage(order.client)
+                if (activePromoUsage != null) {
+                    promoCodeService.markAsUsed(activePromoUsage.id)
+                }
+            } else {
+                promoService.markRewardAsUsed(order.client)
+            }
+        }
+        
+        promoService.updateProgressOnRideCompletion(order.client, order)
+        
+        return TaxiOrderDto(orderRepository.save(order))
+    }
+
+    fun toDto(order: TaxiOrder): TaxiOrderDto {
+        return TaxiOrderDto(order)
     }
 }

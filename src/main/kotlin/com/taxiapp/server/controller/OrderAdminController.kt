@@ -31,13 +31,13 @@ class OrderAdminController(
     }
     
     // Отменить заказ
-    @PatchMapping("/{id}/cancel")
+    @PostMapping("/{id}/cancel")
     fun cancelOrder(@PathVariable id: Long): ResponseEntity<TaxiOrderDto> {
         return ResponseEntity.ok(orderAdminService.cancelOrder(id))
     }
 
     // Назначить водителя на заказ
-    @PatchMapping("/{id}/assign")
+    @PostMapping("/{id}/assign")
     fun assignDriver(
         @PathVariable id: Long,
         @RequestParam driverId: Long 

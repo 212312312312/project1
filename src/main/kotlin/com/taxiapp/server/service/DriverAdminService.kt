@@ -12,11 +12,12 @@ import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.CarTariffRepository
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
-import com.taxiapp.server.repository.UserRepository // <-- ІМПОРТ
+import com.taxiapp.server.repository.UserRepository
 import org.springframework.http.HttpStatus
-import org.springframework.security.crypto.password.PasswordEncoder // <-- ІМПОРТ
+import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 
@@ -25,10 +26,9 @@ class DriverAdminService(
     private val driverRepository: DriverRepository,
     private val taxiOrderRepository: TaxiOrderRepository,
     private val tariffRepository: CarTariffRepository,
-    // --- НОВІ ЗАЛЕЖНОСТІ ---
     private val userRepository: UserRepository,
-    private val passwordEncoder: PasswordEncoder
-    // (authService ми видалили з конструктора, бо він більше не потрібен тут)
+    private val passwordEncoder: PasswordEncoder,
+    private val fileStorageService: FileStorageService // Важно!
 ) {
 
     @Transactional(readOnly = true)
@@ -39,18 +39,21 @@ class DriverAdminService(
     }
 
     @Transactional
-    fun createDriver(request: RegisterDriverRequest): MessageResponse {
+    fun createDriver(request: RegisterDriverRequest, file: MultipartFile?): MessageResponse {
         
-        // ВИКОРИСТОВУЄМО userRepository НАПРЯМУ
         if (userRepository.existsByUserPhone(request.phoneNumber)) {
              throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Цей номер телефону вже зайнятий")
         }
+
+        // Сохраняем файл
+        val filename: String? = file?.let { fileStorageService.store(it) }
 
         val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
         
         val car = Car(
             make = request.make,
             model = request.model,
+            color = request.color,
             plateNumber = request.plateNumber,
             vin = request.vin,
             year = request.year
@@ -58,7 +61,6 @@ class DriverAdminService(
 
         val driver = Driver().apply {
             this.userPhone = request.phoneNumber
-            // ВИКОРИСТОВУЄМО passwordEncoder НАПРЯМУ
             this.passwordHash = passwordEncoder.encode(request.password)
             this.fullName = request.fullName
             this.role = Role.DRIVER
@@ -66,6 +68,7 @@ class DriverAdminService(
             this.isOnline = false
             this.car = car
             this.allowedTariffs = tariffs
+            this.photoUrl = filename // Привязываем
         }
 
         driverRepository.save(driver)
@@ -73,9 +76,15 @@ class DriverAdminService(
     }
 
     @Transactional
-    fun updateDriver(driverId: Long, request: UpdateDriverRequest): DriverDto {
+    fun updateDriver(driverId: Long, request: UpdateDriverRequest, file: MultipartFile?): DriverDto {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
+
+        // Обновляем фото
+        if (file != null) {
+            fileStorageService.delete(driver.photoUrl)
+            driver.photoUrl = fileStorageService.store(file)
+        }
 
         val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
 
@@ -85,6 +94,7 @@ class DriverAdminService(
         driver.car?.apply {
             make = request.make
             model = request.model
+            color = request.color
             plateNumber = request.plateNumber
             vin = request.vin
             year = request.year
@@ -98,6 +108,9 @@ class DriverAdminService(
     fun deleteDriver(driverId: Long): MessageResponse {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
+
+        // Удаляем файл
+        fileStorageService.delete(driver.photoUrl)
 
         val activeStatuses = listOf(OrderStatus.ACCEPTED, OrderStatus.IN_PROGRESS)
         val activeOrders = taxiOrderRepository.findAllByDriverAndStatusIn(driver, activeStatuses)
@@ -113,7 +126,7 @@ class DriverAdminService(
         
         driverRepository.delete(driver)
         
-        return MessageResponse("Водій (ID $driverId) видалений. Активні замовлення повернені в пул.")
+        return MessageResponse("Водій (ID $driverId) видалений.")
     }
     
     @Transactional

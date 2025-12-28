@@ -1,47 +1,48 @@
 package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.auth.MessageResponse
-import com.taxiapp.server.dto.order.CreateOrderRequestDto // <-- ВИПРАВЛЕНО (було CreateOrderRequest)
+import com.taxiapp.server.dto.order.CreateOrderRequestDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.model.user.Client
-import com.taxiapp.server.model.user.User
+import com.taxiapp.server.repository.ClientPromoProgressRepository
+import com.taxiapp.server.repository.ClientRepository // <-- ВАЖНО
+import com.taxiapp.server.repository.SmsVerificationCodeRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.repository.UserRepository
 import com.taxiapp.server.service.OrderService
 import jakarta.validation.Valid
-import org.springframework.transaction.annotation.Transactional
-import com.taxiapp.server.repository.ClientPromoProgressRepository // <-- Перевірте імпорт
-import com.taxiapp.server.repository.SmsVerificationCodeRepository
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
-import org.springframework.security.access.prepost.PreAuthorize
-import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.security.core.Authentication // <-- ВАЖНО
+import org.springframework.security.core.userdetails.UserDetails // <-- ВАЖНО
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
+import com.taxiapp.server.dto.service.TaxiServiceDto
+import com.taxiapp.server.repository.TaxiServiceRepository
 
 @RestController
-@RequestMapping("/api/v1/client") // <-- Рекомендовано додати /api/v1
+@RequestMapping("/api/v1/client")
 class ClientAppController(
     private val orderService: OrderService,
     private val orderRepository: TaxiOrderRepository,
     private val userRepository: UserRepository,
-    private val clientPromoProgressRepository: com.taxiapp.server.repository.ClientPromoProgressRepository,
-    private val smsCodeRepository: com.taxiapp.server.repository.SmsVerificationCodeRepository
+    private val clientRepository: ClientRepository, // <-- ДОБАВЛЕНО В КОНСТРУКТОР
+    private val clientPromoProgressRepository: ClientPromoProgressRepository,
+    private val smsCodeRepository: SmsVerificationCodeRepository,
+    private val taxiServiceRepository: TaxiServiceRepository
 ) {
     
     // СТВОРЕННЯ ЗАМОВЛЕННЯ
-    @PostMapping("/orders") // В Android це @POST("orders") або @POST("client/orders")
+    @PostMapping("/orders")
     fun createOrder(
-        principal: Principal, // 1. Беремо Principal (стандартний Java інтерфейс)
+        principal: Principal,
         @Valid @RequestBody request: CreateOrderRequestDto
     ): ResponseEntity<TaxiOrderDto> {
         
-        // 2. Дістаємо логін (телефон) з Principal
         val userLogin = principal.name
         
-        // 3. Шукаємо нашого реального юзера в базі
-        // Спочатку по логіну, потім по телефону (наша розумна логіка)
         var user = userRepository.findByUserLogin(userLogin).orElse(null)
         if (user == null) {
              user = userRepository.findByUserPhone(userLogin)
@@ -81,35 +82,27 @@ class ClientAppController(
     }
 
     @DeleteMapping("/account")
-    @Transactional // Важливо: все або нічого
+    @Transactional
     fun deleteAccount(principal: Principal): ResponseEntity<MessageResponse> {
         val userLogin = principal.name
         var user = userRepository.findByUserLogin(userLogin).orElse(null)
         if (user == null) user = userRepository.findByUserPhone(userLogin).orElseThrow()
 
-        // 1. Видаляємо прогрес по акціях (ТОЧКА, ДЕ БУЛА ПОМИЛКА)
         val promos = clientPromoProgressRepository.findAllByClientId(user.id)
         clientPromoProgressRepository.deleteAll(promos)
 
-        // 2. Видаляємо (або анонімізуємо) замовлення
-        // (Якщо видаляти замовлення не можна для історії, то треба просто відв'язати клієнта, 
-        // але для повного видалення акаунту - видаляємо все)
         val orders = orderRepository.findAllByClientId(user.id)
         orderRepository.deleteAll(orders)
         
-        // 3. Видаляємо SMS коди (якщо є)
         smsCodeRepository.findByUserPhone(user.userPhone!!).ifPresent { 
             smsCodeRepository.delete(it) 
         }
 
-        // 4. Нарешті видаляємо самого юзера (Клієнта)
         userRepository.delete(user)
         
         return ResponseEntity.ok(MessageResponse("Акаунт та всі дані успішно видалено"))
     }
     
-    // --- ДОДАНО: СКАСУВАННЯ ЗАМОВЛЕННЯ ---
-    // Це потрібно для кнопки "Скасувати" в Android
     @PostMapping("/orders/{id}/cancel")
     fun cancelOrder(
         @PathVariable id: Long,
@@ -122,4 +115,29 @@ class ClientAppController(
         val orderDto = orderService.cancelOrder(user, id)
         return ResponseEntity.ok(orderDto)
     }
+
+    // ИСТОРИЯ ЗАКАЗОВ
+    @GetMapping("/orders")
+    fun getClientOrders(authentication: Authentication): ResponseEntity<List<TaxiOrderDto>> {
+        val userDetails = authentication.principal as UserDetails
+        
+        // Теперь clientRepository доступен
+        val client = clientRepository.findByUserPhone(userDetails.username)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+
+        // Используем orderRepository (он же TaxiOrderRepository), который объявлен в конструкторе
+        val orders = orderRepository.findAllByClientOrderByCreatedAtDesc(client)
+        
+        val dtos = orders.map { TaxiOrderDto(it) }
+        
+        return ResponseEntity.ok(dtos)
+    }
+
+    @GetMapping("/services")
+        fun getActiveServices(): ResponseEntity<List<TaxiServiceDto>> {
+            val services = taxiServiceRepository.findAllByIsActiveTrue().map {
+                TaxiServiceDto(it.id!!, it.name, it.price)
+            }
+            return ResponseEntity.ok(services)
+        }
 }

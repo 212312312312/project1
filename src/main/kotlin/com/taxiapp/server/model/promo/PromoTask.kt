@@ -1,5 +1,6 @@
 package com.taxiapp.server.model.promo
 
+import com.taxiapp.server.model.order.CarTariff
 import jakarta.persistence.*
 
 @Entity
@@ -10,17 +11,36 @@ data class PromoTask(
     val id: Long = 0,
 
     @Column(nullable = false)
-    val title: String, // Например: "Активний Райдер"
+    var title: String,
 
     @Column(nullable = false)
-    val description: String, // Например: "Зроби 5 поїздок"
+    var description: String,
 
     @Column(nullable = false)
-    val requiredRides: Int, // Скільки треба зробити (напр. 5)
+    var requiredRides: Int = 0, 
+
+    // Дистанция (в метрах)
+    @Column(nullable = false)
+    var requiredDistanceMeters: Long = 0,
 
     @Column(nullable = false)
-    val discountPercent: Double, // Який відсоток знижки (напр. 15.0)
+    var discountPercent: Double,
 
     @Column(nullable = false)
-    val isActive: Boolean = true // Чи активна ця акція взагалі
+    var isActive: Boolean = true,
+
+    // Ваша связь с тарифом (объект)
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "required_tariff_id")
+    var requiredTariff: CarTariff? = null,
+
+    // Флаг одноразовой акции
+    @Column(nullable = false)
+    var isOneTime: Boolean = false,
+
+    @Column(name = "max_discount_amount")
+    var maxDiscountAmount: Double? = null,
+
+    @Column(name = "active_days_duration")
+    var activeDaysDuration: Int? = null
 )

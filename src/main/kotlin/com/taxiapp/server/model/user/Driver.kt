@@ -15,6 +15,16 @@ class Driver : User() {
     var currentLatitude: Double? = null
     var currentLongitude: Double? = null
 
+    @Column(nullable = true)
+    var photoUrl: String? = null
+
+    // --- НОВЫЕ ПОЛЯ ---
+    @Column(nullable = false)
+    var completedRides: Int = 0 // Счетчик поездок
+
+    // --- ВИДАЛЕНО createdAt ---
+    // Це поле успадковується від класу User, тому тут його писати НЕ ТРЕБА.
+    
     var tempBlockExpiresAt: LocalDateTime? = null
 
     @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = true)
@@ -24,9 +34,6 @@ class Driver : User() {
     @OneToMany(mappedBy = "driver")
     val orders: List<TaxiOrder> = emptyList()
     
-    // --- ОНОВЛЕННЯ ---
-    // Ми замінили @ManyToOne на @ManyToMany
-    // Це створить нову таблицю "driver_tariffs" (driver_id, tariff_id)
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
         name = "driver_tariffs",
@@ -34,19 +41,16 @@ class Driver : User() {
         inverseJoinColumns = [JoinColumn(name = "tariff_id")]
     )
     var allowedTariffs: MutableSet<CarTariff> = mutableSetOf()
-    // --- Кінець оновлення ---
 
     override fun isAccountNonLocked(): Boolean {
         if (isBlocked) {
             return false 
         }
-
         val expires = tempBlockExpiresAt
         if (expires != null) {
             val isLocked = LocalDateTime.now().isBefore(expires)
             return !isLocked
         }
-        
         return true
     }
 }

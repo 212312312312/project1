@@ -1,23 +1,23 @@
 package com.taxiapp.server.model.order
 
-import com.taxiapp.server.model.enums.OrderStatus
+import com.taxiapp.server.model.enums.OrderStatus // <--- ВИПРАВЛЕНО ІМПОРТ (прибрав .tariff)
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
-import com.taxiapp.server.model.order.OrderStop
 import jakarta.persistence.*
 import org.hibernate.annotations.CreationTimestamp
 import java.time.LocalDateTime
+import com.taxiapp.server.model.services.TaxiServiceEntity
 
 @Entity
 @Table(name = "taxi_orders")
-data class TaxiOrder(
+class TaxiOrder(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long = 0,
+    var id: Long? = null,
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", nullable = false)
-    val client: Client,
+    var client: Client,
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "driver_id")
@@ -25,14 +25,13 @@ data class TaxiOrder(
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    var status: OrderStatus,
+    var status: OrderStatus = OrderStatus.REQUESTED,
 
-    // Текстові адреси
-    @Column(nullable = false)
-    val fromAddress: String,
+    @Column(name = "from_address", nullable = false)
+    var fromAddress: String,
 
-    @Column(nullable = false)
-    val toAddress: String,
+    @Column(name = "to_address", nullable = false)
+    var toAddress: String,
     
     // --- КООРДИНАТИ ---
     @Column(nullable = true) 
@@ -56,21 +55,59 @@ data class TaxiOrder(
     
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tariff_id", nullable = false)
-    val tariff: CarTariff, 
+    var tariff: CarTariff, 
     
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
-    val createdAt: LocalDateTime = LocalDateTime.now(),
+    var createdAt: LocalDateTime = LocalDateTime.now(),
 
     var completedAt: LocalDateTime? = null,
 
     @Column(nullable = false)
-    val appliedDiscount: Double = 0.0
+    var appliedDiscount: Double = 0.0,
+
+    @Column(name = "is_promo_code_used")
+    var isPromoCodeUsed: Boolean = false,
+
+    @Column(name = "accepted_at")
+    var acceptedAt: LocalDateTime? = null,
+
+    @Column(name = "distance_meters")
+    var distanceMeters: Int? = null,
+
+    @Column(name = "duration_seconds")
+    var durationSeconds: Int? = null,
+
+    @Column(name = "client_comment", length = 400)
+    var comment: String? = null,
+
+    @Column(name = "tariff_name")
+    var tariffName: String? = null,
+    
+    @Column(name = "payment_method")
+    var paymentMethod: String = "CASH",
+
+    @Column(nullable = false)
+    var addedValue: Double = 0.0,
+
+    @ManyToMany(fetch = FetchType.EAGER)
+    @JoinTable(
+        name = "order_services_link",
+        joinColumns = [JoinColumn(name = "order_id")],
+        inverseJoinColumns = [JoinColumn(name = "service_id")]
+    )
+    val selectedServices: MutableList<TaxiServiceEntity> = mutableListOf(),
 
 ) {
-    // !!! НОВЕ ПОЛЕ ДЛЯ ЗУПИНОК !!!
-    // Ми винесли його з конструктора в тіло класу, щоб Hibernate працював коректно
-    
-    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true)
+    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
     var stops: MutableList<OrderStop> = mutableListOf()
-}
+    
+    // ВИПРАВЛЕНИЙ КОНСТРУКТОР-ЗАГЛУШКА ДЛЯ HIBERNATE
+    protected constructor() : this(
+        client = Client(), 
+        fromAddress = "",
+        toAddress = "",
+        // Тут ми передаємо фіктивні дані, бо Hibernate потім перезапише це поле даними з БД
+        tariff = CarTariff(name = "Stub", basePrice = 0.0, pricePerKm = 0.0) 
+    )
+}   

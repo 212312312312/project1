@@ -157,6 +157,7 @@ class AuthService(
         val car = Car(
             make = request.make,
             model = request.model,
+            color = request.color,
             plateNumber = request.plateNumber,
             vin = request.vin,
             year = request.year
@@ -175,5 +176,19 @@ class AuthService(
         
         driverRepository.save(driver)
         return MessageResponse("Водія зареєстровано")
+    }
+
+    fun updateFcmToken(userLogin: String, token: String) {
+        // Шукаємо користувача по телефону (логіну)
+        val user = userRepository.findByUserPhone(userLogin)
+            .orElseGet { 
+                userRepository.findByUserLogin(userLogin).orElseThrow {
+                    ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено")
+                }
+            }
+            
+        // Оновлюємо токен
+        user.fcmToken = token
+        userRepository.save(user)
     }
 }

@@ -5,6 +5,7 @@ import jakarta.persistence.*
 import org.springframework.security.core.GrantedAuthority
 import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.userdetails.UserDetails
+import java.time.LocalDateTime // <--- НЕ ЗАБУДЬТЕ ЦЕЙ ІМПОРТ
 
 @Entity
 @Table(name = "users")
@@ -21,8 +22,7 @@ open class User : UserDetails {
     @Column(unique = true, nullable = true)
     var userPhone: String? = null
 
-    // --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-    @Column(nullable = true) // Пароль теперь НЕ обязателен (для клиентов)
+    @Column(nullable = true)
     var passwordHash: String? = null
 
     @Column(nullable = false)
@@ -35,13 +35,21 @@ open class User : UserDetails {
     @Column(nullable = false)
     var isBlocked: Boolean = false
 
+    @Column(name = "fcm_token")
+    var fcmToken: String? = null
+
+    // --- ДОДАНО НОВЕ ПОЛЕ ---
+    // Зберігає дату реєстрації.
+    // LocalDateTime.now() автоматично ставить поточний час для нових юзерів.
+    @Column(name = "created_at")
+    var createdAt: LocalDateTime? = LocalDateTime.now()
+
     // --- Реализация UserDetails ---
 
     override fun getAuthorities(): Collection<GrantedAuthority> {
         return listOf(SimpleGrantedAuthority("ROLE_${role.name}"))
     }
 
-    // ИЗМЕНЕНИЕ: Если пароля нет (клиент), возвращаем пустую строку
     override fun getPassword(): String = passwordHash ?: ""
     
     override fun getUsername(): String = userLogin ?: userPhone!!

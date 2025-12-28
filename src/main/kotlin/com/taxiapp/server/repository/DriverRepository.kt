@@ -8,7 +8,6 @@ import org.springframework.stereotype.Repository
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
     
-    // ИЗМЕНЕНО: Имя метода теперь 'findByUserPhoneContaining'
     fun findByUserPhoneContaining(userPhone: String): List<Driver>
 
     @Query("SELECT d FROM Driver d WHERE d.isOnline = true")

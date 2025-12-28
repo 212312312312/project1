@@ -11,14 +11,14 @@ class DataInitializer(
 ) : CommandLineRunner {
 
     override fun run(vararg args: String?) {
-        // Перевіряємо, чи є завдання. Якщо немає - створюємо.
         if (promoTaskRepository.count() == 0L) {
             val task1 = PromoTask(
                 title = "Легкий старт",
                 description = "Зроби 3 поїздки",
                 requiredRides = 3,
                 discountPercent = 10.0,
-                isActive = true
+                isActive = true,
+                isOneTime = true // <-- ОДНОРАЗОВАЯ
             )
 
             val task2 = PromoTask(
@@ -26,11 +26,12 @@ class DataInitializer(
                 description = "Зроби 10 поїздок",
                 requiredRides = 10,
                 discountPercent = 20.0,
-                isActive = true
+                isActive = true,
+                isOneTime = true // <-- ОДНОРАЗОВАЯ
             )
 
             promoTaskRepository.saveAll(listOf(task1, task2))
-            println(">>> DATA INITIALIZER: Тестові завдання створено!")
+            println(">>> DATA INITIALIZER: Стартові одноразові завдання створено!")
         }
     }
 }

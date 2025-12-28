@@ -1,5 +1,6 @@
 package com.taxiapp.server.controller
 
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.taxiapp.server.dto.auth.MessageResponse
 import com.taxiapp.server.dto.auth.RegisterDriverRequest
 import com.taxiapp.server.dto.driver.DriverDto
@@ -7,13 +8,13 @@ import com.taxiapp.server.dto.driver.TempBlockRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.service.DriverAdminService
 import jakarta.validation.Valid
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import org.springframework.web.multipart.MultipartFile
 
 @RestController
 @RequestMapping("/api/v1/admin/drivers")
-// Ми ПРИБРАЛИ @PreAuthorize, щоб уникнути конфліктів. 
-// Безпека вже налаштована в SecurityConfig для всіх шляхів /admin/**
 class DriverAdminController(
     private val driverAdminService: DriverAdminService
 ) {
@@ -23,7 +24,6 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.getAllDrivers())
     }
 
-    // Метод для карти
     @GetMapping("/online")
     fun getOnlineDrivers(): ResponseEntity<List<DriverDto>> {
         val drivers = driverAdminService.getAllDrivers()
@@ -31,15 +31,45 @@ class DriverAdminController(
         return ResponseEntity.ok(onlineDrivers)
     }
 
-    @PostMapping
-    fun createDriver(@Valid @RequestBody request: RegisterDriverRequest): ResponseEntity<MessageResponse> {
-        val response = driverAdminService.createDriver(request)
-        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED).body(response)
+    // CREATE (с логами)
+    @PostMapping(consumes = ["multipart/form-data"])
+    fun createDriver(
+        @RequestPart("request") requestJson: String,
+        @RequestPart("file", required = false) file: MultipartFile?
+    ): ResponseEntity<MessageResponse> {
+        
+        println(">>> CONTROLLER: Create Driver Request Received")
+        println(">>> JSON: $requestJson")
+        if (file != null) {
+            println(">>> FILE: ${file.originalFilename}, Size: ${file.size} bytes")
+        } else {
+            println(">>> FILE IS NULL")
+        }
+
+        val mapper = jacksonObjectMapper()
+        val request = mapper.readValue(requestJson, RegisterDriverRequest::class.java)
+        
+        val response = driverAdminService.createDriver(request, file)
+        return ResponseEntity.status(HttpStatus.CREATED).body(response)
     }
     
-    @PutMapping("/{id}")
-    fun updateDriver(@PathVariable id: Long, @Valid @RequestBody request: UpdateDriverRequest): ResponseEntity<DriverDto> {
-        return ResponseEntity.ok(driverAdminService.updateDriver(id, request))
+    // UPDATE (с логами)
+    @PutMapping("/{id}", consumes = ["multipart/form-data"])
+    fun updateDriver(
+        @PathVariable id: Long, 
+        @RequestPart("request") requestJson: String,
+        @RequestPart("file", required = false) file: MultipartFile?
+    ): ResponseEntity<DriverDto> {
+        
+        println(">>> CONTROLLER: Update Driver Request ($id)")
+        if (file != null) {
+            println(">>> FILE: ${file.originalFilename}")
+        }
+
+        val mapper = jacksonObjectMapper()
+        val request = mapper.readValue(requestJson, UpdateDriverRequest::class.java)
+        
+        return ResponseEntity.ok(driverAdminService.updateDriver(id, request, file))
     }
 
     @DeleteMapping("/{id}")
@@ -52,7 +82,6 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.blockDriverTemporarily(id, request))
     }
     
-    // Зверніть увагу: я використовую PatchMapping, переконайтеся, що в React теж Patch, або змініть тут на Post
     @PatchMapping("/{id}/block")
     fun blockDriverPerm(@PathVariable id: Long): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.blockDriverPermanently(id))

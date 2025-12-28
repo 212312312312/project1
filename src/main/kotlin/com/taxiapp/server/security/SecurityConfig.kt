@@ -51,6 +51,17 @@ class SecurityConfig(
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers(*publicEndpoints).permitAll()
 
+                    // --- ВИПРАВЛЕННЯ ТУТ ---
+                    // Додали /v1, щоб точно співпадало з контролером
+                    .requestMatchers(HttpMethod.GET, "/api/v1/services/**").permitAll()
+                    
+                    // Для адмінів теж з /v1
+                    .requestMatchers("/api/v1/services/**").hasAnyAuthority(
+                        "ADMINISTRATOR", "ROLE_ADMINISTRATOR",
+                        "DISPATCHER", "ROLE_DISPATCHER"
+                    )
+                    // -----------------------------------------
+
                     // 2. АДМИНКА (Разрешаем оба варианта написания ролей)
                     .requestMatchers("/api/v1/admin/**")
                         .hasAnyAuthority(
