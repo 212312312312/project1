@@ -4,7 +4,6 @@ import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotNull
 
-// МИ ЗМІНИЛИ НАЗВУ КЛАСУ: додано "Dto" в кінці
 data class CreateOrderRequestDto(
     @field:NotBlank(message = "Адреса 'Звідки' не може бути порожньою")
     val fromAddress: String,
@@ -29,9 +28,11 @@ data class CreateOrderRequestDto(
     val distanceMeters: Int,
     val durationSeconds: Int,
     val comment: String? = null,
-
-    // !!! ДОБАВЛЯЕМ ЭТО ПОЛЕ !!!
-    val paymentMethod: String = "CASH",
+    
+    // ВИПРАВЛЕНО: Залишаємо serviceIds лише ТУТ
     val serviceIds: List<Long> = emptyList(),
+
+    val paymentMethod: String = "CASH",
+    // val serviceIds: List<Long> = emptyList(), <--- ЦЕЙ РЯДОК БУВ ЗАЙВИМ (ДУБЛІКАТ)
     val addedValue: Double = 0.0
 )

@@ -30,34 +30,32 @@ class OrderService(
 
     @Transactional
     fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
-        
+
+        // 1. Проверка тарифа
         val tariff = tariffRepository.findById(request.tariffId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
-            
+
         if (!tariff.isActive) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
-        // --- ЛОГИКА УСЛУГ ---
-        // Ищем услуги в базе по ID
+        // --- ЛОГИКА УСЛУГ (НОВАЯ) ---
+        // Ищем сущности услуг в базе по списку ID, который прислал клиент
         val selectedServicesEntities = if (!request.serviceIds.isNullOrEmpty()) {
             taxiServiceRepository.findAllById(request.serviceIds)
         } else {
             emptyList()
         }
-        
-        // !!! ИСПРАВЛЕНИЕ ЗДЕСЬ !!!
-        // Мы НЕ прибавляем servicesCost к request.price, 
-        // так как клиент уже прислал полную сумму (Тариф + Услуги).
-        // Мы просто используем цену от клиента.
+
+        // --- ЛОГИКА ЦЕНЫ ---
         var finalPrice = request.price 
 
         // -----------------------------
 
         var discountAmount = 0.0
-        var isPromoCodeUsedForThisOrder = false 
+        var isPromoCodeUsedForThisOrder = false
 
-        // 1. Промокод
+        // 2. Логика Промокодов
         val activePromoUsage = promoCodeService.findActiveUsage(client)
         var promoCodeApplied = false
 
@@ -74,9 +72,9 @@ class OrderService(
                 promoCodeApplied = true
                 isPromoCodeUsedForThisOrder = true
             }
-        } 
+        }
 
-        // 2. Акции
+        // 3. Логика Акций/Заданий
         if (!promoCodeApplied) {
             val activeReward = promoService.findActiveReward(client)
             if (activeReward != null) {
@@ -90,18 +88,19 @@ class OrderService(
             }
         }
 
+        // Итоговая цена после скидок
         finalPrice -= discountAmount
         if (finalPrice < 0) finalPrice = 0.0
 
-        // 3. Создание объекта
+        // 4. Создание объекта заказа
         val newOrder = TaxiOrder(
             client = client,
             fromAddress = request.fromAddress,
             toAddress = request.toAddress,
             status = OrderStatus.REQUESTED,
             createdAt = LocalDateTime.now(),
-            tariff = tariff, 
-            price = finalPrice, 
+            tariff = tariff,
+            price = finalPrice,
             
             appliedDiscount = discountAmount,
             isPromoCodeUsed = isPromoCodeUsedForThisOrder,
@@ -119,12 +118,13 @@ class OrderService(
             paymentMethod = request.paymentMethod ?: "CASH",
             addedValue = request.addedValue
         )
-        
-        // Привязываем услуги к заказу (чтобы водитель их видел), но цену не меняем
+
+        // --- ПРИКРЕПЛЕНИЕ УСЛУГ К ЗАКАЗУ ---
         if (selectedServicesEntities.isNotEmpty()) {
-            newOrder.selectedServices.addAll(selectedServicesEntities)
+            newOrder.selectedServices.addAll(selectedServicesEntities) 
         }
 
+        // 5. Сохранение остановок (Waypoints)
         if (!request.waypoints.isNullOrEmpty()) {
             val stopsList = request.waypoints.mapIndexed { index, wpDto ->
                 OrderStop(
@@ -137,8 +137,9 @@ class OrderService(
             }
             newOrder.stops.addAll(stopsList)
         }
-        
+
         val savedOrder = orderRepository.save(newOrder)
+        
         return TaxiOrderDto(savedOrder)
     }
 
@@ -177,8 +178,17 @@ class OrderService(
         if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
         if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.IN_PROGRESS) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення не в процесі")
         
+        // Оновлюємо статус
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
+
+        // --- ВИПРАВЛЕННЯ: ОНОВЛЕННЯ СТАТИСТИКИ ВОДІЯ ---
+        // Беремо поточне значення (або 0, якщо null) і додаємо 1
+        val currentRides = driver.ridesCount ?: 0
+        driver.ridesCount = currentRides + 1
+        // Зберігаємо водія в базу
+        driverRepository.save(driver)
+        // ----------------------------------------------
         
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {

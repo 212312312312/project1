@@ -4,6 +4,12 @@ import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
 import java.time.LocalDateTime
 
+data class OrderServiceDto(
+    val id: Long,
+    val name: String,
+    val price: Double
+)
+
 data class TaxiOrderDto(
     val id: Long,
     val client: OrderClientDto,
@@ -34,10 +40,11 @@ data class TaxiOrderDto(
     
     val paymentMethod: String,
     
-    // Новое поле
-    val addedValue: Double
+    // Нове поле
+    val addedValue: Double,
+    val services: List<OrderServiceDto> = emptyList()
 ) {
-    // Вторичный конструктор
+    // Вторинний конструктор
     constructor(order: TaxiOrder) : this(
         id = order.id ?: 0L,
         client = OrderClientDto(order.client),
@@ -52,7 +59,7 @@ data class TaxiOrderDto(
         distanceMeters = order.distanceMeters,
         durationSeconds = order.durationSeconds,
         
-        // Берем имя тарифа безопасно
+        // Беремо ім'я тарифу безпечно
         tariffName = order.tariffName ?: order.tariff.name,
 
         originLat = order.originLat,
@@ -98,8 +105,18 @@ data class TaxiOrderDto(
         
         comment = order.comment,
 
-        // Передаем новые поля
+        // Передаємо нові поля
         paymentMethod = order.paymentMethod,
-        addedValue = order.addedValue
+        addedValue = order.addedValue,
+
+        // !!! ВИПРАВЛЕННЯ ТУТ !!!
+        // Використовуємо ?: 0L, щоб перетворити Long? у Long
+        services = order.selectedServices.map { service ->
+            OrderServiceDto(
+                id = service.id ?: 0L, // <--- ОСЬ ТУТ БУЛА ПОМИЛКА
+                name = service.name,
+                price = service.price
+            )
+        }
     )
 }
