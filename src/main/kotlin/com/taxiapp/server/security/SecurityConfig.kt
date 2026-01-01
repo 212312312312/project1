@@ -29,9 +29,12 @@ class SecurityConfig(
     private val userDetailsService: UserDetailsService
 ) {
 
-    // Список публичных путей
+    // --- ВИПРАВЛЕННЯ ТУТ ---
+    // Додаємо шляхи БЕЗ v1, бо Android стукає на /api/auth/...
     private val publicEndpoints = arrayOf(
-        "/api/v1/auth/**",
+        "/api/auth/**",          // <--- ВАЖЛИВО! (Для логіну водія)
+        "/api/v1/auth/**",       // (Про всяк випадок залишаємо v1)
+        "/api/public/**",        
         "/api/v1/public/**",
         "/images/**",
         "/uploads/**",
@@ -39,6 +42,7 @@ class SecurityConfig(
         "/swagger-ui/**",
         "/swagger-ui.html"
     )
+    // -----------------------
 
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
@@ -47,34 +51,32 @@ class SecurityConfig(
             .csrf { it.disable() }
             .authorizeHttpRequests { auth ->
                 auth
-                    // 1. Публичные
+                    // 1. Публічні (використовують масив publicEndpoints)
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers(*publicEndpoints).permitAll()
 
-                    // --- ВИПРАВЛЕННЯ ТУТ ---
-                    // Додали /v1, щоб точно співпадало з контролером
-                    .requestMatchers(HttpMethod.GET, "/api/v1/services/**").permitAll()
+                    // --- СЕРВІСИ (Залишаємо як є, або дублюємо без v1 якщо треба) ---
+                    .requestMatchers(HttpMethod.GET, "/api/v1/services/**", "/api/services/**").permitAll()
                     
-                    // Для адмінів теж з /v1
-                    .requestMatchers("/api/v1/services/**").hasAnyAuthority(
+                    .requestMatchers("/api/v1/services/**", "/api/services/**").hasAnyAuthority(
                         "ADMINISTRATOR", "ROLE_ADMINISTRATOR",
                         "DISPATCHER", "ROLE_DISPATCHER"
                     )
-                    // -----------------------------------------
 
-                    // 2. АДМИНКА (Разрешаем оба варианта написания ролей)
-                    .requestMatchers("/api/v1/admin/**")
+                    // 2. АДМИНКА
+                    .requestMatchers("/api/v1/admin/**", "/api/admin/**")
                         .hasAnyAuthority(
                             "ADMINISTRATOR", "ROLE_ADMINISTRATOR",
                             "DISPATCHER", "ROLE_DISPATCHER"
                         )
 
                     // 3. КЛИЕНТ
-                    .requestMatchers("/api/v1/client/**")
+                    .requestMatchers("/api/v1/client/**", "/api/client/**")
                         .hasAnyAuthority("CLIENT", "ROLE_CLIENT")
 
                     // 4. ВОДИТЕЛЬ
-                    .requestMatchers("/api/v1/driver/**")
+                    // Android стукає сюди для замовлень: /api/v1/driver/...
+                    .requestMatchers("/api/v1/driver/**", "/api/driver/**")
                         .hasAnyAuthority("DRIVER", "ROLE_DRIVER")
 
                     .anyRequest().authenticated()
@@ -91,7 +93,7 @@ class SecurityConfig(
     @Bean
     fun corsConfigurationSource(): CorsConfigurationSource {
         val configuration = CorsConfiguration()
-        configuration.allowedOriginPatterns = listOf("*") // Разрешаем всем
+        configuration.allowedOriginPatterns = listOf("*")
         configuration.allowedMethods = listOf("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
         configuration.allowedHeaders = listOf("*")
         configuration.allowCredentials = true

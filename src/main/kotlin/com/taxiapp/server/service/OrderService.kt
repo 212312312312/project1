@@ -20,7 +20,7 @@ import java.time.LocalDateTime
 
 @Service
 class OrderService(
-    private val orderRepository: TaxiOrderRepository,
+    private val orderRepository: TaxiOrderRepository, // Увага: тут ім'я orderRepository
     private val tariffRepository: CarTariffRepository,
     private val promoService: PromoService,
     private val driverRepository: DriverRepository,
@@ -39,8 +39,7 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
-        // --- ЛОГИКА УСЛУГ (НОВАЯ) ---
-        // Ищем сущности услуг в базе по списку ID, который прислал клиент
+        // --- ЛОГИКА УСЛУГ ---
         val selectedServicesEntities = if (!request.serviceIds.isNullOrEmpty()) {
             taxiServiceRepository.findAllById(request.serviceIds)
         } else {
@@ -49,8 +48,6 @@ class OrderService(
 
         // --- ЛОГИКА ЦЕНЫ ---
         var finalPrice = request.price 
-
-        // -----------------------------
 
         var discountAmount = 0.0
         var isPromoCodeUsedForThisOrder = false
@@ -182,13 +179,10 @@ class OrderService(
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
 
-        // --- ВИПРАВЛЕННЯ: ОНОВЛЕННЯ СТАТИСТИКИ ВОДІЯ ---
-        // Беремо поточне значення (або 0, якщо null) і додаємо 1
-        val currentRides = driver.ridesCount ?: 0
-        driver.ridesCount = currentRides + 1
-        // Зберігаємо водія в базу
+        // Оновлюємо лічильник поїздок
+        val currentRides = driver.completedRides
+        driver.completedRides = currentRides + 1
         driverRepository.save(driver)
-        // ----------------------------------------------
         
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {
@@ -208,5 +202,13 @@ class OrderService(
 
     fun toDto(order: TaxiOrder): TaxiOrderDto {
         return TaxiOrderDto(order)
+    }
+
+    // --- ВИПРАВЛЕНИЙ МЕТОД ---
+    fun findAllByStatus(status: OrderStatus): List<TaxiOrderDto> {
+        // 1. Використовуємо orderRepository (як оголошено в конструкторі)
+        return orderRepository.findAllByStatus(status)
+            // 2. Використовуємо TaxiOrderDto(it) для конвертації
+            .map { TaxiOrderDto(it) } 
     }
 }

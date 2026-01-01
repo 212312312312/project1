@@ -9,6 +9,8 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
+import com.taxiapp.server.model.enums.OrderStatus
+
 
 @RestController
 @RequestMapping("/api/v1/driver/orders")
@@ -68,5 +70,13 @@ class DriverOrderController(
 
         val order = orderService.completeOrder(user, id)
         return ResponseEntity.ok(order)
+    }
+
+    @GetMapping("/available")
+    fun getAvailableOrders(): ResponseEntity<List<TaxiOrderDto>> {
+        // Отримуємо всі замовлення зі статусом REQUESTED
+        // (Припускаємо, що у OrderService є метод findAllByStatus, якщо ні - додамо)
+        val orders = orderService.findAllByStatus(OrderStatus.REQUESTED)
+        return ResponseEntity.ok(orders)
     }
 }
