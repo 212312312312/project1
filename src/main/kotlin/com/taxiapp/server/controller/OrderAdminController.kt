@@ -2,20 +2,23 @@ package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.service.OrderAdminService
+import com.taxiapp.server.service.OrderService // <--- Не забудьте этот импорт!
 import org.springframework.http.ResponseEntity
-import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.*
 
 @RestController
 @RequestMapping("/api/v1/admin/orders")
 class OrderAdminController(
-    private val orderAdminService: OrderAdminService
+    private val orderAdminService: OrderAdminService,
+    private val orderService: OrderService // <--- ДОБАВИЛИ СЮДА
 ) {
 
     // "Активные заказы" (Real-time update 10 сек)
     @GetMapping("/active")
     fun getActiveOrders(): ResponseEntity<List<TaxiOrderDto>> {
-        return ResponseEntity.ok(orderAdminService.getActiveOrders())
+        // Теперь orderService существует и ошибки не будет
+        val orders = orderService.getActiveOrdersForDispatcher()
+        return ResponseEntity.ok(orders)
     }
 
     // "Архив заказов"

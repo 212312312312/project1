@@ -11,41 +11,43 @@ import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
 import com.taxiapp.server.model.enums.OrderStatus
 
-
 @RestController
 @RequestMapping("/api/v1/driver/orders")
 class DriverOrderController(
     private val orderService: OrderService,
-    private val userRepository: UserRepository // <-- Додаємо репозиторій для пошуку
+    private val userRepository: UserRepository
 ) {
 
     // Прийняти замовлення
     @PostMapping("/{id}/accept")
     fun acceptOrder(
         @PathVariable id: Long,
-        principal: Principal // Використовуємо стандартний Principal
+        principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
-        
-        val userLogin = principal.name
-        
-        // Шукаємо користувача (Логін або Телефон)
-        var user = userRepository.findByUserLogin(userLogin).orElse(null)
-        if (user == null) {
-             user = userRepository.findByUserPhone(userLogin)
-                 .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
-        }
-        
-        // Перевіряємо, що це водій
-        if (user !is Driver) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Тільки водії можуть приймати замовлення")
-        }
-        
-        // Перевіряємо блокування
-        if (user.isBlocked) {
-             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблоковано")
-        }
-        
-        val order = orderService.acceptOrder(user, id)
+        val driver = getDriverFromPrincipal(principal)
+        val order = orderService.acceptOrder(driver, id)
+        return ResponseEntity.ok(order)
+    }
+
+    // НОВЕ: Водій на місці
+    @PostMapping("/{id}/arrive")
+    fun driverArrived(
+        @PathVariable id: Long,
+        principal: Principal
+    ): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        val order = orderService.driverArrived(driver, id)
+        return ResponseEntity.ok(order)
+    }
+
+    // НОВЕ: Почати поїздку
+    @PostMapping("/{id}/start")
+    fun startTrip(
+        @PathVariable id: Long,
+        principal: Principal
+    ): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        val order = orderService.startTrip(driver, id)
         return ResponseEntity.ok(order)
     }
 
@@ -55,28 +57,34 @@ class DriverOrderController(
         @PathVariable id: Long,
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
-        
-        val userLogin = principal.name
-        
-        var user = userRepository.findByUserLogin(userLogin).orElse(null)
-        if (user == null) {
-             user = userRepository.findByUserPhone(userLogin)
-                 .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
-        }
-        
-        if (user !is Driver) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Тільки водії можуть завершувати замовлення")
-        }
-
-        val order = orderService.completeOrder(user, id)
+        val driver = getDriverFromPrincipal(principal)
+        val order = orderService.completeOrder(driver, id)
         return ResponseEntity.ok(order)
     }
 
+    // Отримати доступні замовлення
     @GetMapping("/available")
     fun getAvailableOrders(): ResponseEntity<List<TaxiOrderDto>> {
-        // Отримуємо всі замовлення зі статусом REQUESTED
-        // (Припускаємо, що у OrderService є метод findAllByStatus, якщо ні - додамо)
         val orders = orderService.findAllByStatus(OrderStatus.REQUESTED)
         return ResponseEntity.ok(orders)
+    }
+
+    // --- Допоміжний метод для отримання водія ---
+    private fun getDriverFromPrincipal(principal: Principal): Driver {
+        val userLogin = principal.name
+        
+        val user = userRepository.findByUserLogin(userLogin).orElse(null)
+            ?: userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
+
+        if (user !is Driver) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Тільки водії можуть виконувати цю дію")
+        }
+        
+        if (user.isBlocked) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблоковано")
+        }
+
+        return user
     }
 }

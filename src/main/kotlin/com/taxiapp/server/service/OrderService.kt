@@ -20,7 +20,7 @@ import java.time.LocalDateTime
 
 @Service
 class OrderService(
-    private val orderRepository: TaxiOrderRepository, // Увага: тут ім'я orderRepository
+    private val orderRepository: TaxiOrderRepository, 
     private val tariffRepository: CarTariffRepository,
     private val promoService: PromoService,
     private val driverRepository: DriverRepository,
@@ -30,7 +30,6 @@ class OrderService(
 
     @Transactional
     fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
-
         // 1. Проверка тарифа
         val tariff = tariffRepository.findById(request.tariffId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
@@ -48,7 +47,6 @@ class OrderService(
 
         // --- ЛОГИКА ЦЕНЫ ---
         var finalPrice = request.price 
-
         var discountAmount = 0.0
         var isPromoCodeUsedForThisOrder = false
 
@@ -136,7 +134,6 @@ class OrderService(
         }
 
         val savedOrder = orderRepository.save(newOrder)
-        
         return TaxiOrderDto(savedOrder)
     }
 
@@ -168,12 +165,48 @@ class OrderService(
         return TaxiOrderDto(orderRepository.save(order))
     }
 
+    // --- НОВИЙ МЕТОД: ВОДІЙ НА МІСЦІ ---
+    @Transactional
+    fun driverArrived(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+        if (order.driver?.id != driver.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        }
+        // Можна перейти тільки якщо статус ACCEPTED (Їде до клієнта)
+        if (order.status != OrderStatus.ACCEPTED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невірний статус замовлення")
+        }
+
+        order.status = OrderStatus.DRIVER_ARRIVED
+        return TaxiOrderDto(orderRepository.save(order))
+    }
+
+    // --- НОВИЙ МЕТОД: ПОЧАТОК ПОЇЗДКИ ---
+    @Transactional
+    fun startTrip(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+        if (order.driver?.id != driver.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        }
+        // Почати поїздку можна, якщо водій "На місці" або "Прийняв" (якщо забув натиснути на місці)
+        if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.DRIVER_ARRIVED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Не можна почати поїздку зараз")
+        }
+
+        order.status = OrderStatus.IN_PROGRESS
+        return TaxiOrderDto(orderRepository.save(order))
+    }
+
     @Transactional
     fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
         
         if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
-        if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.IN_PROGRESS) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення не в процесі")
+        if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.IN_PROGRESS && order.status != OrderStatus.DRIVER_ARRIVED) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення не в процесі")
         
         // Оновлюємо статус
         order.status = OrderStatus.COMPLETED
@@ -196,7 +229,6 @@ class OrderService(
         }
         
         promoService.updateProgressOnRideCompletion(order.client, order)
-        
         return TaxiOrderDto(orderRepository.save(order))
     }
 
@@ -204,11 +236,22 @@ class OrderService(
         return TaxiOrderDto(order)
     }
 
-    // --- ВИПРАВЛЕНИЙ МЕТОД ---
     fun findAllByStatus(status: OrderStatus): List<TaxiOrderDto> {
-        // 1. Використовуємо orderRepository (як оголошено в конструкторі)
         return orderRepository.findAllByStatus(status)
-            // 2. Використовуємо TaxiOrderDto(it) для конвертації
             .map { TaxiOrderDto(it) } 
+    }
+
+    fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
+        val activeStatuses = listOf(
+            OrderStatus.REQUESTED,      // Нові (Пошук)
+            OrderStatus.ACCEPTED,       // Водій їде
+            OrderStatus.DRIVER_ARRIVED, // Водій чекає (ТОЙ, ЩО ЗНИКАВ)
+            OrderStatus.IN_PROGRESS     // В дорозі
+        )
+        
+        // Використовуємо новий метод репозиторію
+        return orderRepository.findAllByStatusIn(activeStatuses)
+            .map { TaxiOrderDto(it) }
+            .sortedByDescending { it.id } // Сортуємо: найновіші зверху
     }
 }

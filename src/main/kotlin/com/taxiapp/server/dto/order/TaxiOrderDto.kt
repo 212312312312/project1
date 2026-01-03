@@ -1,14 +1,12 @@
 package com.taxiapp.server.dto.order
 
+import com.taxiapp.server.dto.order.WaypointDto
+import com.taxiapp.server.dto.service.TaxiServiceDto // <-- Імпортуємо ваш DTO
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
 import java.time.LocalDateTime
 
-data class OrderServiceDto(
-    val id: Long,
-    val name: String,
-    val price: Double
-)
+// data class OrderServiceDto(...) <-- ВИДАЛИВ, бо ми використовуємо TaxiServiceDto
 
 data class TaxiOrderDto(
     val id: Long,
@@ -42,7 +40,9 @@ data class TaxiOrderDto(
     
     // Нове поле
     val addedValue: Double,
-    val services: List<OrderServiceDto> = emptyList()
+    
+    // Використовуємо TaxiServiceDto
+    val services: List<TaxiServiceDto> = emptyList()
 ) {
     // Вторинний конструктор
     constructor(order: TaxiOrder) : this(
@@ -74,7 +74,8 @@ data class TaxiOrderDto(
                 WaypointDto(
                     address = stop.address,
                     lat = stop.lat,
-                    lng = stop.lng
+                    lng = stop.lng,
+                    stopOrder = stop.stopOrder // <-- ВАЖЛИВО: Додав це поле
                 )
             },
 
@@ -106,14 +107,13 @@ data class TaxiOrderDto(
         comment = order.comment,
 
         // Передаємо нові поля
-        paymentMethod = order.paymentMethod,
+        paymentMethod = order.paymentMethod ?: "CASH",
         addedValue = order.addedValue,
 
-        // !!! ВИПРАВЛЕННЯ ТУТ !!!
-        // Використовуємо ?: 0L, щоб перетворити Long? у Long
+        // Мапимо послуги у TaxiServiceDto
         services = order.selectedServices.map { service ->
-            OrderServiceDto(
-                id = service.id ?: 0L, // <--- ОСЬ ТУТ БУЛА ПОМИЛКА
+            TaxiServiceDto(
+                id = service.id ?: 0L,
                 name = service.name,
                 price = service.price
             )
