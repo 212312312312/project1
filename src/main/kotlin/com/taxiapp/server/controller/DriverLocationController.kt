@@ -10,14 +10,12 @@ import org.springframework.web.bind.annotation.RestController
 
 @RestController
 @RequestMapping("/admin/drivers")
-// --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-@PreAuthorize("hasAnyRole('ADMINISTRATOR', 'DISPATCHER')") // Было 'DISPATCHT'
 class DriverLocationController(
     private val driverLocationService: DriverLocationService
 ) {
 
-    // "Карта водителей" (Real-time update 5 сек)
     @GetMapping("/online")
+    @PreAuthorize("hasAnyRole('ADMINISTRATOR', 'DISPATCHER')")
     fun getOnlineDriversForMap(): ResponseEntity<List<DriverLocationDto>> {
         return ResponseEntity.ok(driverLocationService.getOnlineDriversForMap())
     }

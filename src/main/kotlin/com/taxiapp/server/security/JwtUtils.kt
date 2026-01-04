@@ -10,13 +10,12 @@ import org.springframework.stereotype.Component
 import java.security.Key
 import java.util.*
 import java.util.function.Function
-import javax.crypto.SecretKey
 
 @Component
 class JwtUtils {
 
-    // ВАЖЛИВО: Фіксований ключ (мінімум 256 біт / 32 символи)
-    // Це дозволить токенам жити після перезапуску сервера
+    // Ключ повинен бути 256-біт (32 байти). 
+    // Якщо зміниш цей ключ - старі токени перестануть працювати!
     private val SECRET_KEY_STRING = "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970"
 
     private fun getSignInKey(): Key {
@@ -27,6 +26,15 @@ class JwtUtils {
     fun extractUsername(token: String): String? {
         return extractClaim(token, Claims::getSubject)
     }
+
+    // --- ДОДАНО ЦЕЙ МЕТОД ---
+    // Потрібен для отримання ID водія в DriverAppController
+    fun extractUserId(token: String): Long {
+        val claims = extractAllClaims(token)
+        // JWT бібліотека може повертати числа як Integer, тому надійно приводимо до Long
+        return (claims["userId"] as Number).toLong()
+    }
+    // ------------------------
 
     fun <T> extractClaim(token: String, claimsResolver: Function<Claims, T>): T {
         val claims = extractAllClaims(token)
@@ -41,11 +49,10 @@ class JwtUtils {
             .body
     }
 
-    // Додаємо роль у токен, щоб не шукати в БД зайвий раз (опціонально)
     fun generateToken(userDetails: UserDetails, userId: Long, role: String): String {
         val claims = HashMap<String, Any>()
         claims["userId"] = userId
-        claims["role"] = role // "ADMINISTRATOR", "CLIENT" etc.
+        claims["role"] = role 
         return createToken(claims, userDetails.username)
     }
 

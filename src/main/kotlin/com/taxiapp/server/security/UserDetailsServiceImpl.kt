@@ -28,13 +28,14 @@ class UserDetailsServiceImpl(
 
         println(">>> USER DETAILS SERVICE: Знайдено ID: ${user.id}, Hash: ${user.passwordHash}")
 
-        // !!! ВАЖЛИВО !!!
-        // Ми використовуємо user.role.name ("DRIVER"), без "ROLE_"
-        val authorities = listOf(SimpleGrantedAuthority(user.role.name))
+        // !!! ВИПРАВЛЕНО ТУТ !!!
+        // Додаємо префікс "ROLE_", щоб працювала анотація @PreAuthorize("hasRole('DRIVER')")
+        val roleName = "ROLE_" + user.role.name // Буде "ROLE_DRIVER"
+        val authorities = listOf(SimpleGrantedAuthority(roleName))
 
         return User(
-            user.userLogin ?: user.userPhone, // Використовуємо логін або телефон як ім'я
-            user.passwordHash ?: "", // Хеш пароля з БД
+            user.userLogin ?: user.userPhone,
+            user.passwordHash ?: "",
             authorities
         )
     }
