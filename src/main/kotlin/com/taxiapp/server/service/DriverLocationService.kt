@@ -12,15 +12,21 @@ class DriverLocationService(
 ) {
     @Transactional
     fun updateLocation(driverId: Long, request: UpdateLocationRequest) {
-        val driver = driverRepository.findById(driverId).orElse(null) ?: return
-        driver.currentLatitude = request.lat
-        driver.currentLongitude = request.lng
-        driverRepository.save(driver)
+        // Пропускаем нули
+        if (request.lat == 0.0 && request.lng == 0.0) {
+            return
+        }
+
+        // БЫЛО (Медленно): 
+        // val driver = driverRepository.findById(driverId)... driverRepository.save(driver)
+
+        // СТАЛО (Быстро):
+        // Бьем сразу в базу. Координаты обновятся мгновенно, даже если водитель не нажал "Онлайн".
+        driverRepository.updateCoordinates(driverId, request.lat, request.lng)
     }
 
     @Transactional(readOnly = true)
     fun getOnlineDriversForMap(): List<DriverLocationDto> {
-        // Берем всех с координатами
         return driverRepository.findAllWithCoordinates()
             .map { DriverLocationDto(it) }
     }
