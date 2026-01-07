@@ -137,6 +137,27 @@ class OrderService(
         return TaxiOrderDto(savedOrder)
     }
 
+
+    fun findActiveOrderByDriver(driver: Driver): TaxiOrderDto? {
+        val activeStatuses = listOf(
+            OrderStatus.ACCEPTED, 
+            OrderStatus.DRIVER_ARRIVED, 
+            OrderStatus.IN_PROGRESS
+        )
+        // Шукаємо останнє незавершене замовлення цього водія
+        return orderRepository.findAllByDriverId(driver.id!!)
+            .filter { it.status in activeStatuses }
+            .map { TaxiOrderDto(it) }
+            .firstOrNull()
+    }
+
+    fun findHistoryByDriver(driver: Driver): List<TaxiOrderDto> {
+        return orderRepository.findAllByDriverId(driver.id!!)
+            .filter { it.status == OrderStatus.COMPLETED || it.status == OrderStatus.CANCELLED }
+            .sortedByDescending { it.id }
+            .map { TaxiOrderDto(it) }
+    }
+
     fun getOrderById(id: Long): TaxiOrderDto {
         val order = orderRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
         return TaxiOrderDto(order)
@@ -254,4 +275,8 @@ class OrderService(
             .map { TaxiOrderDto(it) }
             .sortedByDescending { it.id } // Сортуємо: найновіші зверху
     }
+
+    
+    
+
 }

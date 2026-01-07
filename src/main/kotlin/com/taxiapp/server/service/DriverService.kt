@@ -13,25 +13,23 @@ import org.springframework.web.server.ResponseStatusException
 class DriverService(
     private val driverRepository: DriverRepository
 ) {
-
     @Transactional
     fun updateDriverStatus(driver: Driver, request: UpdateDriverStatusRequest): DriverDto {
-        
         if (request.isOnline) {
-            // Водитель выходит на линию -> Обязательно нужны координаты
-            if (request.latitude == null || request.longitude == null) {
-                // Можно выбрасывать ошибку, а можно просто не обновлять координаты, если их нет
-                // Но лучше требовать, чтобы водитель сразу появился в нужной точке
-                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Нужны координаты для выхода в онлайн")
-            }
+            // Водитель на линии
             driver.isOnline = true
             driver.currentLatitude = request.latitude
             driver.currentLongitude = request.longitude
+            driver.lastUpdate = java.time.LocalDateTime.now() // Обновляем время активности
         } else {
-            // Водитель уходит -> Ставим офлайн, но КООРДИНАТЫ ОСТАВЛЯЕМ (чтобы видеть, где он закончил)
+            // Водитель уходит в офлайн
             driver.isOnline = false
-            // driver.currentLatitude = null  <-- УДАЛИЛИ ЭТО
-            // driver.currentLongitude = null <-- УДАЛИЛИ ЭТО
+            
+            // --- ВОЗВРАЩАЕМ ЛОГИКУ УДАЛЕНИЯ С КАРТЫ ---
+            // Обнуляем координаты, чтобы он сразу исчез из списка активных на карте
+            driver.currentLatitude = null
+            driver.currentLongitude = null
+            // -----------------------------------------
         }
         
         val updatedDriver = driverRepository.save(driver)

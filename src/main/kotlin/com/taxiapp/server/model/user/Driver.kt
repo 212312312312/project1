@@ -14,6 +14,7 @@ class Driver : User() {
 
     var currentLatitude: Double? = null
     var currentLongitude: Double? = null
+    var lastUpdate: java.time.LocalDateTime? = null
 
     @Column(nullable = true)
     var photoUrl: String? = null

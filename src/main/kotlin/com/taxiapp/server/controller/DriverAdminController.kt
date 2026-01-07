@@ -24,12 +24,7 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.getAllDrivers())
     }
 
-    @GetMapping("/online")
-    fun getOnlineDrivers(): ResponseEntity<List<DriverDto>> {
-        val drivers = driverAdminService.getAllDrivers()
-        val onlineDrivers = drivers.filter { it.isOnline }
-        return ResponseEntity.ok(onlineDrivers)
-    }
+    
 
     // CREATE (с логами)
     @PostMapping(consumes = ["multipart/form-data"])

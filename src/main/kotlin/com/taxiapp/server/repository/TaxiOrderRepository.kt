@@ -39,6 +39,8 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByClientId(clientId: Long): List<TaxiOrder>
 
+    fun findAllByDriverId(driverId: Long): List<TaxiOrder>
+
     // Теперь Client распознается благодаря импорту
     fun findAllByClientOrderByCreatedAtDesc(client: Client): List<TaxiOrder>
 }

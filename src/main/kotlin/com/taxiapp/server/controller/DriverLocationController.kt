@@ -9,12 +9,13 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
-@RequestMapping("/admin/drivers")
+// ИСПРАВЛЕНО: Добавили api/v1 и изменили путь на /location-map
+@RequestMapping("/api/v1/admin/drivers/location-map")
 class DriverLocationController(
     private val driverLocationService: DriverLocationService
 ) {
 
-    @GetMapping("/online")
+    @GetMapping
     @PreAuthorize("hasAnyRole('ADMINISTRATOR', 'DISPATCHER')")
     fun getOnlineDriversForMap(): ResponseEntity<List<DriverLocationDto>> {
         return ResponseEntity.ok(driverLocationService.getOnlineDriversForMap())

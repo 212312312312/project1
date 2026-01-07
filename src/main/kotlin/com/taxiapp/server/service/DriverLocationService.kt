@@ -7,27 +7,23 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
-class DriverLocationService(
-    private val driverRepository: DriverRepository
-) {
+class DriverLocationService(private val driverRepository: DriverRepository) {
+
     @Transactional
     fun updateLocation(driverId: Long, request: UpdateLocationRequest) {
-        // Пропускаем нули
-        if (request.lat == 0.0 && request.lng == 0.0) {
-            return
-        }
+        if (request.lat == 0.0 && request.lng == 0.0) return
+        driverRepository.updateCoordinatesAndTimestamp(driverId, request.lat, request.lng, java.time.LocalDateTime.now())
+    }
 
-        // БЫЛО (Медленно): 
-        // val driver = driverRepository.findById(driverId)... driverRepository.save(driver)
-
-        // СТАЛО (Быстро):
-        // Бьем сразу в базу. Координаты обновятся мгновенно, даже если водитель не нажал "Онлайн".
-        driverRepository.updateCoordinates(driverId, request.lat, request.lng)
+    // --- НОВЫЙ МЕТОД ---
+    @Transactional
+    fun clearLocation(driverId: Long) {
+        driverRepository.clearCoordinates(driverId)
     }
 
     @Transactional(readOnly = true)
     fun getOnlineDriversForMap(): List<DriverLocationDto> {
-        return driverRepository.findAllWithCoordinates()
-            .map { DriverLocationDto(it) }
+        val threshold = java.time.LocalDateTime.now().minusMinutes(3)
+        return driverRepository.findAllActiveOnMap(threshold).map { DriverLocationDto(it) }
     }
 }

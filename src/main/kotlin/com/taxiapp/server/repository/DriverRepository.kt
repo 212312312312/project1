@@ -6,23 +6,32 @@ import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
+import java.time.LocalDateTime
 import java.util.Optional
 
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
-    
-    // 1. ЗАПРОС ДЛЯ КАРТЫ:
-    // Убедись, что тут НЕТ условия "d.isOnline = true".
-    // Мы берем всех, у кого есть валидные координаты.
-    @Query("SELECT d FROM Driver d WHERE d.currentLatitude IS NOT NULL AND d.currentLongitude IS NOT NULL AND d.currentLatitude != 0.0")
-    fun findAllWithCoordinates(): List<Driver>
 
-    fun findByUserPhone(phone: String): Optional<Driver>
+    // Оставляем как есть (фильтр по времени и null)
+    @Query("""
+        SELECT d FROM Driver d 
+        WHERE d.currentLatitude IS NOT NULL 
+        AND d.currentLatitude != 0.0 
+        AND d.lastUpdate > :threshold
+    """)
+    fun findAllActiveOnMap(threshold: java.time.LocalDateTime): List<Driver>
 
-    // 2. ПРЯМОЕ ОБНОВЛЕНИЕ (ВЕРНУЛИ ЭТОТ МЕТОД):
-    // Пишет координаты в базу моментально, минуя кэш Hibernate.
     @Modifying
     @Transactional
-    @Query("UPDATE Driver d SET d.currentLatitude = :lat, d.currentLongitude = :lng WHERE d.id = :id")
-    fun updateCoordinates(id: Long, lat: Double, lng: Double)
+    @Query("UPDATE Driver d SET d.currentLatitude = :lat, d.currentLongitude = :lng, d.lastUpdate = :now WHERE d.id = :id")
+    fun updateCoordinatesAndTimestamp(id: Long, lat: Double, lng: Double, now: java.time.LocalDateTime)
+
+    // --- НОВЫЙ МЕТОД ---
+    // Устанавливает null, чтобы водитель МГНОВЕННО исчез с карты
+    @Modifying
+    @Transactional
+    @Query("UPDATE Driver d SET d.currentLatitude = null, d.currentLongitude = null WHERE d.id = :id")
+    fun clearCoordinates(id: Long)
+
+    fun findByUserPhone(phone: String): Optional<Driver>
 }

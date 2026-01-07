@@ -62,6 +62,22 @@ class DriverOrderController(
         return ResponseEntity.ok(order)
     }
 
+    @GetMapping("/history")
+    fun getOrderHistory(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
+        val driver = getDriverFromPrincipal(principal)
+        return ResponseEntity.ok(orderService.findHistoryByDriver(driver))
+    }
+
+    @GetMapping("/active")
+    fun getActiveOrder(principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        // Шукаємо замовлення зі статусами ACCEPTED, DRIVER_ARRIVED або IN_PROGRESS
+        val activeOrder = orderService.findActiveOrderByDriver(driver) 
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Активних замовлень немає")
+        
+        return ResponseEntity.ok(activeOrder)
+    }
+
     // Отримати доступні замовлення
     @GetMapping("/available")
     fun getAvailableOrders(): ResponseEntity<List<TaxiOrderDto>> {
