@@ -1,19 +1,21 @@
 package com.taxiapp.server.service
 
 import com.taxiapp.server.dto.order.TaxiOrderDto
-import com.taxiapp.server.model.enums.OrderStatus // <-- ИМПОРТ
-import com.taxiapp.server.repository.DriverRepository // <-- ИМПОРТ
-import com.taxiapp.server.repository.TaxiOrderRepository // <-- ИМПОРТ
+import com.taxiapp.server.model.enums.OrderStatus
+import com.taxiapp.server.repository.DriverRepository
+import com.taxiapp.server.repository.TaxiOrderRepository
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
+import org.springframework.context.annotation.Lazy
 
 @Service
 class OrderAdminService(
     private val orderRepository: TaxiOrderRepository,
-    private val driverRepository: DriverRepository
+    private val driverRepository: DriverRepository,
+    @Lazy private val orderService: OrderService // Добавили @Lazy, чтобы избежать круговой зависимости
 ) {
 
     @Transactional(readOnly = true)
@@ -44,6 +46,10 @@ class OrderAdminService(
         order.completedAt = LocalDateTime.now() 
         
         val updatedOrder = orderRepository.save(order)
+
+        // Оповещаем водителей через WebSocket
+        orderService.broadcastOrderChange(updatedOrder, "REMOVE")
+
         return TaxiOrderDto(updatedOrder)
     }
 
@@ -73,6 +79,10 @@ class OrderAdminService(
         order.status = OrderStatus.ACCEPTED 
 
         val updatedOrder = orderRepository.save(order)
+        
+        // Удаляем из общего эфира, так как водитель назначен
+        orderService.broadcastOrderChange(updatedOrder, "REMOVE")
+
         return TaxiOrderDto(updatedOrder)
     }
 }

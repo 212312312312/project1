@@ -15,6 +15,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
+import java.security.Principal // Додано про всяк випадок, хоча ми використаємо UserDetails
 
 @RestController
 @RequestMapping("/api/v1/driver")
@@ -25,37 +26,68 @@ class DriverAppController(
     private val jwtUtils: JwtUtils
 ) {
 
+    /**
+     * Оновлення статусу (ОНЛАЙН/ОФЛАЙН)
+     */
     @PatchMapping("/status")
     fun updateStatus(
         @AuthenticationPrincipal userDetails: UserDetails,
         @Valid @RequestBody request: UpdateDriverStatusRequest
     ): ResponseEntity<DriverDto> {
 
-        val driver = driverRepository.findByUserPhone(userDetails.username)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водитель не найден") }
+        // Отримуємо ім'я (логін або телефон) з токена
+        val username = userDetails.username
 
+        // Шукаємо водія (спочатку за логіном, потім за телефоном)
+        val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений")
+
+        // Перевірка на блокування
         if (!driver.isAccountNonLocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблокований")
         }
 
-        // Теперь этот метод только меняет флаг isOnline, не затирая координаты
+        // Оновлюємо тільки статус, зберігаючи координати в базі
         val driverDto = driverService.updateDriverStatus(driver, request)
         return ResponseEntity.ok(driverDto)
     }
 
+    /**
+     * Оновлення поточної геолокації водія
+     */
     @PostMapping("/location")
     fun updateLocation(
         @RequestBody request: UpdateLocationRequest,
         servletRequest: HttpServletRequest
     ): ResponseEntity<Void> {
-        val token = servletRequest.getHeader("Authorization").substring(7)
-        val driverId = jwtUtils.extractUserId(token)
-        
-        driverLocationService.updateLocation(driverId, request)
+        val authHeader = servletRequest.getHeader("Authorization")
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            val token = authHeader.substring(7)
+            val driverId = jwtUtils.extractUserId(token)
+            
+            driverLocationService.updateLocation(driverId, request)
+        }
         return ResponseEntity.ok().build()
     }
 
-    // --- НОВЫЙ МЕТОД ДЛЯ СВАЙПА (УДАЛЕНИЕ С КАРТЫ) ---
+    /**
+     * Отримання профілю водія (Виправлено)
+     */
+    @GetMapping("/me")
+    fun getDriverProfile(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverDto> {
+        val username = userDetails.username
+        
+        // Використовуємо той самий надійний пошук, що і в updateStatus
+        // (тому що username може бути як телефоном, так і логіном)
+        val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено")
+
+        return ResponseEntity.ok(DriverDto(driver))
+    }
+
+    /**
+     * Видалення водія з карти (свайп додатку або вихід)
+     */
     @DeleteMapping("/location")
     fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
         val authHeader = servletRequest.getHeader("Authorization")
@@ -63,7 +95,7 @@ class DriverAppController(
             val token = authHeader.substring(7)
             val driverId = jwtUtils.extractUserId(token)
             
-            // Вызываем метод очистки координат в сервисе
+            // Очищаємо координати в базі, щоб водій зник з карти диспетчера
             driverLocationService.clearLocation(driverId)
         }
         return ResponseEntity.ok().build()

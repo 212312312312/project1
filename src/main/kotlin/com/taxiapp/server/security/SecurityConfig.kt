@@ -51,6 +51,10 @@ class SecurityConfig(
                     // 1. Публічні ендпоінти
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll() // Дозволяємо CORS pre-flight запити
                     .requestMatchers(*publicEndpoints).permitAll()
+                    
+                    // !!! ВАЖЛИВО: ДОЗВОЛЯЄМО WEBSOCKET ПІДКЛЮЧЕННЯ БЕЗ ТОКЕНА !!!
+                    .requestMatchers("/ws-taxi/**").permitAll()
+                    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
                     // 2. СЕРВІСИ
                     .requestMatchers(HttpMethod.GET, "/api/v1/services/**", "/api/services/**").permitAll()
