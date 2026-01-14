@@ -14,8 +14,11 @@ class Sector(
     @Column(nullable = false)
     var name: String,
 
-    // Список точек, образующих границы сектора
-    // cascade = ALL значит, что при удалении сектора удалятся и его точки
+    // --- НОВОЕ ПОЛЕ ---
+    @Column(nullable = false)
+    var isCity: Boolean = true, // По дефолту считаем сектор городским. Если false - это "За город" (+3 балла)
+    // ------------------
+
     @OneToMany(mappedBy = "sector", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
     var points: MutableList<SectorPoint> = mutableListOf(),
 

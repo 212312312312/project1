@@ -4,23 +4,22 @@ import com.taxiapp.server.dto.driver.HeatmapZoneDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.UserRepository
-import com.taxiapp.server.repository.DriverRepository // ДОДАНО
+import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.OrderService
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
-import org.springframework.security.core.annotation.AuthenticationPrincipal // ДОДАНО
-import org.springframework.security.core.userdetails.UserDetails // ДОДАНО
+import org.springframework.security.core.annotation.AuthenticationPrincipal
+import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
-import com.taxiapp.server.model.enums.OrderStatus
 
 @RestController
 @RequestMapping("/api/v1/driver/orders")
 class DriverOrderController(
     private val orderService: OrderService,
     private val userRepository: UserRepository,
-    private val driverRepository: DriverRepository // ДОДАНО В КОНСТРУКТОР
+    private val driverRepository: DriverRepository
 ) {
 
     @PostMapping("/{id}/accept")
@@ -51,6 +50,16 @@ class DriverOrderController(
         return ResponseEntity.ok(order)
     }
 
+    // --- НОВИЙ МЕТОД: СКАСУВАННЯ ВОДІЄМ (зі штрафом) ---
+    @PostMapping("/{id}/cancel")
+    fun cancelOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        // Викликаємо метод сервісу, який зніме 50 балів і змінить статус
+        val order = orderService.driverCancelOrder(driver, id)
+        return ResponseEntity.ok(order)
+    }
+    // ----------------------------------------------------
+
     @GetMapping("/history")
     fun getOrderHistory(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
         val driver = getDriverFromPrincipal(principal)
@@ -68,21 +77,16 @@ class DriverOrderController(
 
     @GetMapping("/heatmap")
     fun getHeatmapData(principal: Principal): ResponseEntity<List<HeatmapZoneDto>> {
-        // Перевірка, що це водій (можна додати, якщо треба)
         return ResponseEntity.ok(orderService.getDriverHeatmap())
     }
 
-    // Оновлений метод доступних замовлень
     @GetMapping("/available")
     fun getAvailable(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<TaxiOrderDto>> {
         val username = userDetails.username
         val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено")
 
-        // Отримуємо вже відфільтровані замовлення (вони вже в форматі DTO)
         val filteredOrders = orderService.getFilteredOrdersForDriver(driver)
-        
-        // Повертаємо список напряму, бо метод сервісу вже повернув List<TaxiOrderDto>
         return ResponseEntity.ok(filteredOrders)
     }
 

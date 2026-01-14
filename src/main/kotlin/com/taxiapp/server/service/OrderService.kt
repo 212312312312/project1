@@ -22,6 +22,7 @@ import java.time.LocalDateTime
 
 @Service
 class OrderService(
+    private val notificationService: NotificationService,
     private val orderRepository: TaxiOrderRepository, 
     private val tariffRepository: CarTariffRepository,
     private val promoService: PromoService,
@@ -30,7 +31,9 @@ class OrderService(
     private val taxiServiceRepository: TaxiServiceRepository,
     private val filterRepository: DriverFilterRepository,
     private val sectorRepository: SectorRepository,
-    private val messagingTemplate: SimpMessagingTemplate
+    private val messagingTemplate: SimpMessagingTemplate,
+    private val driverActivityService: DriverActivityService,
+    private val sectorService: SectorService // Переконайся, що клас створено
 ) {
 
     // --- СТВОРЕННЯ ЗАМОВЛЕННЯ ---
@@ -94,12 +97,18 @@ class OrderService(
         finalPrice -= discountAmount
         if (finalPrice < 0) finalPrice = 0.0
 
+        // --- НОВЕ: Визначаємо сектор призначення (для функції "Додому") ---
+        val destSector = if (request.destLat != null && request.destLng != null) {
+            sectorService.findSectorByCoordinates(request.destLat, request.destLng)
+        } else null
+        // ------------------------------------------------------------------
+
         // 4. Створення об'єкта замовлення
         val newOrder = TaxiOrder(
             client = client,
             fromAddress = request.fromAddress,
             toAddress = request.toAddress,
-            status = OrderStatus.REQUESTED,
+            status = OrderStatus.REQUESTED, 
             createdAt = LocalDateTime.now(),
             tariff = tariff,
             price = finalPrice,
@@ -118,7 +127,10 @@ class OrderService(
             tariffName = tariff.name,
             comment = request.comment,
             paymentMethod = request.paymentMethod ?: "CASH",
-            addedValue = request.addedValue ?: 0.0
+            addedValue = request.addedValue ?: 0.0,
+
+            // Зберігаємо сектор куди їдемо
+            destinationSector = destSector
         )
 
         // --- ПРИКРІПЛЕННЯ ПОСЛУГ ДО ЗАМОВЛЕННЯ ---
@@ -140,47 +152,73 @@ class OrderService(
             newOrder.stops.addAll(stopsList)
         }
 
+        // --- SMART DISPATCH: Шукаємо водія для Ланцюга або Додому ---
+        val bestDriver = driverRepository.findBestDriverForOrder(
+            newOrder.originLat!!,
+            newOrder.originLng!!,
+            destSector?.id
+        ).orElse(null)
+
+        if (bestDriver != null) {
+            newOrder.status = OrderStatus.OFFERING 
+            newOrder.offeredDriver = bestDriver
+            newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20) 
+            
+            // ВІДПРАВЛЯЄМО ПОВІДОМЛЕННЯ
+            notificationService.sendOrderOffer(bestDriver, newOrder)
+            
+            // TODO: Відправити PUSH повідомлення
+        } else {
+            // НЕ ЗНАЙШЛИ -> В загальний Ефір
+            newOrder.status = OrderStatus.REQUESTED
+        }
+
         val savedOrder = orderRepository.save(newOrder)
 
-        // МИТТЄВА РОЗСИЛКА ВОДІЯМ (ADD)
-        broadcastOrderChange(savedOrder, "ADD")
+        // Якщо статус REQUESTED -> розсилаємо всім ("Ефір")
+        if (savedOrder.status == OrderStatus.REQUESTED) {
+            broadcastOrderChange(savedOrder, "ADD")
+        }
 
         return TaxiOrderDto(savedOrder)
     }
 
     // --- ЛОГІКА REAL-TIME ПОВІДОМЛЕНЬ (WEBSOCKET) ---
-
-    /**
-     * Розсилає зміни замовлення водіям.
-     * action: "ADD" - нове замовлення (з фільтрацією)
-     * action: "REMOVE" - видалити з екрана (без фільтрації)
-     */
+    @Transactional
+    fun rejectOffer(driver: Driver, orderId: Long) {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+        
+        if (order.status == OrderStatus.OFFERING && order.offeredDriver?.id == driver.id) {
+            order.status = OrderStatus.REQUESTED
+            order.offeredDriver = null
+            order.offerExpiresAt = null
+            
+            val saved = orderRepository.save(order)
+            broadcastOrderChange(saved, "ADD") 
+        }
+    }
+    
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
         val orderDto = TaxiOrderDto(order)
-        
-        // Створюємо повідомлення (для ADD додаємо об'єкт, для REMOVE достатньо ID)
         val message = OrderSocketMessage(action, order.id!!, if (action == "ADD") orderDto else null)
 
-        // 1. РОЗСИЛКА В ДИСПЕТЧЕРСЬКУ (Адмін бачить усе)
-        // Ми додаємо цей рядок, щоб ActiveOrders.jsx отримував оновлення
         messagingTemplate.convertAndSend("/topic/admin/orders", message)
 
-        // 2. РОЗСИЛКА ВОДІЯМ (Тільки онлайн)
         val onlineDrivers = driverRepository.findAll().filter { it.isOnline }
 
         for (driver in onlineDrivers) {
-            // Якщо замовлення закривається/приймається (REMOVE) - шлемо всім, щоб прибрати з екрана
+            if (driver.activityScore <= 0) continue
+
             if (action == "REMOVE") {
                 val msgRemove = OrderSocketMessage(action, order.id!!, null)
                 messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgRemove)
                 continue
             }
 
-            // Якщо нове замовлення (ADD) - перевіряємо фільтри водія
             val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
                 .filter { it.isActive }
 
-            // Якщо фільтрів немає АБО замовлення підходить під фільтр -> відправляємо
             if (activeFilters.isEmpty() || activeFilters.any { matchesFilter(order, it, driver) }) {
                 val msgAdd = OrderSocketMessage(action, order.id!!, orderDto)
                 messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgAdd)
@@ -192,25 +230,18 @@ class OrderService(
         val activeOrders = orderRepository.findAllByStatus(OrderStatus.REQUESTED)
         if (activeOrders.isEmpty()) return emptyList()
 
-        // 1.25 км в градусах широты (приблизительно)
         val R = 0.0112 
-
-        // Используем простую "шахматную" сетку (offset grid), 
-        // чтобы центры кругов распределялись равномерно и плотно
         val VERT_STEP = 1.5 * R
         val HORIZ_BASE = Math.sqrt(3.0) * R
 
         val grouped = activeOrders.groupBy { order ->
             val lat = order.originLat!!
             val lng = order.originLng!!
-
-            // Определяем ячейку сетки
             val row = Math.round(lat / VERT_STEP).toInt()
             val rowCenterLat = row * VERT_STEP
             val lngStep = HORIZ_BASE / Math.cos(Math.toRadians(rowCenterLat))
             val offset = if (row % 2 != 0) lngStep / 2.0 else 0.0
             val col = Math.round((lng - offset) / lngStep).toInt()
-
             Pair(row, col)
         }
 
@@ -227,7 +258,6 @@ class OrderService(
                 else -> 1
             }
 
-            // Рассчитываем центр зоны
             val centerLat = row * VERT_STEP
             val lngStep = HORIZ_BASE / Math.cos(Math.toRadians(centerLat))
             val offset = if (row % 2 != 0) lngStep / 2.0 else 0.0
@@ -237,9 +267,12 @@ class OrderService(
         }
         return zones
     }
+
     // --- ГОЛОВНА ЛОГІКА ФІЛЬТРАЦІЇ ---
 
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
+        if (driver.activityScore <= 0) return emptyList()
+
         val allOrders = orderRepository.findAllByStatus(OrderStatus.REQUESTED)
         val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
             .filter { it.isActive }
@@ -273,7 +306,7 @@ class OrderService(
             }
         }
 
-        // 2. Блок КУДИ (Сектори призначення)
+        // 2. Блок КУДИ
         if (filter.toSectors.isNotEmpty()) {
             val endSectors = sectorRepository.findAllById(filter.toSectors)
             val isInEndSector = endSectors.any { sector ->
@@ -297,7 +330,6 @@ class OrderService(
                 if (pricePerKm < (filter.minPricePerKm ?: 0.0)) return false
             }
         } else {
-            // СКЛАДНИЙ ТАРИФ (Логіка "Км у мінімалці")
             val minPrice = filter.complexMinPrice ?: 0.0
             val kmInMin = filter.complexKmInMin ?: 0.0
             val priceCity = filter.complexPriceKmCity ?: 0.0
@@ -340,6 +372,7 @@ class OrderService(
         return orderRepository.findAllByClientId(client.id!!).map { TaxiOrderDto(it) }
     }
 
+    // Це метод для КЛІЄНТА (або адміна)
     @Transactional
     fun cancelOrder(user: User, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
@@ -349,27 +382,72 @@ class OrderService(
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
         
-        // Повідомляємо водіїв про видалення
         broadcastOrderChange(saved, "REMOVE")
-        
+        return TaxiOrderDto(saved)
+    }
+
+    // --- МЕТОД ДЛЯ ВОДІЯ (ЗІ ШТРАФОМ) ---
+    @Transactional
+    fun driverCancelOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        if (order.status == OrderStatus.COMPLETED || order.status == OrderStatus.CANCELLED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення вже закрите")
+        }
+
+        // Штраф за скасування
+        driverActivityService.processOrderCancellation(driver, orderId)
+
+        order.status = OrderStatus.CANCELLED
+        val saved = orderRepository.save(order)
+
+        broadcastOrderChange(saved, "REMOVE")
         return TaxiOrderDto(saved)
     }
     
     @Transactional
     fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+        if (driver.activityScore <= 0) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність.")
+
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
-        if (order.status != OrderStatus.REQUESTED) throw ResponseStatusException(HttpStatus.CONFLICT, "Замовлення вже не активне")
+        
+        // --- ЛОГІКА ПЕРЕВІРКИ СТАТУСУ ---
+        if (order.status == OrderStatus.OFFERING) {
+            if (order.offeredDriver?.id != driver.id) {
+                throw ResponseStatusException(HttpStatus.CONFLICT, "Це замовлення пропонується іншому водію")
+            }
+            if (order.offerExpiresAt != null && LocalDateTime.now().isAfter(order.offerExpiresAt)) {
+                 order.status = OrderStatus.REQUESTED
+                 order.offeredDriver = null
+                 orderRepository.save(order)
+                 broadcastOrderChange(order, "ADD")
+                 throw ResponseStatusException(HttpStatus.CONFLICT, "Час пропозиції вичерпано")
+            }
+        } else if (order.status != OrderStatus.REQUESTED) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "Замовлення вже зайняте")
+        }
         
         order.driver = driver
         order.status = OrderStatus.ACCEPTED
+        order.offeredDriver = null
+        
+        // --- ЛОГІКА "ДОДОМУ" ---
+        if (driver.searchMode == com.taxiapp.server.model.enums.DriverSearchMode.HOME && order.destinationSector != null) {
+             val isHomeOrder = driver.homeSectors.any { it.id == order.destinationSector!!.id }
+             if (isHomeOrder && driver.homeRidesLeft > 0) {
+                 driver.homeRidesLeft -= 1
+                 driverRepository.save(driver)
+             }
+        }
+
         val saved = orderRepository.save(order)
-        
-        // Видаляємо з ефіру в інших водіїв
         broadcastOrderChange(saved, "REMOVE")
-        
         return TaxiOrderDto(saved)
     }
 
+    // --- ПОВЕРНУТІ МЕТОДИ ---
     @Transactional
     fun driverArrived(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId)
@@ -405,6 +483,7 @@ class OrderService(
         order.completedAt = LocalDateTime.now()
 
         driver.completedRides += 1
+        driverActivityService.processOrderCompletion(driver, order)
         driverRepository.save(driver)
         
         if (order.appliedDiscount > 0.0) {
@@ -421,7 +500,14 @@ class OrderService(
     }
 
     fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
-        val activeStatuses = listOf(OrderStatus.REQUESTED, OrderStatus.ACCEPTED, OrderStatus.DRIVER_ARRIVED, OrderStatus.IN_PROGRESS)
+        // ДОДАНО: OrderStatus.OFFERING, щоб диспетчер бачив, що замовлення комусь пропонується
+        val activeStatuses = listOf(
+            OrderStatus.REQUESTED, 
+            OrderStatus.OFFERING, 
+            OrderStatus.ACCEPTED, 
+            OrderStatus.DRIVER_ARRIVED, 
+            OrderStatus.IN_PROGRESS
+        )
         return orderRepository.findAllByStatusIn(activeStatuses)
             .map { TaxiOrderDto(it) }
             .sortedByDescending { it.id }

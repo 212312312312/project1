@@ -1,12 +1,13 @@
 package com.taxiapp.server.model.order
 
-import com.taxiapp.server.model.enums.OrderStatus // <--- ВИПРАВЛЕНО ІМПОРТ (прибрав .tariff)
+import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
+import com.taxiapp.server.model.sector.Sector // Додано
+import com.taxiapp.server.model.services.TaxiServiceEntity
 import jakarta.persistence.*
 import org.hibernate.annotations.CreationTimestamp
 import java.time.LocalDateTime
-import com.taxiapp.server.model.services.TaxiServiceEntity
 
 @Entity
 @Table(name = "taxi_orders")
@@ -19,9 +20,24 @@ class TaxiOrder(
     @JoinColumn(name = "client_id", nullable = false)
     var client: Client,
 
+    // Водій, який взяв замовлення
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "driver_id")
     var driver: Driver? = null,
+
+    // --- НОВЕ: Водій, якому ПРОПОНУЄТЬСЯ замовлення (Smart Dispatch) ---
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "offered_driver_id")
+    var offeredDriver: Driver? = null,
+
+    var offerExpiresAt: LocalDateTime? = null,
+    // ------------------------------------------------------------------
+
+    // --- НОВЕ: Сектор призначення (для фільтра Додому) ---
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "destination_sector_id")
+    var destinationSector: Sector? = null,
+    // ----------------------------------------------------
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -102,12 +118,10 @@ class TaxiOrder(
     @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
     var stops: MutableList<OrderStop> = mutableListOf()
     
-    // ВИПРАВЛЕНИЙ КОНСТРУКТОР-ЗАГЛУШКА ДЛЯ HIBERNATE
     protected constructor() : this(
         client = Client(), 
         fromAddress = "",
         toAddress = "",
-        // Тут ми передаємо фіктивні дані, бо Hibernate потім перезапише це поле даними з БД
         tariff = CarTariff(name = "Stub", basePrice = 0.0, pricePerKm = 0.0) 
     )
-}   
+}

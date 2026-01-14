@@ -23,7 +23,7 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.getAllDrivers())
     }
 
-    // CREATE (Оновлено: приймаємо всі фото документів та авто)
+    // CREATE
     @PostMapping(consumes = ["multipart/form-data"])
     fun createDriver(
         @RequestPart("request") requestJson: String,
@@ -47,7 +47,6 @@ class DriverAdminController(
         val mapper = jacksonObjectMapper()
         val request = mapper.readValue(requestJson, RegisterDriverRequest::class.java)
         
-        // Збираємо всі фото машини в Map для зручності передачі в сервіс
         val carFiles = collectCarFiles(
             carPhoto, techPassportFront, techPassportBack, insurancePhoto,
             photoFront, photoBack, photoLeft, photoRight, photoSeatsFront, photoSeatsBack
@@ -57,7 +56,7 @@ class DriverAdminController(
         return ResponseEntity.status(HttpStatus.CREATED).body(response)
     }
     
-    // UPDATE (Оновлено)
+    // UPDATE
     @PutMapping("/{id}", consumes = ["multipart/form-data"])
     fun updateDriver(
         @PathVariable id: Long, 
@@ -87,7 +86,6 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.updateDriver(id, request, file, carFiles))
     }
 
-    // Допоміжний метод для збору файлів
     private fun collectCarFiles(
         carPhoto: MultipartFile?, techFront: MultipartFile?, techBack: MultipartFile?, ins: MultipartFile?,
         pFront: MultipartFile?, pBack: MultipartFile?, pLeft: MultipartFile?, pRight: MultipartFile?,
@@ -126,4 +124,19 @@ class DriverAdminController(
     fun unblockDriver(@PathVariable id: Long): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.unblockDriver(id))
     }
+
+    // --- АКТИВНІСТЬ ---
+    @PostMapping("/{id}/activity")
+    fun updateActivity(
+        @PathVariable id: Long, 
+        @RequestBody request: ChangeActivityRequest
+    ): ResponseEntity<DriverDto> {
+        return ResponseEntity.ok(driverAdminService.updateDriverActivity(id, request.points, request.reason))
+    }
 }
+
+// DTO для запиту зміни активності
+data class ChangeActivityRequest(
+    val points: Int,
+    val reason: String
+)

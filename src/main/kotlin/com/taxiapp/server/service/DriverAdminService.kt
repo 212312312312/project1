@@ -28,7 +28,9 @@ class DriverAdminService(
     private val tariffRepository: CarTariffRepository,
     private val userRepository: UserRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val fileStorageService: FileStorageService
+    private val fileStorageService: FileStorageService,
+    // Додали DriverActivityService для роботи з балами
+    private val driverActivityService: DriverActivityService 
 ) {
 
     @Transactional(readOnly = true)
@@ -42,19 +44,17 @@ class DriverAdminService(
     fun createDriver(
         request: RegisterDriverRequest, 
         file: MultipartFile?, 
-        carFiles: Map<String, MultipartFile> // ОНОВЛЕНО: приймаємо карту файлів
+        carFiles: Map<String, MultipartFile>
     ): MessageResponse {
         
         if (userRepository.existsByUserPhone(request.phoneNumber)) {
              throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Цей номер телефону вже зайнятий")
         }
 
-        // 1. Зберігаємо аватарку водія
         val filename: String? = file?.let { fileStorageService.store(it) }
 
         val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
         
-        // 2. Створюємо об'єкт машини
         val car = Car(
             make = request.make,
             model = request.model,
@@ -65,7 +65,6 @@ class DriverAdminService(
             carType = request.carType
         )
         
-        // 3. Зберігаємо всі фото машини та документів
         saveCarPhotos(car, carFiles)
 
         val driver = Driver().apply {
@@ -83,6 +82,9 @@ class DriverAdminService(
             this.car = car
             this.allowedTariffs = tariffs
             this.photoUrl = filename
+            
+            // За замовчуванням
+            this.activityScore = 1000
         }
 
         driverRepository.save(driver)
@@ -94,18 +96,16 @@ class DriverAdminService(
         driverId: Long, 
         request: UpdateDriverRequest, 
         file: MultipartFile?, 
-        carFiles: Map<String, MultipartFile> // ОНОВЛЕНО
+        carFiles: Map<String, MultipartFile>
     ): DriverDto {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
 
-        // Оновлення фото водія
         if (file != null && !file.isEmpty) {
             fileStorageService.delete(driver.photoUrl)
             driver.photoUrl = fileStorageService.store(file)
         }
         
-        // Оновлення фото авто та документів
         if (driver.car != null) {
             saveCarPhotos(driver.car!!, carFiles)
         }
@@ -134,18 +134,13 @@ class DriverAdminService(
         return DriverDto(updatedDriver)
     }
 
-    /**
-     * Допоміжний метод для збереження всіх фото машини
-     */
     private fun saveCarPhotos(car: Car, files: Map<String, MultipartFile>) {
-        // Основне фото (carPhoto або carFile - перевіряємо обидва варіанти для сумісності)
         val mainPhoto = files["carPhoto"] ?: files["carFile"]
         mainPhoto?.let { if (!it.isEmpty) { 
             fileStorageService.delete(car.photoUrl)
             car.photoUrl = fileStorageService.store(it) 
         }}
 
-        // Техпаспорт
         files["techPassportFront"]?.let { if (!it.isEmpty) {
             fileStorageService.delete(car.techPassportFront)
             car.techPassportFront = fileStorageService.store(it)
@@ -155,13 +150,11 @@ class DriverAdminService(
             car.techPassportBack = fileStorageService.store(it)
         }}
         
-        // Страховка
         files["insurancePhoto"]?.let { if (!it.isEmpty) {
             fileStorageService.delete(car.insurancePhoto)
             car.insurancePhoto = fileStorageService.store(it)
         }}
 
-        // Фото сторін
         files["photoFront"]?.let { if (!it.isEmpty) { 
             fileStorageService.delete(car.photoFront)
             car.photoFront = fileStorageService.store(it) 
@@ -193,7 +186,6 @@ class DriverAdminService(
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
 
-        // Видаляємо всі файли з диска
         fileStorageService.delete(driver.photoUrl)
         
         driver.car?.let { car ->
@@ -254,5 +246,19 @@ class DriverAdminService(
         driver.tempBlockExpiresAt = null
         val updatedDriver = driverRepository.save(driver)
         return DriverDto(updatedDriver)
+    }
+
+    // --- НОВИЙ МЕТОД ЗМІНИ АКТИВНОСТІ ---
+    @Transactional
+    fun updateDriverActivity(driverId: Long, points: Int, reason: String): DriverDto {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
+        
+        // Викликаємо метод з DriverActivityService 
+        // (Переконайся, що метод updateScore в DriverActivityService є public/відкритим!)
+        // Якщо він private, зміни його на public або додай метод manualUpdate в DriverActivityService.
+        driverActivityService.updateScore(driver, points, reason)
+
+        return DriverDto(driver)
     }
 }

@@ -14,7 +14,7 @@ import java.time.LocalDateTime
 
 @Service
 class NewsService(
-    private val newsRepository: NewsRepository, // <--- ТУТ БЫЛА ПРОПУЩЕНА ЗАПЯТАЯ
+    private val newsRepository: NewsRepository,
     private val userRepository: UserRepository,
     private val notificationService: NotificationService
 ) {
@@ -32,7 +32,10 @@ class NewsService(
 
         if (tokens.isNotEmpty()) {
             Thread {
-                notificationService.sendMulticast(tokens, req.title, req.content)
+                // ВИПРАВЛЕННЯ: Замість sendMulticast перебираємо токени і відправляємо по одному
+                tokens.forEach { token ->
+                    notificationService.sendNotificationToToken(token, req.title, req.content)
+                }
             }.start()
         }
         // ------------------------------

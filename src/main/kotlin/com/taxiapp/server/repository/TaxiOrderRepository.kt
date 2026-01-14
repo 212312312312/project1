@@ -2,11 +2,12 @@ package com.taxiapp.server.repository
 
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
-import com.taxiapp.server.model.user.Client // <-- ДОБАВЛЕН ИМПОРТ
+import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
+import java.time.LocalDateTime // <-- ДОДАНО ЦЕЙ ІМПОРТ
 
 @Repository
 interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
@@ -41,6 +42,8 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByDriverId(driverId: Long): List<TaxiOrder>
 
-    // Теперь Client распознается благодаря импорту
     fun findAllByClientOrderByCreatedAtDesc(client: Client): List<TaxiOrder>
+
+    // Тепер LocalDateTime розпізнається коректно
+    fun findAllByStatusAndOfferExpiresAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
 }

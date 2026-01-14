@@ -6,6 +6,7 @@ import com.taxiapp.server.dto.sector.SectorDto
 import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.sector.SectorPoint
 import com.taxiapp.server.repository.SectorRepository
+import com.taxiapp.server.utils.GeometryUtils // <-- Переконайтеся, що цей імпорт є
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -19,15 +20,27 @@ class SectorService(private val sectorRepository: SectorRepository) {
         return sectorRepository.findAll().map { mapToDto(it) }
     }
 
+    // --- НОВИЙ МЕТОД: Пошук сектора за координатами ---
+    @Transactional(readOnly = true)
+    fun findSectorByCoordinates(lat: Double, lng: Double): Sector? {
+        val allSectors = sectorRepository.findAll()
+        
+        // Перебираємо всі сектори і шукаємо той, в який входить точка
+        return allSectors.find { sector ->
+            // Використовуємо твій GeometryUtils, який вже є в проекті
+            GeometryUtils.isPointInPolygon(lat, lng, sector.points)
+        }
+    }
+    // --------------------------------------------------
+
     @Transactional
     fun createSector(request: CreateSectorRequest): SectorDto {
         if (request.points.size < 3) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Сектор должен иметь минимум 3 точки")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Сектор повинен мати мінімум 3 точки")
         }
 
         val sector = Sector(name = request.name)
         
-        // Преобразуем входящие координаты в сущности SectorPoint
         val points = request.points.mapIndexed { index, p ->
             SectorPoint(
                 lat = p.lat,
@@ -45,7 +58,7 @@ class SectorService(private val sectorRepository: SectorRepository) {
     @Transactional
     fun deleteSector(id: Long) {
         if (!sectorRepository.existsById(id)) {
-            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Сектор не найден")
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Сектор не знайдено")
         }
         sectorRepository.deleteById(id)
     }

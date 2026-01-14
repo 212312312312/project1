@@ -8,12 +8,12 @@ import com.taxiapp.server.dto.auth.SmsRequestDto
 import com.taxiapp.server.dto.auth.SmsVerifyDto
 import com.taxiapp.server.service.AuthService
 import jakarta.validation.Valid
-import org.springframework.http.ResponseEntity // <-- Додано
+import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import java.security.Principal // <-- Додано
+import java.security.Principal
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -46,15 +46,18 @@ class AuthController(
     }
 
     // --- НОВИЙ МЕТОД: Оновлення FCM Токена ---
-    // Цей метод вимагає, щоб клієнт відправив Header "Authorization: Bearer <token>"
+    // Використовується і водієм, і клієнтом
     @PostMapping("/fcm-token")
     fun updateFcmToken(
         principal: Principal, 
         @RequestBody body: Map<String, String>
     ): ResponseEntity<Void> {
-        val token = body["token"] ?: return ResponseEntity.badRequest().build()
+        val token = body["token"]
+        if (token.isNullOrEmpty()) {
+            return ResponseEntity.badRequest().build()
+        }
         
-        // principal.name містить телефон або логін користувача з токена
+        // Оновлюємо токен через сервіс, використовуючи логін/телефон з токена
         authService.updateFcmToken(principal.name, token)
         
         return ResponseEntity.ok().build()
