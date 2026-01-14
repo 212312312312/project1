@@ -16,25 +16,24 @@ class UserDetailsServiceImpl(
     override fun loadUserByUsername(usernameOrPhone: String): UserDetails {
         println(">>> USER DETAILS SERVICE: Шукаю користувача: $usernameOrPhone")
 
-        // 1. Спроба знайти за Логіном
         var user = userRepository.findByUserLogin(usernameOrPhone).orElse(null)
 
-        // 2. Якщо не знайдено - спроба знайти за Телефоном
         if (user == null) {
             println(">>> USER DETAILS SERVICE: За логіном не знайдено, шукаю за телефоном...")
             user = userRepository.findByUserPhone(usernameOrPhone)
                 .orElseThrow { UsernameNotFoundException("User not found with: $usernameOrPhone") }
         }
 
-        println(">>> USER DETAILS SERVICE: Знайдено ID: ${user.id}, Hash: ${user.passwordHash}")
-
-        // !!! ВИПРАВЛЕНО ТУТ !!!
-        // Додаємо префікс "ROLE_", щоб працювала анотація @PreAuthorize("hasRole('DRIVER')")
-        val roleName = "ROLE_" + user.role.name // Буде "ROLE_DRIVER"
+        // --- ВАЖНЫЙ БЛОК: Формирование роли ---
+        val roleName = "ROLE_" + user.role.name
+        
+        // ЛОГ ДЛЯ ДИАГНОСТИКИ 403 ОШИБКИ
+        println(">>> AUTH DEBUG: User ID: ${user.id}, Role in DB: ${user.role}, ASSIGNING AUTHORITY: $roleName")
+        
         val authorities = listOf(SimpleGrantedAuthority(roleName))
 
         return User(
-            user.userLogin ?: user.userPhone,
+            user.userLogin ?: user.userPhone ?: "unknown",
             user.passwordHash ?: "",
             authorities
         )

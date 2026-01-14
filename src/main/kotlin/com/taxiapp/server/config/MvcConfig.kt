@@ -1,16 +1,13 @@
 package com.taxiapp.server.config
 
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Configuration
 import org.springframework.web.servlet.config.annotation.CorsRegistry
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
+import java.nio.file.Paths
 
 @Configuration
-class MvcConfig(
-    // 1. Вернули чтение пути из настроек для старых картинок
-    @Value("\${file.upload-dir}") private val uploadDir: String
-) : WebMvcConfigurer {
+class MvcConfig : WebMvcConfigurer {
 
     /**
      * Настройка CORS.
@@ -25,20 +22,23 @@ class MvcConfig(
 
     /**
      * Настраиваем раздачу файлов.
-     * Теперь у нас ДВА пути.
      */
     override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
-        
-        // 1. СТАРАЯ ЛОГИКА (Для водителей и тарифов)
-        // Ссылка: http://localhost:8080/images/pic.png
-        // Путь на диске: Тот, что в application.properties (file.upload-dir)
-        registry.addResourceHandler("/images/**")
-            .addResourceLocations("file:$uploadDir/")
+        // Получаем абсолютный путь к папке uploads в корне проекта
+        // System.getProperty("user.dir") возвращает путь к корню проекта
+        val uploadPath = Paths.get(System.getProperty("user.dir"), "uploads")
+        val uploadUri = uploadPath.toUri().toString()
 
-        // 2. НОВАЯ ЛОГИКА (Для настроек)
+        // 1. Раздаем картинки водителей и авто
+        // Ссылка: http://localhost:8080/images/car_123.jpg
+        registry.addResourceHandler("/images/**")
+            .addResourceLocations(uploadUri)
+
+        // 2. Раздаем настройки (если нужно отдельно)
         // Ссылка: http://localhost:8080/uploads/settings/pic.png
-        // Путь на диске: папка uploads в корне проекта
+        // (Опционально, если структура папок сложнее, можно оставить как есть,
+        // но лучше просто использовать один handler)
         registry.addResourceHandler("/uploads/**")
-            .addResourceLocations("file:uploads/")
+            .addResourceLocations(uploadUri)
     }
 }

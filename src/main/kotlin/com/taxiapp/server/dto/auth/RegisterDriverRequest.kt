@@ -15,6 +15,13 @@ data class RegisterDriverRequest(
     @field:NotBlank(message = "ПІБ не може бути порожнім")
     val fullName: String,
 
+    // --- НОВІ ПОЛЯ ---
+    val email: String? = null,
+    val rnokpp: String? = null,
+    val driverLicense: String? = null,
+    
+    // -----------------
+
     // Car data
     @field:NotBlank(message = "Марка авто не може бути порожньою")
     val make: String,
@@ -23,7 +30,7 @@ data class RegisterDriverRequest(
     val model: String,
 
     @field:NotBlank(message = "Колір авто не може бути порожнім")
-    val color: String, // <-- НОВОЕ ПОЛЕ
+    val color: String,
 
     @field:NotBlank(message = "Номер авто не може бути порожнім")
     val plateNumber: String,
@@ -33,6 +40,8 @@ data class RegisterDriverRequest(
 
     @field:Min(value = 1990, message = "Рік випуску повинен бути не раніше 1990")
     val year: Int,
+
+    val carType: String,
     
     val tariffIds: List<Long> = emptyList() 
 )

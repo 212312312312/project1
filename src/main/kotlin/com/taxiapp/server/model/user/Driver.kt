@@ -19,12 +19,16 @@ class Driver : User() {
     @Column(nullable = true)
     var photoUrl: String? = null
 
-    // --- НОВЫЕ ПОЛЯ ---
     @Column(nullable = false)
     var completedRides: Int = 0 // Счетчик поездок
 
-    // --- ВИДАЛЕНО createdAt ---
-    // Це поле успадковується від класу User, тому тут його писати НЕ ТРЕБА.
+    // --- НОВІ ПОЛЯ: ДОКУМЕНТИ ---
+    @Column(name = "rnokpp")
+    var rnokpp: String? = null
+
+    @Column(name = "driver_license")
+    var driverLicense: String? = null
+    // ----------------------------
     
     var tempBlockExpiresAt: LocalDateTime? = null
 

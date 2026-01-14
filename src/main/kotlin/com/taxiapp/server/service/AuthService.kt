@@ -168,6 +168,9 @@ class AuthService(
             userLogin = request.phoneNumber // Логін = Телефон
             userPhone = request.phoneNumber
             passwordHash = passwordEncoder.encode(request.password)
+            this.email = request.email
+            this.rnokpp = request.rnokpp
+            this.driverLicense = request.driverLicense
             role = Role.DRIVER
             isBlocked = false
             isOnline = false

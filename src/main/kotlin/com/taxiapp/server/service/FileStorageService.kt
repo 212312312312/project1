@@ -1,6 +1,5 @@
 package com.taxiapp.server.service
 
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.io.Resource
 import org.springframework.core.io.UrlResource
 import org.springframework.stereotype.Service
@@ -8,18 +7,22 @@ import org.springframework.web.multipart.MultipartFile
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 @Service
-class FileStorageService(
-    @Value("\${file.upload-dir}") private val uploadDir: String
-) {
-    private val rootLocation: Path = Paths.get(uploadDir)
+class FileStorageService {
+
+    // Жестко привязываем путь к папке uploads в корне проекта
+    private val rootLocation: Path = Paths.get(System.getProperty("user.dir"), "uploads")
 
     init {
-        // Создаем папку, если ее нет
-        if (Files.notExists(rootLocation)) {
-            Files.createDirectories(rootLocation)
+        try {
+            if (Files.notExists(rootLocation)) {
+                Files.createDirectories(rootLocation)
+            }
+        } catch (e: Exception) {
+            throw RuntimeException("Не удалось создать директорию для загрузки файлов!", e)
         }
     }
 
@@ -31,38 +34,53 @@ class FileStorageService(
             throw RuntimeException("Не удалось сохранить пустой файл.")
         }
         
-        // 1. Получаем расширение (напр. ".png")
-        val extension = file.originalFilename?.substringAfterLast('.', "") ?: ""
+        // 1. Получаем расширение (напр. "png")
+        // Исправил substringAfterLast на более безопасный вариант
+        val originalFilename = file.originalFilename ?: "unknown.jpg"
+        val extension = if (originalFilename.contains(".")) {
+            originalFilename.substringAfterLast('.')
+        } else {
+            "jpg"
+        }
+
         // 2. Генерируем уникальное имя
         val uniqueFilename = "${UUID.randomUUID()}.$extension"
         
-        // 3. Решаем путь (C:\dev\server-uploads\xxxxx.png)
+        // 3. Решаем путь
         val destinationFile = rootLocation.resolve(uniqueFilename)
             .normalize().toAbsolutePath()
 
-        // 4. Копируем байты
-        Files.copy(file.inputStream, destinationFile)
+        // 4. Копируем байты (с перезаписью, если вдруг UUID совпадет, что почти невозможно)
+        try {
+            Files.copy(file.inputStream, destinationFile, StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            throw RuntimeException("Ошибка сохранения файла: ${e.message}", e)
+        }
         
         // 5. Возвращаем только имя файла
         return uniqueFilename
     }
 
     /**
-     * Загружает файл как "Ресурс" для раздачи
+     * Загружает файл как "Ресурс" для раздачи (используется если нужно отдать файл через контроллер, а не напрямую)
      */
     fun loadAsResource(filename: String): Resource {
-        val file = rootLocation.resolve(filename)
-        val resource = UrlResource(file.toUri())
-        
-        if (resource.exists() || resource.isReadable) {
-            return resource
-        } else {
-            throw RuntimeException("Не удалось прочитать файл: $filename")
+        try {
+            val file = rootLocation.resolve(filename)
+            val resource = UrlResource(file.toUri())
+            
+            if (resource.exists() || resource.isReadable) {
+                return resource
+            } else {
+                throw RuntimeException("Не удалось прочитать файл: $filename")
+            }
+        } catch (e: Exception) {
+            throw RuntimeException("Не удалось прочитать файл: $filename", e)
         }
     }
     
     /**
-     * Удаляет старый файл (если он есть)
+     * Удаляет старый файл
      */
     fun delete(filename: String?) {
         if (filename.isNullOrBlank()) return
@@ -71,7 +89,6 @@ class FileStorageService(
             val file = rootLocation.resolve(filename)
             Files.deleteIfExists(file)
         } catch (e: Exception) {
-            // Логгируем, но не "роняем" приложение
             println("Не удалось удалить старый файл: $filename. Причина: ${e.message}")
         }
     }

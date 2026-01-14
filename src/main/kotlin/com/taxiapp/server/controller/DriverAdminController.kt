@@ -7,7 +7,6 @@ import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.TempBlockRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.service.DriverAdminService
-import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
@@ -24,47 +23,88 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.getAllDrivers())
     }
 
-    
-
-    // CREATE (с логами)
+    // CREATE (Оновлено: приймаємо всі фото документів та авто)
     @PostMapping(consumes = ["multipart/form-data"])
     fun createDriver(
         @RequestPart("request") requestJson: String,
-        @RequestPart("file", required = false) file: MultipartFile?
+        @RequestPart("file", required = false) file: MultipartFile?,       // Аватарка
+        @RequestPart("carPhoto", required = false) carPhoto: MultipartFile?, // Головне фото авто
+        
+        // Документи
+        @RequestPart("techPassportFront", required = false) techPassportFront: MultipartFile?,
+        @RequestPart("techPassportBack", required = false) techPassportBack: MultipartFile?,
+        @RequestPart("insurancePhoto", required = false) insurancePhoto: MultipartFile?,
+        
+        // Фото авто (сторони)
+        @RequestPart("photoFront", required = false) photoFront: MultipartFile?,
+        @RequestPart("photoBack", required = false) photoBack: MultipartFile?,
+        @RequestPart("photoLeft", required = false) photoLeft: MultipartFile?,
+        @RequestPart("photoRight", required = false) photoRight: MultipartFile?,
+        @RequestPart("photoSeatsFront", required = false) photoSeatsFront: MultipartFile?,
+        @RequestPart("photoSeatsBack", required = false) photoSeatsBack: MultipartFile?
     ): ResponseEntity<MessageResponse> {
         
-        println(">>> CONTROLLER: Create Driver Request Received")
-        println(">>> JSON: $requestJson")
-        if (file != null) {
-            println(">>> FILE: ${file.originalFilename}, Size: ${file.size} bytes")
-        } else {
-            println(">>> FILE IS NULL")
-        }
-
         val mapper = jacksonObjectMapper()
         val request = mapper.readValue(requestJson, RegisterDriverRequest::class.java)
         
-        val response = driverAdminService.createDriver(request, file)
+        // Збираємо всі фото машини в Map для зручності передачі в сервіс
+        val carFiles = collectCarFiles(
+            carPhoto, techPassportFront, techPassportBack, insurancePhoto,
+            photoFront, photoBack, photoLeft, photoRight, photoSeatsFront, photoSeatsBack
+        )
+
+        val response = driverAdminService.createDriver(request, file, carFiles)
         return ResponseEntity.status(HttpStatus.CREATED).body(response)
     }
     
-    // UPDATE (с логами)
+    // UPDATE (Оновлено)
     @PutMapping("/{id}", consumes = ["multipart/form-data"])
     fun updateDriver(
         @PathVariable id: Long, 
         @RequestPart("request") requestJson: String,
-        @RequestPart("file", required = false) file: MultipartFile?
+        @RequestPart("file", required = false) file: MultipartFile?,
+        
+        @RequestPart("carPhoto", required = false) carPhoto: MultipartFile?,
+        @RequestPart("techPassportFront", required = false) techPassportFront: MultipartFile?,
+        @RequestPart("techPassportBack", required = false) techPassportBack: MultipartFile?,
+        @RequestPart("insurancePhoto", required = false) insurancePhoto: MultipartFile?,
+        @RequestPart("photoFront", required = false) photoFront: MultipartFile?,
+        @RequestPart("photoBack", required = false) photoBack: MultipartFile?,
+        @RequestPart("photoLeft", required = false) photoLeft: MultipartFile?,
+        @RequestPart("photoRight", required = false) photoRight: MultipartFile?,
+        @RequestPart("photoSeatsFront", required = false) photoSeatsFront: MultipartFile?,
+        @RequestPart("photoSeatsBack", required = false) photoSeatsBack: MultipartFile?
     ): ResponseEntity<DriverDto> {
         
-        println(">>> CONTROLLER: Update Driver Request ($id)")
-        if (file != null) {
-            println(">>> FILE: ${file.originalFilename}")
-        }
-
         val mapper = jacksonObjectMapper()
         val request = mapper.readValue(requestJson, UpdateDriverRequest::class.java)
         
-        return ResponseEntity.ok(driverAdminService.updateDriver(id, request, file))
+        val carFiles = collectCarFiles(
+            carPhoto, techPassportFront, techPassportBack, insurancePhoto,
+            photoFront, photoBack, photoLeft, photoRight, photoSeatsFront, photoSeatsBack
+        )
+
+        return ResponseEntity.ok(driverAdminService.updateDriver(id, request, file, carFiles))
+    }
+
+    // Допоміжний метод для збору файлів
+    private fun collectCarFiles(
+        carPhoto: MultipartFile?, techFront: MultipartFile?, techBack: MultipartFile?, ins: MultipartFile?,
+        pFront: MultipartFile?, pBack: MultipartFile?, pLeft: MultipartFile?, pRight: MultipartFile?,
+        sFront: MultipartFile?, sBack: MultipartFile?
+    ): Map<String, MultipartFile> {
+        val map = mutableMapOf<String, MultipartFile>()
+        carPhoto?.let { map["carPhoto"] = it }
+        techFront?.let { map["techPassportFront"] = it }
+        techBack?.let { map["techPassportBack"] = it }
+        ins?.let { map["insurancePhoto"] = it }
+        pFront?.let { map["photoFront"] = it }
+        pBack?.let { map["photoBack"] = it }
+        pLeft?.let { map["photoLeft"] = it }
+        pRight?.let { map["photoRight"] = it }
+        sFront?.let { map["photoSeatsFront"] = it }
+        sBack?.let { map["photoSeatsBack"] = it }
+        return map
     }
 
     @DeleteMapping("/{id}")
