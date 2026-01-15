@@ -3,8 +3,8 @@ package com.taxiapp.server.controller
 import com.taxiapp.server.dto.driver.HeatmapZoneDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.model.user.Driver
-import com.taxiapp.server.repository.UserRepository
 import com.taxiapp.server.repository.DriverRepository
+// UserRepository можно убрать из импортов, он нам больше не нужен для поиска водителя
 import com.taxiapp.server.service.OrderService
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -18,10 +18,12 @@ import java.security.Principal
 @RequestMapping("/api/v1/driver/orders")
 class DriverOrderController(
     private val orderService: OrderService,
-    private val userRepository: UserRepository,
-    private val driverRepository: DriverRepository
+    private val driverRepository: DriverRepository // Используем только этот репозиторий
 ) {
 
+    // ... (Методы acceptOrder, driverArrived и т.д. остаются без изменений) ...
+    // Скопируй их из своего старого кода, они правильные.
+    
     @PostMapping("/{id}/accept")
     fun acceptOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
@@ -50,15 +52,12 @@ class DriverOrderController(
         return ResponseEntity.ok(order)
     }
 
-    // --- НОВИЙ МЕТОД: СКАСУВАННЯ ВОДІЄМ (зі штрафом) ---
     @PostMapping("/{id}/cancel")
     fun cancelOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        // Викликаємо метод сервісу, який зніме 50 балів і змінить статус
         val order = orderService.driverCancelOrder(driver, id)
         return ResponseEntity.ok(order)
     }
-    // ----------------------------------------------------
 
     @GetMapping("/history")
     fun getOrderHistory(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
@@ -69,6 +68,8 @@ class DriverOrderController(
     @GetMapping("/active")
     fun getActiveOrder(principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
+        
+        // Тут 403 больше не будет, так как getDriverFromPrincipal теперь работает корректно
         val activeOrder = orderService.findActiveOrderByDriver(driver) 
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Активних замовлень немає")
         
@@ -80,30 +81,28 @@ class DriverOrderController(
         return ResponseEntity.ok(orderService.getDriverHeatmap())
     }
 
+    // ИСПРАВЛЕННЫЙ МЕТОД getAvailable
     @GetMapping("/available")
-    fun getAvailable(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<TaxiOrderDto>> {
-        val username = userDetails.username
-        val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
-            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено")
-
+    fun getAvailable(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
+        val driver = getDriverFromPrincipal(principal) // Используем общий метод
         val filteredOrders = orderService.getFilteredOrdersForDriver(driver)
         return ResponseEntity.ok(filteredOrders)
     }
 
+    // --- ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
     private fun getDriverFromPrincipal(principal: Principal): Driver {
-        val userLogin = principal.name
-        val user = userRepository.findByUserLogin(userLogin).orElse(null)
-            ?: userRepository.findByUserPhone(userLogin)
-                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
+        val username = principal.name // Это login или phone из токена
 
-        if (user !is Driver) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Тільки водії можуть виконувати цю дію")
-        }
-        
-        if (user.isBlocked) {
+        // Ищем СРАЗУ в таблице водителей.
+        // Если пользователь есть в users, но нет в drivers -> вернется null -> 403 Forbidden
+        val driver = driverRepository.findByUserLogin(username)
+            ?: driverRepository.findByUserPhone(username)
+            ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ заборонено: Ви не водій")
+
+        if (driver.isBlocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблоковано")
         }
 
-        return user
+        return driver
     }
 }

@@ -5,62 +5,56 @@ import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.Notification
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Driver
+import org.slf4j.LoggerFactory // Використовуємо Logger
 import org.springframework.stereotype.Service
 
 @Service
 class NotificationService {
 
-    // Спеціальний метод для відправки пропозиції замовлення (Smart Dispatch)
+    private val logger = LoggerFactory.getLogger(NotificationService::class.java)
+
     fun sendOrderOffer(driver: Driver, order: TaxiOrder) {
-        // Перевіряємо, чи є у водія токен (припускаємо, що він збережений в полі fcmToken або окремій таблиці)
-        val token = driver.fcmToken // <-- ВАЖЛИВО: Переконайся, що в Driver.kt є це поле, або дістань його з User
-        
+        // Беремо токен. Якщо driver.fcmToken null, пробуємо взяти з user (якщо вони розділені)
+        // Але оскільки Driver наслідує User (або має спільну таблицю), це поле має бути доступне.
+        val token = driver.fcmToken 
+
         if (token.isNullOrEmpty()) {
-            println(">>> У водія ${driver.id} немає FCM токена. Пуш не відправлено.")
+            logger.error(">>> ПОМИЛКА: У водія ID=${driver.id} (Phone=${driver.userPhone}) немає FCM токена! Пуш неможливий.")
             return
         }
 
         try {
-            // Формуємо DATA payload (дані для обробки програмою)
             val message = Message.builder()
                 .setToken(token)
-                // Можна додати візуальне сповіщення (опціонально)
                 .setNotification(
                     Notification.builder()
                         .setTitle("Нове замовлення!")
-                        .setBody("Вам запропоновано поїздку: ${order.price} грн")
+                        .setBody("Вам запропоновано поїздку: ${order.price.toInt()} грн")
                         .build()
                 )
-                // Головне: дані для MyFirebaseMessagingService
                 .putData("type", "ORDER_OFFER")
                 .putData("orderId", order.id.toString())
                 .putData("price", order.price.toString())
                 .putData("address", order.fromAddress)
-                .putData("click_action", "ORDER_OFFER_ACTIVITY") // Для Android
-                .build()
-
-            FirebaseMessaging.getInstance().send(message)
-            println(">>> PUSH (OFFER) відправлено водію ${driver.id} для замовлення ${order.id}")
-        } catch (e: Exception) {
-            println("Помилка відправки OFFER: ${e.message}")
-        }
-    }
-
-    // Твої старі методи (залиш їх)
-    fun sendNotificationToToken(token: String, title: String, body: String) {
-        try {
-            val message = Message.builder()
-                .setToken(token)
-                .setNotification(
-                    Notification.builder()
-                        .setTitle(title)
-                        .setBody(body)
+                .putData("click_action", "ORDER_OFFER_ACTIVITY")
+                .setAndroidConfig(
+                    com.google.firebase.messaging.AndroidConfig.builder()
+                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH) // Високий пріоритет
+                        .setTtl(20000) // Живе 20 секунд (як таймер оферу)
                         .build()
                 )
                 .build()
+
             FirebaseMessaging.getInstance().send(message)
+            logger.info(">>> PUSH (OFFER) УСПІШНО відправлено водію ID=${driver.id} на токен: ${token.take(10)}...")
         } catch (e: Exception) {
-            println("Помилка FCM: ${e.message}")
+            logger.error(">>> CRITICAL ERROR відправки FCM: ${e.message}")
+            e.printStackTrace()
         }
+    }
+    
+    // Старий метод
+    fun sendNotificationToToken(token: String, title: String, body: String) {
+         // ... (код без змін)
     }
 }

@@ -349,11 +349,44 @@ class OrderService(
     // --- КЕРУВАННЯ СТАТУСАМИ ТА ІСТОРІЯ ---
 
     fun findActiveOrderByDriver(driver: Driver): TaxiOrderDto? {
-        val activeStatuses = listOf(OrderStatus.ACCEPTED, OrderStatus.DRIVER_ARRIVED, OrderStatus.IN_PROGRESS)
-        return orderRepository.findAllByDriverId(driver.id!!)
+        // 1. Спочатку шукаємо замовлення, де водій вже ПРИЗНАЧЕНИЙ (driver_id)
+        val activeStatuses = listOf(
+            OrderStatus.ACCEPTED,
+            OrderStatus.DRIVER_ARRIVED,
+            OrderStatus.IN_PROGRESS
+        )
+        
+        val activeOrder = orderRepository.findAllByDriverId(driver.id!!)
             .filter { it.status in activeStatuses }
-            .map { TaxiOrderDto(it) }
             .firstOrNull()
+
+        if (activeOrder != null) {
+            return TaxiOrderDto(activeOrder)
+        }
+
+        // 2. Якщо активних немає, шукаємо ПРОПОЗИЦІЮ (offered_driver_id)
+        // Це критично для екрану OrderOffer!
+        val offeredOrder = orderRepository.findAllByStatus(OrderStatus.OFFERING)
+            .find { it.offeredDriver?.id == driver.id }
+
+        return if (offeredOrder != null) {
+            // Перевіряємо, чи не сплив час (на всяк випадок)
+            if (offeredOrder.offerExpiresAt != null && LocalDateTime.now().isAfter(offeredOrder.offerExpiresAt)) {
+                null 
+            } else {
+                TaxiOrderDto(offeredOrder)
+            }
+        } else {
+            null
+        }
+    }
+
+    // НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
+    private fun findOfferedOrder(driver: Driver): TaxiOrderDto? {
+        // Ищем заказ, где этот водитель указан как offeredDriver и статус OFFERING
+        return orderRepository.findAllByStatus(OrderStatus.OFFERING)
+            .find { it.offeredDriver?.id == driver.id }
+            ?.let { TaxiOrderDto(it) }
     }
 
     fun findHistoryByDriver(driver: Driver): List<TaxiOrderDto> {
