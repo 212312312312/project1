@@ -7,13 +7,15 @@ import org.springframework.boot.CommandLineRunner
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 import org.springframework.context.annotation.Bean
+import org.springframework.scheduling.annotation.EnableScheduling // <--- ВАЖЛИВИЙ ІМПОРТ
 import org.springframework.security.crypto.password.PasswordEncoder
 
 @SpringBootApplication
+@EnableScheduling // <--- ЦЕ ВКЛЮЧАЄ ТАЙМЕР ДЛЯ СКИДАННЯ ЗАМОВЛЕНЬ
 class ServerApplication {
 
     @Bean
-    fun initDefaultAdmin( // Змінили назву
+    fun initDefaultAdmin(
         userRepository: UserRepository,
         passwordEncoder: PasswordEncoder
     ): CommandLineRunner {
@@ -26,7 +28,7 @@ class ServerApplication {
                     this.userLogin = adminUsername
                     this.fullName = "Головний Адміністратор"
                     this.passwordHash = passwordEncoder.encode("adminpass") 
-                    this.role = Role.ADMINISTRATOR // <-- ОНОВЛЕНО
+                    this.role = Role.ADMINISTRATOR
                     this.isBlocked = false
                 }
                 userRepository.save(admin)
