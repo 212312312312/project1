@@ -4,12 +4,9 @@ import com.taxiapp.server.dto.driver.HeatmapZoneDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.DriverRepository
-// UserRepository можно убрать из импортов, он нам больше не нужен для поиска водителя
 import com.taxiapp.server.service.OrderService
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
-import org.springframework.security.core.annotation.AuthenticationPrincipal
-import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
@@ -18,18 +15,24 @@ import java.security.Principal
 @RequestMapping("/api/v1/driver/orders")
 class DriverOrderController(
     private val orderService: OrderService,
-    private val driverRepository: DriverRepository // Используем только этот репозиторий
+    private val driverRepository: DriverRepository 
 ) {
 
-    // ... (Методы acceptOrder, driverArrived и т.д. остаются без изменений) ...
-    // Скопируй их из своего старого кода, они правильные.
-    
     @PostMapping("/{id}/accept")
     fun acceptOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val order = orderService.acceptOrder(driver, id)
         return ResponseEntity.ok(order)
     }
+
+    // --- ДОДАНО: Метод для відхилення (Пропустити) ---
+    @PostMapping("/{id}/reject")
+    fun rejectOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<Void> {
+        val driver = getDriverFromPrincipal(principal)
+        orderService.rejectOffer(driver, id)
+        return ResponseEntity.ok().build()
+    }
+    // -------------------------------------------------
 
     @PostMapping("/{id}/arrive")
     fun driverArrived(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
@@ -68,11 +71,8 @@ class DriverOrderController(
     @GetMapping("/active")
     fun getActiveOrder(principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        
-        // Тут 403 больше не будет, так как getDriverFromPrincipal теперь работает корректно
         val activeOrder = orderService.findActiveOrderByDriver(driver) 
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Активних замовлень немає")
-        
         return ResponseEntity.ok(activeOrder)
     }
 
@@ -81,20 +81,15 @@ class DriverOrderController(
         return ResponseEntity.ok(orderService.getDriverHeatmap())
     }
 
-    // ИСПРАВЛЕННЫЙ МЕТОД getAvailable
     @GetMapping("/available")
     fun getAvailable(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
-        val driver = getDriverFromPrincipal(principal) // Используем общий метод
+        val driver = getDriverFromPrincipal(principal)
         val filteredOrders = orderService.getFilteredOrdersForDriver(driver)
         return ResponseEntity.ok(filteredOrders)
     }
 
-    // --- ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
     private fun getDriverFromPrincipal(principal: Principal): Driver {
-        val username = principal.name // Это login или phone из токена
-
-        // Ищем СРАЗУ в таблице водителей.
-        // Если пользователь есть в users, но нет в drivers -> вернется null -> 403 Forbidden
+        val username = principal.name 
         val driver = driverRepository.findByUserLogin(username)
             ?: driverRepository.findByUserPhone(username)
             ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ заборонено: Ви не водій")
@@ -102,7 +97,6 @@ class DriverOrderController(
         if (driver.isBlocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблоковано")
         }
-
         return driver
     }
 }

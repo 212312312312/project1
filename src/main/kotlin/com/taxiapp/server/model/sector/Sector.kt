@@ -14,9 +14,10 @@ class Sector(
     @Column(nullable = false)
     var name: String,
 
-    // --- НОВОЕ ПОЛЕ ---
+    // --- НОВЕ ПОЛЕ ---
+    // true = Місто (звичайний тариф), false = За містом (спец. тариф pricePerKmOutCity)
     @Column(nullable = false)
-    var isCity: Boolean = true, // По дефолту считаем сектор городским. Если false - это "За город" (+3 балла)
+    var isCity: Boolean = true, 
     // ------------------
 
     @OneToMany(mappedBy = "sector", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)

@@ -5,9 +5,11 @@ import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Modifying // <-- ДОДАНО
 import org.springframework.data.jpa.repository.Query
 import org.springframework.stereotype.Repository
-import java.time.LocalDateTime // <-- ДОДАНО ЦЕЙ ІМПОРТ
+import org.springframework.transaction.annotation.Transactional // <-- ДОДАНО
+import java.time.LocalDateTime
 
 @Repository
 interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
@@ -44,6 +46,11 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByClientOrderByCreatedAtDesc(client: Client): List<TaxiOrder>
 
-    // Тепер LocalDateTime розпізнається коректно
     fun findAllByStatusAndOfferExpiresAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
+
+    // --- НОВИЙ МЕТОД (Виправлення видалення секторів) ---
+    @Modifying
+    @Transactional
+    @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
+    fun clearSectorReference(sectorId: Long)
 }

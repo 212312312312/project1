@@ -5,7 +5,7 @@ import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.Notification
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Driver
-import org.slf4j.LoggerFactory // Використовуємо Logger
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 
 @Service
@@ -13,48 +13,65 @@ class NotificationService {
 
     private val logger = LoggerFactory.getLogger(NotificationService::class.java)
 
+    /**
+     * МЕТОД 1: Для ВОДИТЕЛЕЙ (Data-only).
+     * Не создает уведомление в шторке сам. Будит приложение, чтобы открыть экран предложения.
+     */
     fun sendOrderOffer(driver: Driver, order: TaxiOrder) {
-        // Беремо токен. Якщо driver.fcmToken null, пробуємо взяти з user (якщо вони розділені)
-        // Але оскільки Driver наслідує User (або має спільну таблицю), це поле має бути доступне.
-        val token = driver.fcmToken 
+        val token = driver.fcmToken
 
         if (token.isNullOrEmpty()) {
-            logger.error(">>> ПОМИЛКА: У водія ID=${driver.id} (Phone=${driver.userPhone}) немає FCM токена! Пуш неможливий.")
+            logger.error(">>> ПОМИЛКА: Немає FCM токена для водія ${driver.id}")
             return
         }
 
         try {
             val message = Message.builder()
                 .setToken(token)
-                .setNotification(
-                    Notification.builder()
-                        .setTitle("Нове замовлення!")
-                        .setBody("Вам запропоновано поїздку: ${order.price.toInt()} грн")
-                        .build()
-                )
+                // ВАЖНО: Тут НЕТ .setNotification(), только data
                 .putData("type", "ORDER_OFFER")
                 .putData("orderId", order.id.toString())
                 .putData("price", order.price.toString())
-                .putData("address", order.fromAddress)
-                .putData("click_action", "ORDER_OFFER_ACTIVITY")
+                .putData("distance", ((order.distanceMeters ?: 0) / 1000.0).toString())
+                .putData("address", order.fromAddress ?: "Адреса не вказана")
                 .setAndroidConfig(
                     com.google.firebase.messaging.AndroidConfig.builder()
-                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH) // Високий пріоритет
-                        .setTtl(20000) // Живе 20 секунд (як таймер оферу)
+                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
+                        .setTtl(20000) // 20 секунд
                         .build()
                 )
                 .build()
 
             FirebaseMessaging.getInstance().send(message)
-            logger.info(">>> PUSH (OFFER) УСПІШНО відправлено водію ID=${driver.id} на токен: ${token.take(10)}...")
+            logger.info(">>> PUSH (Data Only) отправлен водителю ${driver.id}")
         } catch (e: Exception) {
-            logger.error(">>> CRITICAL ERROR відправки FCM: ${e.message}")
-            e.printStackTrace()
+            logger.error(">>> Ошибка FCM (Driver): ${e.message}")
         }
     }
-    
-    // Старий метод
+
+    /**
+     * МЕТОД 2: Для НОВОСТЕЙ и КЛИЕНТОВ (Standard Notification).
+     * Создает уведомление в шторке (Tray). Используется в NewsService.
+     */
     fun sendNotificationToToken(token: String, title: String, body: String) {
-         // ... (код без змін)
+        if (token.isEmpty()) return
+
+        try {
+            val notification = Notification.builder()
+                .setTitle(title)
+                .setBody(body)
+                .build()
+
+            val message = Message.builder()
+                .setToken(token)
+                .setNotification(notification) // Это заставляет Android показать уведомление
+                .putData("type", "NEWS") // Можно добавить тип, чтобы открывать NewsActivity по клику
+                .build()
+
+            FirebaseMessaging.getInstance().send(message)
+            logger.info(">>> PUSH (News) отправлен на токен: ${token.take(10)}...")
+        } catch (e: Exception) {
+            logger.error(">>> Ошибка FCM (News): ${e.message}")
+        }
     }
 }

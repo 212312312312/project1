@@ -3,7 +3,7 @@ package com.taxiapp.server.model.order
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
-import com.taxiapp.server.model.sector.Sector // Додано
+import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.services.TaxiServiceEntity
 import jakarta.persistence.*
 import org.hibernate.annotations.CreationTimestamp
@@ -20,24 +20,27 @@ class TaxiOrder(
     @JoinColumn(name = "client_id", nullable = false)
     var client: Client,
 
-    // Водій, який взяв замовлення
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "driver_id")
     var driver: Driver? = null,
 
-    // --- НОВЕ: Водій, якому ПРОПОНУЄТЬСЯ замовлення (Smart Dispatch) ---
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "offered_driver_id")
     var offeredDriver: Driver? = null,
 
     var offerExpiresAt: LocalDateTime? = null,
-    // ------------------------------------------------------------------
 
-    // --- НОВЕ: Сектор призначення (для фільтра Додому) ---
+    // --- НОВЕ ПОЛЕ: Список ID водіїв, які відмовилися ---
+    // Це запобігає повторному пропонуванню замовлення тому ж водію
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "order_rejected_drivers", joinColumns = [JoinColumn(name = "order_id")])
+    @Column(name = "driver_id")
+    var rejectedDriverIds: MutableSet<Long> = mutableSetOf(),
+    // -----------------------------------------------------
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "destination_sector_id")
     var destinationSector: Sector? = null,
-    // ----------------------------------------------------
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -49,7 +52,6 @@ class TaxiOrder(
     @Column(name = "to_address", nullable = false)
     var toAddress: String,
     
-    // --- КООРДИНАТИ ---
     @Column(nullable = true) 
     var originLat: Double? = null, 
     
@@ -61,7 +63,6 @@ class TaxiOrder(
     
     @Column(nullable = true)
     var destLng: Double? = null,
-    // ------------------
 
     @Column(nullable = true, length = 4096)
     var googleRoutePolyline: String? = null,

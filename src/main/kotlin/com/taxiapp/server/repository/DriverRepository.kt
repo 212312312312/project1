@@ -4,6 +4,7 @@ import com.taxiapp.server.model.user.Driver
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
@@ -38,27 +39,62 @@ interface DriverRepository : JpaRepository<Driver, Long> {
     @Query("UPDATE Driver d SET d.homeRidesLeft = 2") 
     fun resetAllHomeLimits()
 
-    // --- ВИПРАВЛЕНИЙ SMART DISPATCH ---
-    // ЗМІНА: SELECT d.*, u.* (вибираємо поля і водія, і юзера)
+    // --- НОВИЙ МЕТОД: Знайти всіх водіїв, у яких цей сектор є в списку "Додому" ---
+    // Це потрібно для видалення сектора без помилки ForeignKey
+    fun findAllByHomeSectorsId(sectorId: Long): List<Driver>
+    // -------------------------------------------------------------------------------
+
+    // --- ФІНАЛЬНИЙ ВАРІАНТ SMART DISPATCH ---
     @Query(value = """
         SELECT d.*, u.* FROM drivers d
         JOIN users u ON d.id = u.id
         LEFT JOIN driver_home_sectors dhs ON d.id = dhs.driver_id
         WHERE d.is_online = true
         AND u.is_blocked = false
-        AND d.activity_score > 400
+        AND d.activity_score > -1
+        
+        -- Виключаємо водіїв, які вже відмовилися (rejectedDriverIds)
+        AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
+
         AND (
+            -- 1. ЛАНЦЮГ: Просто ввімкнено
             (d.search_mode = 'CHAIN')
+            
+            OR
+            
+            -- 2. ЗВИЧАЙНИЙ (MANUAL): Щоб знаходило всіх інших
+            (d.search_mode = 'MANUAL')
+            
             OR 
+            
+            -- 3. ДОДОМУ: Ліміт > 0 ТА сектор водія співпадає з сектором призначення замовлення
             (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
         )
-        AND (6371 * acos(cos(radians(:pickupLat)) * cos(radians(d.current_latitude)) * cos(radians(d.current_longitude) - radians(:pickupLng)) + sin(radians(:pickupLat)) * sin(radians(d.current_latitude)))) <= d.search_radius
-        ORDER BY (6371 * acos(cos(radians(:pickupLat)) * cos(radians(d.current_latitude)) * cos(radians(d.current_longitude) - radians(:pickupLng)) + sin(radians(:pickupLat)) * sin(radians(d.current_latitude)))) ASC
+        
+        -- Радіус (Haversine formula in KM)
+        AND (
+            6371 * acos(
+                least(1.0, greatest(-1.0, 
+                    cos(radians(:pickupLat)) * cos(radians(d.current_latitude)) * cos(radians(d.current_longitude) - radians(:pickupLng)) + 
+                    sin(radians(:pickupLat)) * sin(radians(d.current_latitude))
+                ))
+            )
+        ) <= d.search_radius
+        
+        ORDER BY (
+            6371 * acos(
+                least(1.0, greatest(-1.0, 
+                    cos(radians(:pickupLat)) * cos(radians(d.current_latitude)) * cos(radians(d.current_longitude) - radians(:pickupLng)) + 
+                    sin(radians(:pickupLat)) * sin(radians(d.current_latitude))
+                ))
+            )
+        ) ASC
         LIMIT 1
     """, nativeQuery = true)
     fun findBestDriverForOrder(
-        pickupLat: Double, 
-        pickupLng: Double, 
-        destinationSectorId: Long?
+        @Param("pickupLat") pickupLat: Double, 
+        @Param("pickupLng") pickupLng: Double, 
+        @Param("destinationSectorId") destinationSectorId: Long?,
+        @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?
     ): Optional<Driver>
 }

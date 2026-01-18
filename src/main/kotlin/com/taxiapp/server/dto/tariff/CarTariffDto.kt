@@ -7,21 +7,21 @@ data class CarTariffDto(
     val name: String,
     val basePrice: Double,
     val pricePerKm: Double,
+    val pricePerKmOutCity: Double, // <-- НОВЕ ПОЛЕ
     val freeWaitingMinutes: Int,
     val pricePerWaitingMinute: Double,
     val isActive: Boolean,
-    val imageUrl: String? // <-- НОВОЕ ПОЛЕ (будет полный URL)
+    val imageUrl: String? 
 ) {
     constructor(tariff: CarTariff) : this(
         id = tariff.id,
         name = tariff.name,
         basePrice = tariff.basePrice,
         pricePerKm = tariff.pricePerKm,
+        pricePerKmOutCity = tariff.pricePerKmOutCity, // <-- Додано
         freeWaitingMinutes = tariff.freeWaitingMinutes,
         pricePerWaitingMinute = tariff.pricePerWaitingMinute,
         isActive = tariff.isActive,
-        // Мы НЕ будем добавлять http://localhost... здесь.
-        // Это сделает TariffAdminService.
         imageUrl = tariff.imageUrl 
     )
 }

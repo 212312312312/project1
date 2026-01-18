@@ -17,6 +17,12 @@ data class CreateTariffRequest(
     @field:Min(value = 0, message = "Ціна за км не може бути негативною")
     val pricePerKm: Double,
 
+    // --- ДОДАНО: Ціна за км за містом ---
+    @field:NotNull
+    @field:Min(value = 0, message = "Ціна за км за містом не може бути негативною")
+    val pricePerKmOutCity: Double,
+    // ------------------------------------
+
     @field:NotNull
     @field:Min(value = 0, message = "Хвилини очікування не можуть бути негативними")
     val freeWaitingMinutes: Int,

@@ -5,33 +5,37 @@ import com.taxiapp.server.dto.sector.PointDto
 import com.taxiapp.server.dto.sector.SectorDto
 import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.sector.SectorPoint
+import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.SectorRepository
-import com.taxiapp.server.utils.GeometryUtils // <-- Переконайтеся, що цей імпорт є
+import com.taxiapp.server.repository.TaxiOrderRepository // <-- ДОДАНО
+import com.taxiapp.server.utils.GeometryUtils
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 
 @Service
-class SectorService(private val sectorRepository: SectorRepository) {
+class SectorService(
+    private val sectorRepository: SectorRepository,
+    private val driverRepository: DriverRepository,
+    private val orderRepository: TaxiOrderRepository // <-- ДОДАНО ЗАЛЕЖНІСТЬ
+) {
 
     @Transactional(readOnly = true)
     fun getAllSectors(): List<SectorDto> {
         return sectorRepository.findAll().map { mapToDto(it) }
     }
 
-    // --- НОВИЙ МЕТОД: Пошук сектора за координатами ---
     @Transactional(readOnly = true)
     fun findSectorByCoordinates(lat: Double, lng: Double): Sector? {
         val allSectors = sectorRepository.findAll()
         
-        // Перебираємо всі сектори і шукаємо той, в який входить точка
         return allSectors.find { sector ->
-            // Використовуємо твій GeometryUtils, який вже є в проекті
-            GeometryUtils.isPointInPolygon(lat, lng, sector.points)
+            val sortedPoints = sector.points.sortedBy { it.pointOrder }
+            if (sortedPoints.size < 3) return@find false
+            GeometryUtils.isPointInPolygon(lat, lng, sortedPoints)
         }
     }
-    // --------------------------------------------------
 
     @Transactional
     fun createSector(request: CreateSectorRequest): SectorDto {
@@ -39,7 +43,10 @@ class SectorService(private val sectorRepository: SectorRepository) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Сектор повинен мати мінімум 3 точки")
         }
 
-        val sector = Sector(name = request.name)
+        val sector = Sector(
+            name = request.name,
+            isCity = request.isCity
+        )
         
         val points = request.points.mapIndexed { index, p ->
             SectorPoint(
@@ -48,25 +55,37 @@ class SectorService(private val sectorRepository: SectorRepository) {
                 pointOrder = index,
                 sector = sector
             )
-        }
+        }.toMutableList()
         
-        sector.points.addAll(points)
+        sector.points = points
         val saved = sectorRepository.save(sector)
         return mapToDto(saved)
     }
 
     @Transactional
     fun deleteSector(id: Long) {
-        if (!sectorRepository.existsById(id)) {
-            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Сектор не знайдено")
+        val sector = sectorRepository.findById(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Сектор не знайдено") }
+
+        // 1. Очищаємо посилання в замовленнях (щоб не порушувати FK)
+        orderRepository.clearSectorReference(id)
+
+        // 2. Видаляємо сектор у водіїв ("Додому")
+        val driversWithSector = driverRepository.findAllByHomeSectorsId(id)
+        for (driver in driversWithSector) {
+            driver.homeSectors.remove(sector)
+            driverRepository.save(driver)
         }
-        sectorRepository.deleteById(id)
+
+        // 3. Видаляємо сам сектор
+        sectorRepository.delete(sector)
     }
 
     private fun mapToDto(sector: Sector): SectorDto {
         return SectorDto(
             id = sector.id!!,
             name = sector.name,
+            isCity = sector.isCity,
             points = sector.points.sortedBy { it.pointOrder }.map { PointDto(it.lat, it.lng) }
         )
     }
