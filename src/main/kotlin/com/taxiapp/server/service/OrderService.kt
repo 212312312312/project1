@@ -15,17 +15,20 @@ import com.taxiapp.server.repository.*
 import com.taxiapp.server.utils.GeometryUtils
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
+import com.taxiapp.server.dto.order.CalculatedTariffDto
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
+import kotlin.math.ceil
+import kotlin.math.max
 
 @Service
 class OrderService(
     private val notificationService: NotificationService,
-    private val orderRepository: TaxiOrderRepository, 
+    private val orderRepository: TaxiOrderRepository,
     private val tariffRepository: CarTariffRepository,
     private val promoService: PromoService,
     private val driverRepository: DriverRepository,
@@ -40,8 +43,116 @@ class OrderService(
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
 
-    // --- СТВОРЕННЯ ЗАМОВЛЕННЯ ---
+    // =================================================================================
+    // 🧠 ЄДИНА ЛОГІКА РОЗРАХУНКУ ЦІНИ (Single Source of Truth)
+    // =================================================================================
+    private fun calculateExactTripPrice(
+        tariffId: Long,
+        polyline: String?,
+        totalDistanceMeters: Int,
+        serviceIds: List<Long>?,
+        addedValue: Double
+    ): Double {
+        val tariff = tariffRepository.findById(tariffId)
+            .orElseThrow { RuntimeException("Tariff not found") }
 
+        // 1. Рахуємо вартість послуг
+        var servicesCost = 0.0
+        if (!serviceIds.isNullOrEmpty()) {
+            val services = taxiServiceRepository.findAllById(serviceIds)
+            servicesCost = services.sumOf { it.price }
+        }
+
+        // 2. Якщо маршруту немає, повертаємо Базу + Послуги + Чайові
+        if (polyline.isNullOrEmpty() || totalDistanceMeters == 0) {
+            return tariff.basePrice + servicesCost + addedValue
+        }
+
+        // 3. Завантажуємо сектори МІСТА
+        val citySectors = sectorRepository.findAll().filter { it.isCity }
+
+        // 4. Розбиваємо маршрут
+        val (metersCity, metersOutCity) = GeometryUtils.calculateRouteSplit(polyline, citySectors)
+
+        // Фолбек: якщо щось пішло не так, вважаємо все містом
+        val finalMetersCity = if (metersCity == 0.0 && metersOutCity == 0.0) totalDistanceMeters.toDouble() else metersCity
+        val finalMetersOutCity = if (metersCity == 0.0 && metersOutCity == 0.0) 0.0 else metersOutCity
+
+        val totalKmCity = finalMetersCity / 1000.0
+        val totalKmOutCity = finalMetersOutCity / 1000.0
+
+        // 5. ЛОГІКА 3 КМ (МІНІМАЛКИ)
+        val INCLUDED_KM = 3.0
+        var remainingIncluded = INCLUDED_KM
+
+        // А. Списуємо з міста
+        var billableKmCity = 0.0
+        if (totalKmCity > remainingIncluded) {
+            billableKmCity = totalKmCity - remainingIncluded
+            remainingIncluded = 0.0
+        } else {
+            remainingIncluded -= totalKmCity
+            billableKmCity = 0.0
+        }
+
+        // Б. Списуємо із заміста (якщо лишилися безкоштовні км)
+        var billableKmOutCity = 0.0
+        if (totalKmOutCity > 0) {
+            if (remainingIncluded > 0) {
+                if (totalKmOutCity > remainingIncluded) {
+                    billableKmOutCity = totalKmOutCity - remainingIncluded
+                    remainingIncluded = 0.0
+                } else {
+                    billableKmOutCity = 0.0
+                }
+            } else {
+                billableKmOutCity = totalKmOutCity
+            }
+        }
+
+        // 6. Рахуємо ціну за маршрут
+        val routePrice = (billableKmCity * tariff.pricePerKm) +
+                         (billableKmOutCity * tariff.pricePerKmOutCity)
+
+        // 7. Підсумок: База + Маршрут + Послуги + Чайові
+        var finalPrice = tariff.basePrice + routePrice + servicesCost + addedValue
+
+        // Округляємо вгору
+        finalPrice = ceil(finalPrice)
+
+        // Захист: не менше базової ціни тарифу
+        return max(finalPrice, tariff.basePrice)
+    }
+
+    // =================================================================================
+    // 1. МЕТОД ДЛЯ КЛІЄНТА (ПЕРЕГЛЯД ЦІН)
+    // =================================================================================
+    fun calculatePricesForRoute(polyline: String, totalMeters: Int): List<CalculatedTariffDto> {
+        val tariffs = tariffRepository.findAll().filter { it.isActive }
+
+        return tariffs.map { tariff ->
+            // Викликаємо нашу єдину функцію розрахунку
+            val price = calculateExactTripPrice(
+                tariffId = tariff.id,
+                polyline = polyline,
+                totalDistanceMeters = totalMeters,
+                serviceIds = emptyList(), // При попередньому перегляді послуги зазвичай ще не вибрані
+                addedValue = 0.0
+            )
+
+            CalculatedTariffDto(
+                id = tariff.id,
+                name = tariff.name,
+                iconUrl = tariff.imageUrl,
+                calculatedPrice = price,
+                description = null // Можна додати деталізацію для тестів
+            )
+        }
+    }
+
+    // =================================================================================
+    // 2. СТВОРЕННЯ ЗАМОВЛЕННЯ (Використовує ту саму математику)
+    // =================================================================================
     @Transactional
     fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
         // 1. Перевірка тарифа
@@ -52,82 +163,23 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
-        // --- ЛОГІКА УСЛУГ ---
-        val selectedServicesEntities = if (!request.serviceIds.isNullOrEmpty()) {
-            taxiServiceRepository.findAllById(request.serviceIds)
-        } else {
-            emptyList()
-        }
+        // --- РОЗРАХУНОК ЦІНИ (ВИКЛИК ФУНКЦІЇ) ---
+        // Ми НЕ віримо ціні від клієнта, рахуємо самі
+        var finalPrice = calculateExactTripPrice(
+            tariffId = request.tariffId,
+            polyline = request.googleRoutePolyline,
+            totalDistanceMeters = request.distanceMeters ?: 0,
+            serviceIds = request.serviceIds,
+            addedValue = request.addedValue ?: 0.0
+        )
 
-        // --- НОВА ЛОГІКА РОЗРАХУНКУ ЦІНИ (МІСТО vs ЗА МІСТОМ) ---
-        var calculatedPrice = 0.0
-        
-        if (!request.googleRoutePolyline.isNullOrEmpty()) {
-            // Отримуємо всі сектори, які помічені як "Місто" (isCity = true)
-            val citySectors = sectorRepository.findAll().filter { it.isCity }
-            
-            // Отримуємо розбивку дистанції в метрах (потрібен оновлений GeometryUtils!)
-            val (metersCity, metersOutCity) = GeometryUtils.calculateRouteSplit(request.googleRoutePolyline, citySectors)
-            
-            val totalKmCity = metersCity / 1000.0
-            val totalKmOutCity = metersOutCity / 1000.0
-            
-            // --- ЛОГІКА МІНІМАЛКИ (3 КМ) ---
-            val INCLUDED_KM = 3.0
-            var remainingIncluded = INCLUDED_KM
-
-            // 1. Списуємо з міста
-            var billableKmCity = totalKmCity
-            if (billableKmCity > remainingIncluded) {
-                billableKmCity -= remainingIncluded
-                remainingIncluded = 0.0
-            } else {
-                remainingIncluded -= billableKmCity
-                billableKmCity = 0.0
-            }
-
-            // 2. Списуємо із заміста
-            var billableKmOutCity = totalKmOutCity
-            if (remainingIncluded > 0) {
-                if (billableKmOutCity > remainingIncluded) {
-                    billableKmOutCity -= remainingIncluded
-                    remainingIncluded = 0.0 
-                } else {
-                    billableKmOutCity = 0.0
-                }
-            }
-
-            // Рахуємо тільки платні кілометри
-            val routePrice = (billableKmCity * tariff.pricePerKm) + (billableKmOutCity * tariff.pricePerKmOutCity)
-            
-            calculatedPrice = tariff.basePrice + routePrice
-            
-            // Логуємо для налагодження (ВИПРАВЛЕНО ЗМІННІ)
-            logger.info("Order Price Calc: City=${totalKmCity}km, Out=${totalKmOutCity}km. Price=$calculatedPrice")
-        } else {
-            // Якщо полілінії немає (ручний режим або помилка), рахуємо просто за загальним кілометражем по міському тарифу
-            // Тут теж застосуємо логіку мінімалки для справедливості
-            val totalKm = (request.distanceMeters ?: 0) / 1000.0
-            val INCLUDED_KM = 3.0
-            val billableKm = if (totalKm > INCLUDED_KM) totalKm - INCLUDED_KM else 0.0
-            
-            calculatedPrice = tariff.basePrice + (billableKm * tariff.pricePerKm)
-        }
-
-        // Додаємо "Чайові" або ручну націнку клієнта
-        calculatedPrice += (request.addedValue ?: 0.0)
-
-        // Фінальна ціна перед знижками (округляємо до цілого вгору)
-        var finalPrice = Math.ceil(calculatedPrice)
-
-        // --- ЛОГІКА ЗНИЖОК ---
+        // --- ЛОГІКА ЗНИЖОК (ПРОМОКОДИ І ЗАВДАННЯ) ---
         var discountAmount = 0.0
         var isPromoCodeUsedForThisOrder = false
-
-        // 2. Логіка Промокодів
-        val activePromoUsage = promoCodeService.findActiveUsage(client)
         var promoCodeApplied = false
 
+        // A. Промокоди
+        val activePromoUsage = promoCodeService.findActiveUsage(client)
         if (activePromoUsage != null) {
             val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
             if (!isExpired) {
@@ -143,7 +195,7 @@ class OrderService(
             }
         }
 
-        // 3. Логіка Акцій/Задань
+        // B. Завдання (якщо немає промокоду)
         if (!promoCodeApplied) {
             val activeReward = promoService.findActiveReward(client)
             if (activeReward != null) {
@@ -157,17 +209,20 @@ class OrderService(
             }
         }
 
-        // Підсумкова ціна після знижок
+        // Віднімаємо знижку
         finalPrice -= discountAmount
-        if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice // Не менше мінімалки
+        
+        // Фінальна перевірка: ціна не може бути меншою за базову (мінімалку)
+        // Або можна дозволити знижку нижче мінімалки, залежить від бізнес-логіки.
+        // Зазвичай, компанія не хоче возити дешевше за собівартість.
+        if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice
 
-        // --- ВИЗНАЧЕННЯ СЕКТОРА ПРИЗНАЧЕННЯ (для "Додому") ---
+        // --- ВИЗНАЧЕННЯ СЕКТОРА ПРИЗНАЧЕННЯ ---
         val destSector = if (request.destLat != null && request.destLng != null) {
             sectorService.findSectorByCoordinates(request.destLat, request.destLng)
         } else null
-        // ------------------------------------------------------------------
 
-        // 4. Створення об'єкта замовлення
+        // --- СТВОРЕННЯ ОБ'ЄКТА ---
         val newOrder = TaxiOrder(
             client = client,
             fromAddress = request.fromAddress,
@@ -175,7 +230,8 @@ class OrderService(
             status = OrderStatus.REQUESTED, 
             createdAt = LocalDateTime.now(),
             tariff = tariff,
-            price = finalPrice, // <-- ВИКОРИСТОВУЄМО РОЗРАХОВАНУ ЦІНУ
+            
+            price = finalPrice, // <-- ЗАПИСУЄМО НАШУ ТОЧНУ ЦІНУ
             
             appliedDiscount = discountAmount,
             isPromoCodeUsed = isPromoCodeUsedForThisOrder,
@@ -193,16 +249,16 @@ class OrderService(
             paymentMethod = request.paymentMethod ?: "CASH",
             addedValue = request.addedValue ?: 0.0,
 
-            // Зберігаємо сектор куди їдемо
             destinationSector = destSector
         )
 
-        // --- ПРИКРІПЛЕННЯ ПОСЛУГ ДО ЗАМОВЛЕННЯ ---
-        if (selectedServicesEntities.isNotEmpty()) {
-            newOrder.selectedServices.addAll(selectedServicesEntities) 
+        // Додаємо послуги
+        if (!request.serviceIds.isNullOrEmpty()) {
+            val services = taxiServiceRepository.findAllById(request.serviceIds)
+            newOrder.selectedServices.addAll(services)
         }
 
-        // 5. Збереження зупинок (Waypoints)
+        // Додаємо зупинки
         if (!request.waypoints.isNullOrEmpty()) {
             val stopsList = request.waypoints.mapIndexed { index, wpDto ->
                 OrderStop(
@@ -216,12 +272,10 @@ class OrderService(
             newOrder.stops.addAll(stopsList)
         }
 
-        // --- SMART DISPATCH: Шукаємо водія для Ланцюга або Додому ---
+        // --- ПОШУК ВОДІЯ (Smart Dispatch) ---
         val rejectedIds = if (newOrder.rejectedDriverIds.isNotEmpty()) {
             newOrder.rejectedDriverIds.toList()
-        } else {
-            null
-        }
+        } else null
 
         val bestDriver = driverRepository.findBestDriverForOrder(
             newOrder.originLat!!,
@@ -235,16 +289,13 @@ class OrderService(
             newOrder.offeredDriver = bestDriver
             newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20) 
             
-            // ВІДПРАВЛЯЄМО ПОВІДОМЛЕННЯ
             notificationService.sendOrderOffer(bestDriver, newOrder)
         } else {
-            // НЕ ЗНАЙШЛИ -> В загальний Ефір
             newOrder.status = OrderStatus.REQUESTED
         }
 
         val savedOrder = orderRepository.save(newOrder)
 
-        // Якщо статус REQUESTED -> розсилаємо всім ("Ефір")
         if (savedOrder.status == OrderStatus.REQUESTED) {
             broadcastOrderChange(savedOrder, "ADD")
         }
@@ -252,27 +303,23 @@ class OrderService(
         return TaxiOrderDto(savedOrder)
     }
 
-    // --- ЛОГІКА REAL-TIME ПОВІДОМЛЕНЬ (WEBSOCKET) ---
+    // =================================================================================
+    // ІНШІ МЕТОДИ (БЕЗ ЗМІН ЛОГІКИ, АЛЕ ПРИВЕДЕНІ ДО ЛАДУ)
+    // =================================================================================
+
     @Transactional
     fun rejectOffer(driver: Driver, orderId: Long) {
         val order = orderRepository.findById(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         
-        // Перевіряємо, чи це замовлення справді запропоноване цьому водію
         if (order.status == OrderStatus.OFFERING && order.offeredDriver?.id == driver.id) {
             logger.info("Водій ${driver.id} відхилив замовлення ${order.id}")
-
-            // 1. Додаємо водія в "чорний список" цього замовлення
             order.rejectedDriverIds.add(driver.id!!)
-
-            // 2. Переводимо замовлення в Ефір (REQUESTED)
             order.status = OrderStatus.REQUESTED
             order.offeredDriver = null
             order.offerExpiresAt = null
             
             val saved = orderRepository.save(order)
-            
-            // 3. Сповіщаємо всіх про нове замовлення в ефірі
             broadcastOrderChange(saved, "ADD") 
         }
     }
@@ -281,16 +328,12 @@ class OrderService(
     @Transactional
     fun checkExpiredOffers() {
         val now = LocalDateTime.now()
-        // Шукаємо всі замовлення, які "висять" на водієві, але час вийшов
         val expiredOrders = orderRepository.findAllByStatus(OrderStatus.OFFERING)
             .filter { it.offerExpiresAt != null && it.offerExpiresAt!!.isBefore(now) }
 
         for (order in expiredOrders) {
             logger.info("Час пропозиції замовлення ${order.id} вичерпано. Переведення в Ефір.")
-            
-            // Запам'ятовуємо, що цей водій "проґавив" замовлення
             order.offeredDriver?.let { order.rejectedDriverIds.add(it.id!!) }
-
             order.status = OrderStatus.REQUESTED
             order.offeredDriver = null
             order.offerExpiresAt = null
@@ -347,7 +390,6 @@ class OrderService(
         }
 
         val zones = mutableListOf<HeatmapZoneDto>()
-
         for ((gridKey, ordersInCell) in grouped) {
             val (row, col) = gridKey
             val count = ordersInCell.size
@@ -368,8 +410,6 @@ class OrderService(
         }
         return zones
     }
-
-    // --- ГОЛОВНА ЛОГІКА ФІЛЬТРАЦІЇ ---
 
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
         if (driver.activityScore <= 0) return emptyList()
@@ -401,7 +441,6 @@ class OrderService(
             if (filter.fromSectors.isNotEmpty()) {
                 val startSectors = sectorRepository.findAllById(filter.fromSectors)
                 val isInStartSector = startSectors.any { sector -> 
-                    // Сортування точок
                     val sorted = sector.points.sortedBy { it.pointOrder }
                     GeometryUtils.isPointInPolygon(order.originLat ?: 0.0, order.originLng ?: 0.0, sorted)
                 }
@@ -426,7 +465,6 @@ class OrderService(
 
         // 4. ТАРИФ
         val totalKm = (order.distanceMeters ?: 0) / 1000.0
-
         if (filter.tariffType == "SIMPLE") {
             if (order.price < (filter.minPrice ?: 0.0)) return false
             if (totalKm > 0) {
@@ -443,23 +481,17 @@ class OrderService(
             } else {
                 minPrice + (totalKm - kmInMin) * priceCity
             }
-
             if (order.price < requiredPrice) return false
         }
-
         return true
     }
 
-    // --- КЕРУВАННЯ СТАТУСАМИ ТА ІСТОРІЯ ---
-
     fun findActiveOrderByDriver(driver: Driver): TaxiOrderDto? {
-        // 1. Спочатку шукаємо замовлення, де водій вже ПРИЗНАЧЕНИЙ (driver_id)
         val activeStatuses = listOf(
             OrderStatus.ACCEPTED,
             OrderStatus.DRIVER_ARRIVED,
             OrderStatus.IN_PROGRESS
         )
-        
         val activeOrder = orderRepository.findAllByDriverId(driver.id!!)
             .filter { it.status in activeStatuses }
             .firstOrNull()
@@ -468,13 +500,10 @@ class OrderService(
             return TaxiOrderDto(activeOrder)
         }
 
-        // 2. Якщо активних немає, шукаємо ПРОПОЗИЦІЮ (offered_driver_id)
-        // Це критично для екрану OrderOffer!
         val offeredOrder = orderRepository.findAllByStatus(OrderStatus.OFFERING)
             .find { it.offeredDriver?.id == driver.id }
 
         return if (offeredOrder != null) {
-            // Перевіряємо, чи не сплив час (на всяк випадок)
             if (offeredOrder.offerExpiresAt != null && LocalDateTime.now().isAfter(offeredOrder.offerExpiresAt)) {
                 null 
             } else {
@@ -483,14 +512,6 @@ class OrderService(
         } else {
             null
         }
-    }
-
-    // НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
-    private fun findOfferedOrder(driver: Driver): TaxiOrderDto? {
-        // Ищем заказ, где этот водитель указан как offeredDriver и статус OFFERING
-        return orderRepository.findAllByStatus(OrderStatus.OFFERING)
-            .find { it.offeredDriver?.id == driver.id }
-            ?.let { TaxiOrderDto(it) }
     }
 
     fun findHistoryByDriver(driver: Driver): List<TaxiOrderDto> {
@@ -509,7 +530,6 @@ class OrderService(
         return orderRepository.findAllByClientId(client.id!!).map { TaxiOrderDto(it) }
     }
 
-    // Це метод для КЛІЄНТА (або адміна)
     @Transactional
     fun cancelOrder(user: User, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
@@ -518,12 +538,10 @@ class OrderService(
         
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
-        
         broadcastOrderChange(saved, "REMOVE")
         return TaxiOrderDto(saved)
     }
 
-    // --- МЕТОД ДЛЯ ВОДІЯ (ЗІ ШТРАФОМ) ---
     @Transactional
     fun driverCancelOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId)
@@ -534,9 +552,7 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення вже закрите")
         }
 
-        // Штраф за скасування
         driverActivityService.processOrderCancellation(driver, orderId)
-
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
 
@@ -550,7 +566,6 @@ class OrderService(
 
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
         
-        // --- ЛОГІКА ПЕРЕВІРКИ СТАТУСУ ---
         if (order.status == OrderStatus.OFFERING) {
             if (order.offeredDriver?.id != driver.id) {
                 throw ResponseStatusException(HttpStatus.CONFLICT, "Це замовлення пропонується іншому водію")
@@ -570,7 +585,6 @@ class OrderService(
         order.status = OrderStatus.ACCEPTED
         order.offeredDriver = null
         
-        // --- ЛОГІКА "ДОДОМУ" ---
         if (driver.searchMode == com.taxiapp.server.model.enums.DriverSearchMode.HOME && order.destinationSector != null) {
              val isHomeOrder = driver.homeSectors.any { it.id == order.destinationSector!!.id }
              if (isHomeOrder && driver.homeRidesLeft > 0) {
@@ -584,7 +598,6 @@ class OrderService(
         return TaxiOrderDto(saved)
     }
 
-    // --- ПОВЕРНУТІ МЕТОДИ ---
     @Transactional
     fun driverArrived(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId)
@@ -635,7 +648,7 @@ class OrderService(
         promoService.updateProgressOnRideCompletion(order.client, order)
         return TaxiOrderDto(orderRepository.save(order))
     }
-
+    
     fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
         val activeStatuses = listOf(
             OrderStatus.REQUESTED, 
