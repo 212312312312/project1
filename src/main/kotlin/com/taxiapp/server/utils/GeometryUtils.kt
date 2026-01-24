@@ -2,9 +2,12 @@ package com.taxiapp.server.utils
 
 import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.sector.SectorPoint
+import org.slf4j.LoggerFactory
 import kotlin.math.*
 
 object GeometryUtils {
+
+    private val logger = LoggerFactory.getLogger(GeometryUtils::class.java)
 
     // Перевірка: чи знаходиться точка всередині полігону
     fun isPointInPolygon(lat: Double, lng: Double, polygon: List<SectorPoint>): Boolean {
@@ -23,9 +26,9 @@ object GeometryUtils {
         return intersectCount % 2 != 0
     }
 
-    // Дистанція між двома точками (Гаверсинус) в метрах (для точності)
+    // Дистанція між двома точками (Гаверсинус) в метрах
     fun calculateDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val r = 6371000.0 // Радіус Землі в метрах
+        val r = 6371000.0 
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)
         val a = sin(dLat / 2).pow(2.0) +
@@ -35,12 +38,10 @@ object GeometryUtils {
         return r * c
     }
     
-    // Старий метод для сумісності (повертає км)
     fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         return calculateDistanceMeters(lat1, lon1, lat2, lon2) / 1000.0
     }
 
-    // --- НОВЕ: Декодування полілінії Google ---
     fun decodePolyline(encoded: String): List<Pair<Double, Double>> {
         val poly = ArrayList<Pair<Double, Double>>()
         var index = 0
@@ -76,8 +77,7 @@ object GeometryUtils {
         return poly
     }
 
-    // --- НОВЕ: Розрахунок дистанції (Місто vs За містом) ---
-    // Повертає Pair(метри_в_місті, метри_за_містом)
+    // --- НОВЕ: Розрахунок дистанції з ЛОГУВАННЯМ ---
     fun calculateRouteSplit(
         polyline: String, 
         citySectors: List<Sector>
@@ -87,6 +87,9 @@ object GeometryUtils {
 
         var distanceCity = 0.0
         var distanceOutCity = 0.0
+        
+        // Для налагодження: виводимо лише першу точку, щоб не спамити
+        var debugLogged = false
 
         for (i in 0 until points.size - 1) {
             val start = points[i]
@@ -94,12 +97,16 @@ object GeometryUtils {
             
             val segmentDist = calculateDistanceMeters(start.first, start.second, end.first, end.second)
 
-            // Перевіряємо початок відрізка. Якщо він в "міському" секторі - весь відрізок зараховуємо як місто.
-            val isCitySegment = citySectors.any { sector -> 
+            // Шукаємо, в який САМЕ сектор потрапила точка
+            val foundSector = citySectors.find { sector -> 
                 isPointInPolygon(start.first, start.second, sector.points)
             }
 
-            if (isCitySegment) {
+            if (foundSector != null) {
+                if (!debugLogged) {
+                    logger.info("📍 Route Point matched City Sector: ${foundSector.name} (id=${foundSector.id})")
+                    debugLogged = true
+                }
                 distanceCity += segmentDist
             } else {
                 distanceOutCity += segmentDist

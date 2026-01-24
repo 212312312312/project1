@@ -25,7 +25,7 @@ class PublicController(
     }
 
     @PostMapping("/calculate-price")
-    fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CalculatedTariffDto> {
+    fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CarTariffDto> { // Було CalculatedTariffDto
         return orderService.calculatePricesForRoute(request.googleRoutePolyline, request.distanceMeters)
     }
 }

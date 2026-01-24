@@ -33,9 +33,9 @@ class SecurityConfig(
         "/api/auth/**",
         "/api/v1/auth/**",
         "/api/public/**",
-        "/api/v1/public/**",
+        "/api/v1/public/**", // <-- ЦЕ ВАЖЛИВО! Це дозволяє доступ до /calculate-price
         "/images/**",
-        "/uploads/**",       // <--- Дозволяє завантажувати картинки браузеру
+        "/uploads/**",
         "/v3/api-docs/**",
         "/swagger-ui/**",
         "/swagger-ui.html"

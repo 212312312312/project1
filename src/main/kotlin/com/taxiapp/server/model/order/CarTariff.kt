@@ -21,7 +21,7 @@ data class CarTariff(
 
     // --- НОВОЕ ПОЛЕ: Цена за городом ---
     @Column(nullable = false)
-    var pricePerKmOutCity: Double = 15.0, // Дефолтное значение
+    var pricePerKmOutCity: Double = 0.0, // Дефолтное значение
     // -----------------------------------
 
     @Column(nullable = false)
