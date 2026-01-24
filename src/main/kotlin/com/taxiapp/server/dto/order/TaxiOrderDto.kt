@@ -34,7 +34,7 @@ data class TaxiOrderDto(
     val addedValue: Double,
     val services: List<TaxiServiceDto> = emptyList(),
 
-    // --- ДОБАВЛЯЕМ ЭТИ ДВА ПОЛЯ ---
+    // Поля секторов
     val fromSector: String? = null,
     val toSector: String? = null
 ) {
@@ -107,15 +107,8 @@ data class TaxiOrderDto(
             )
         },
 
-        // --- ЗАПОЛНЯЕМ ДАННЫЕ О СЕКТОРАХ ---
-        
-        // 1. Сектор назначения у нас есть в базе (поле destinationSector)
+        // --- ИСПРАВЛЕНИЕ: БЕРЕМ ИМЯ СЕКТОРА ИЗ БАЗЫ ---
         toSector = order.destinationSector?.name,
-
-        // 2. Сектор подачи (fromSector).
-        // Внимание: В твоей базе данных (Entity TaxiOrder) сейчас НЕТ поля для fromSector (originSector).
-        // Поэтому пока мы можем передать сюда null или заглушку. 
-        // Чтобы это работало полноценно, нужно добавить поле `originSector` в TaxiOrder.kt и сохранять его.
-        fromSector = null 
+        fromSector = order.originSector?.name // <--- БЫЛО null, СТАЛО originSector.name
     )
 }

@@ -184,7 +184,7 @@ class OrderService(
     // =================================================================================
     // 2. СТВОРЕННЯ ЗАМОВЛЕННЯ
     // =================================================================================
-    @Transactional
+   @Transactional
     fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
         val tariff = tariffRepository.findById(request.tariffId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
@@ -240,15 +240,27 @@ class OrderService(
         finalPrice -= discountAmount
         if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice
 
+        // --- НОВА НАДІЙНА ЛОГІКА ПОШУКУ СЕКТОРІВ ---
+        // Завантажуємо всі сектори (щоб не робити N запитів в БД)
+        val allSectors = sectorRepository.findAll()
+
         // 1. Шукаємо Сектор Призначення (Куди)
         val destSector = if (request.destLat != null && request.destLng != null) {
-            sectorService.findSectorByCoordinates(request.destLat, request.destLng)
+            allSectors.find { sector ->
+                val points = sector.points.sortedBy { it.pointOrder }
+                GeometryUtils.isPointInPolygon(request.destLat, request.destLng, points)
+            }
         } else null
 
-        // 2. Шукаємо Сектор Подачі (Звідки) - НОВА ЛОГІКА
+        // 2. Шукаємо Сектор Подачі (Звідки)
+        // Використовуємо той самий алгоритм, що і в calculateExactTripPrice
         val originSector = if (request.originLat != null && request.originLng != null) {
-            sectorService.findSectorByCoordinates(request.originLat, request.originLng)
+            allSectors.find { sector ->
+                val points = sector.points.sortedBy { it.pointOrder }
+                GeometryUtils.isPointInPolygon(request.originLat, request.originLng, points)
+            }
         } else null
+        // ---------------------------------------------
 
         val newOrder = TaxiOrder(
             client = client,
@@ -272,7 +284,7 @@ class OrderService(
             paymentMethod = request.paymentMethod ?: "CASH",
             addedValue = request.addedValue ?: 0.0,
             destinationSector = destSector,
-            originSector = originSector // <-- Зберігаємо сектор подачі
+            originSector = originSector // <-- Тепер тут буде правильний сектор
         )
 
         if (!request.serviceIds.isNullOrEmpty()) {
@@ -321,7 +333,6 @@ class OrderService(
 
         return TaxiOrderDto(savedOrder)
     }
-
     // ... (решта методів: rejectOffer, checkExpiredOffers, broadcastOrderChange, getDriverHeatmap, getFilteredOrdersForDriver, findActiveOrderByDriver, findHistoryByDriver, getOrderById, getClientHistory, cancelOrder, driverCancelOrder, acceptOrder, driverArrived, startTrip, completeOrder, getActiveOrdersForDispatcher, mapToDto - ЗАЛИШИТИ БЕЗ ЗМІН) ...
     // Встав сюди всі інші методи з попереднього файлу, вони не потребують змін.
     // Для стислості я не дублюю їх тут, але ти повинен їх залишити.
