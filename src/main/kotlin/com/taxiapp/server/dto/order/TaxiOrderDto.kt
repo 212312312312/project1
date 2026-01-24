@@ -1,12 +1,9 @@
 package com.taxiapp.server.dto.order
 
-import com.taxiapp.server.dto.order.WaypointDto
-import com.taxiapp.server.dto.service.TaxiServiceDto // <-- Імпортуємо ваш DTO
+import com.taxiapp.server.dto.service.TaxiServiceDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
 import java.time.LocalDateTime
-
-// data class OrderServiceDto(...) <-- ВИДАЛИВ, бо ми використовуємо TaxiServiceDto
 
 data class TaxiOrderDto(
     val id: Long,
@@ -19,7 +16,6 @@ data class TaxiOrderDto(
     val completedAt: LocalDateTime?,
     val price: Double,
     
-    // Поля статистики
     val distanceMeters: Int?,
     val durationSeconds: Int?,
     val tariffName: String?,
@@ -32,19 +28,16 @@ data class TaxiOrderDto(
 
     val stops: List<WaypointDto> = emptyList(),
     val fullRouteDescription: String,
-
     val formattedWaypoints: String,
     val comment: String? = null,
-    
     val paymentMethod: String,
-    
-    // Нове поле
     val addedValue: Double,
-    
-    // Використовуємо TaxiServiceDto
-    val services: List<TaxiServiceDto> = emptyList()
+    val services: List<TaxiServiceDto> = emptyList(),
+
+    // --- ДОБАВЛЯЕМ ЭТИ ДВА ПОЛЯ ---
+    val fromSector: String? = null,
+    val toSector: String? = null
 ) {
-    // Вторинний конструктор
     constructor(order: TaxiOrder) : this(
         id = order.id ?: 0L,
         client = OrderClientDto(order.client),
@@ -58,8 +51,6 @@ data class TaxiOrderDto(
         
         distanceMeters = order.distanceMeters,
         durationSeconds = order.durationSeconds,
-        
-        // Беремо ім'я тарифу безпечно
         tariffName = order.tariffName ?: order.tariff.name,
 
         originLat = order.originLat,
@@ -75,7 +66,7 @@ data class TaxiOrderDto(
                     address = stop.address,
                     lat = stop.lat,
                     lng = stop.lng,
-                    stopOrder = stop.stopOrder // <-- ВАЖЛИВО: Додав це поле
+                    stopOrder = stop.stopOrder
                 )
             },
 
@@ -105,18 +96,26 @@ data class TaxiOrderDto(
         },
         
         comment = order.comment,
-
-        // Передаємо нові поля
         paymentMethod = order.paymentMethod ?: "CASH",
         addedValue = order.addedValue,
 
-        // Мапимо послуги у TaxiServiceDto
         services = order.selectedServices.map { service ->
             TaxiServiceDto(
                 id = service.id ?: 0L,
                 name = service.name,
                 price = service.price
             )
-        }
+        },
+
+        // --- ЗАПОЛНЯЕМ ДАННЫЕ О СЕКТОРАХ ---
+        
+        // 1. Сектор назначения у нас есть в базе (поле destinationSector)
+        toSector = order.destinationSector?.name,
+
+        // 2. Сектор подачи (fromSector).
+        // Внимание: В твоей базе данных (Entity TaxiOrder) сейчас НЕТ поля для fromSector (originSector).
+        // Поэтому пока мы можем передать сюда null или заглушку. 
+        // Чтобы это работало полноценно, нужно добавить поле `originSector` в TaxiOrder.kt и сохранять его.
+        fromSector = null 
     )
 }

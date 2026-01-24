@@ -199,7 +199,7 @@ class OrderService(
             polyline = request.googleRoutePolyline,
             totalDistanceMeters = request.distanceMeters ?: 0,
             serviceIds = request.serviceIds,
-            addedValue = request.addedValue ?: 0.0, // <--- Підозра падає сюди
+            addedValue = request.addedValue ?: 0.0,
             isDebug = true
         )
 
@@ -240,8 +240,14 @@ class OrderService(
         finalPrice -= discountAmount
         if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice
 
+        // 1. Шукаємо Сектор Призначення (Куди)
         val destSector = if (request.destLat != null && request.destLng != null) {
             sectorService.findSectorByCoordinates(request.destLat, request.destLng)
+        } else null
+
+        // 2. Шукаємо Сектор Подачі (Звідки) - НОВА ЛОГІКА
+        val originSector = if (request.originLat != null && request.originLng != null) {
+            sectorService.findSectorByCoordinates(request.originLat, request.originLng)
         } else null
 
         val newOrder = TaxiOrder(
@@ -265,7 +271,8 @@ class OrderService(
             comment = request.comment,
             paymentMethod = request.paymentMethod ?: "CASH",
             addedValue = request.addedValue ?: 0.0,
-            destinationSector = destSector
+            destinationSector = destSector,
+            originSector = originSector // <-- Зберігаємо сектор подачі
         )
 
         if (!request.serviceIds.isNullOrEmpty()) {
