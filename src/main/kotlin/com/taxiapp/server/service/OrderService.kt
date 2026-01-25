@@ -157,24 +157,17 @@ class OrderService(
                 isDebug = false
             )
 
-            // 2. Створюємо DTO (Виправляємо помилку конструктора)
+            // 2. Створюємо DTO
             CarTariffDto(
                 id = tariff.id,
                 name = tariff.name,
                 basePrice = tariff.basePrice,
                 pricePerKm = tariff.pricePerKm,
-                
-                // Це поле має бути в Entity CarTariff. 
-                // Якщо раптом сервер лається і тут, значить ти не оновив CarTariff.kt (Entity).
-                // Але згідно з твоїм кодом раніше, воно там є.
-                pricePerKmOutCity = tariff.pricePerKmOutCity, 
-                
+                pricePerKmOutCity = tariff.pricePerKmOutCity,
                 freeWaitingMinutes = tariff.freeWaitingMinutes,
                 pricePerWaitingMinute = tariff.pricePerWaitingMinute,
                 isActive = tariff.isActive,
                 imageUrl = tariff.imageUrl,
-
-                // --- Виправлення помилок тут ---
                 calculatedPrice = price, // Передаємо пораховану ціну
                 description = null       // Передаємо null, бо в базі (Entity) немає опису
             )
@@ -184,9 +177,11 @@ class OrderService(
     // =================================================================================
     // 2. СТВОРЕННЯ ЗАМОВЛЕННЯ
     // =================================================================================
-   @Transactional
+    @Transactional
     fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
+        logger.info(">>> СОЗДАНИЕ ЗАКАЗА: From='${request.fromAddress}' Coords=[${request.originLat}, ${request.originLng}]")
         val tariff = tariffRepository.findById(request.tariffId)
+        
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
 
         if (!tariff.isActive) {
@@ -253,7 +248,6 @@ class OrderService(
         } else null
 
         // 2. Шукаємо Сектор Подачі (Звідки)
-        // Використовуємо той самий алгоритм, що і в calculateExactTripPrice
         val originSector = if (request.originLat != null && request.originLng != null) {
             allSectors.find { sector ->
                 val points = sector.points.sortedBy { it.pointOrder }
@@ -333,10 +327,7 @@ class OrderService(
 
         return TaxiOrderDto(savedOrder)
     }
-    // ... (решта методів: rejectOffer, checkExpiredOffers, broadcastOrderChange, getDriverHeatmap, getFilteredOrdersForDriver, findActiveOrderByDriver, findHistoryByDriver, getOrderById, getClientHistory, cancelOrder, driverCancelOrder, acceptOrder, driverArrived, startTrip, completeOrder, getActiveOrdersForDispatcher, mapToDto - ЗАЛИШИТИ БЕЗ ЗМІН) ...
-    // Встав сюди всі інші методи з попереднього файлу, вони не потребують змін.
-    // Для стислості я не дублюю їх тут, але ти повинен їх залишити.
-    
+
     @Transactional
     fun rejectOffer(driver: Driver, orderId: Long) {
         val order = orderRepository.findById(orderId)

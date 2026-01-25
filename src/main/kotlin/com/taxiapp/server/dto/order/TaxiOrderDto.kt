@@ -109,6 +109,6 @@ data class TaxiOrderDto(
 
         // --- ИСПРАВЛЕНИЕ: БЕРЕМ ИМЯ СЕКТОРА ИЗ БАЗЫ ---
         toSector = order.destinationSector?.name,
-        fromSector = order.originSector?.name // <--- БЫЛО null, СТАЛО originSector.name
+        fromSector = order.originSector?.name
     )
 }
