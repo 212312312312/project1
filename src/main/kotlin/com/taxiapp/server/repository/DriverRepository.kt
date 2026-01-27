@@ -13,70 +13,75 @@ import java.util.Optional
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
 
+    // ИСПРАВЛЕНО: d.latitude вместо d.currentLatitude
     @Query("""
         SELECT d FROM Driver d 
-        WHERE d.currentLatitude IS NOT NULL 
-        AND d.currentLatitude != 0.0 
+        WHERE d.latitude IS NOT NULL 
+        AND d.latitude != 0.0 
         AND d.lastUpdate > :threshold
     """)
-    fun findAllActiveOnMap(threshold: LocalDateTime): List<Driver>
+    fun findAllActiveOnMap(@Param("threshold") threshold: LocalDateTime): List<Driver>
+
+    // ИСПРАВЛЕНО: d.latitude вместо d.currentLatitude
+    @Modifying
+    @Transactional
+    @Query("UPDATE Driver d SET d.latitude = :lat, d.longitude = :lng, d.lastUpdate = :now WHERE d.id = :id")
+    fun updateCoordinatesAndTimestamp(
+        @Param("id") id: Long, 
+        @Param("lat") lat: Double, 
+        @Param("lng") lng: Double, 
+        @Param("now") now: LocalDateTime
+    )
 
     @Modifying
     @Transactional
-    @Query("UPDATE Driver d SET d.currentLatitude = :lat, d.currentLongitude = :lng, d.lastUpdate = :now WHERE d.id = :id")
-    fun updateCoordinatesAndTimestamp(id: Long, lat: Double, lng: Double, now: LocalDateTime)
-
-    @Modifying
-    @Transactional
-    @Query("UPDATE Driver d SET d.currentLatitude = null, d.currentLongitude = null WHERE d.id = :id")
-    fun clearCoordinates(id: Long)
+    @Query("UPDATE Driver d SET d.latitude = null, d.longitude = null WHERE d.id = :id")
+    fun clearCoordinates(@Param("id") id: Long)
 
     fun findByUserPhone(phone: String): Driver?
     fun findByUserLogin(login: String): Driver?
 
     @Modifying
     @Transactional
-    @Query("UPDATE Driver d SET d.homeRidesLeft = 2") 
+    @Query("UPDATE Driver d SET d.homeRidesLeft = 2, d.lastHomeUsageDate = null") 
     fun resetAllHomeLimits()
 
-    // --- НОВИЙ МЕТОД: Знайти всіх водіїв, у яких цей сектор є в списку "Додому" ---
-    // Це потрібно для видалення сектора без помилки ForeignKey
     fun findAllByHomeSectorsId(sectorId: Long): List<Driver>
-    // -------------------------------------------------------------------------------
 
-    // --- ФІНАЛЬНИЙ ВАРІАНТ SMART DISPATCH ---
+    // Native Query: здесь мы используем имена КОЛОНОК в БД.
+    // Если Hibernate создавал таблицу, колонки называются как поля (latitude).
+    // Если таблица старая, возможно там current_latitude. 
+    // Я ставлю latitude, так как мы обновили модель. Если упадет - значит колонки в БД старые.
     @Query(value = """
         SELECT d.*, u.* FROM drivers d
         JOIN users u ON d.id = u.id
         LEFT JOIN driver_home_sectors dhs ON d.id = dhs.driver_id
-        WHERE d.is_online = true
-        AND u.is_blocked = false
-        AND d.activity_score > -1
-        
-        -- Виключаємо водіїв, які вже відмовилися (rejectedDriverIds)
-        AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
+        WHERE d.is_online = true 
+          AND u.is_blocked = false 
+          AND d.activity_score > -1
+          
+          -- Игнорируем OFFLINE
+          AND d.search_mode != 'OFFLINE'
+          
+          AND d.latitude IS NOT NULL 
+          AND d.longitude IS NOT NULL
+          
+          AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
 
-        AND (
-            -- 1. ЛАНЦЮГ: Просто ввімкнено
-            (d.search_mode = 'CHAIN')
-            
-            OR
-            
-            -- 2. ЗВИЧАЙНИЙ (MANUAL): Щоб знаходило всіх інших
-            (d.search_mode = 'MANUAL')
-            
-            OR 
-            
-            -- 3. ДОДОМУ: Ліміт > 0 ТА сектор водія співпадає з сектором призначення замовлення
-            (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
-        )
+          AND (
+              (d.search_mode = 'CHAIN')
+              OR
+              (d.search_mode = 'MANUAL')
+              OR 
+              (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
+          )
         
-        -- Радіус (Haversine formula in KM)
+        -- Радиус (Haversine)
         AND (
             6371 * acos(
                 least(1.0, greatest(-1.0, 
-                    cos(radians(:pickupLat)) * cos(radians(d.current_latitude)) * cos(radians(d.current_longitude) - radians(:pickupLng)) + 
-                    sin(radians(:pickupLat)) * sin(radians(d.current_latitude))
+                    cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
+                    sin(radians(:pickupLat)) * sin(radians(d.latitude))
                 ))
             )
         ) <= d.search_radius
@@ -84,8 +89,8 @@ interface DriverRepository : JpaRepository<Driver, Long> {
         ORDER BY (
             6371 * acos(
                 least(1.0, greatest(-1.0, 
-                    cos(radians(:pickupLat)) * cos(radians(d.current_latitude)) * cos(radians(d.current_longitude) - radians(:pickupLng)) + 
-                    sin(radians(:pickupLat)) * sin(radians(d.current_latitude))
+                    cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
+                    sin(radians(:pickupLat)) * sin(radians(d.latitude))
                 ))
             )
         ) ASC

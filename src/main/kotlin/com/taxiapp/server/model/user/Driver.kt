@@ -1,5 +1,6 @@
 package com.taxiapp.server.model.user
 
+import com.taxiapp.server.model.driver.DriverActivityHistory
 import com.taxiapp.server.model.enums.DriverSearchMode
 import com.taxiapp.server.model.order.CarTariff
 import com.taxiapp.server.model.order.TaxiOrder
@@ -9,14 +10,26 @@ import java.time.LocalDateTime
 
 @Entity
 @Table(name = "drivers")
-class Driver : User() { 
+@PrimaryKeyJoinColumn(name = "id")
+class Driver : User() {
     
     @Column(nullable = false)
     var isOnline: Boolean = false
 
-    var currentLatitude: Double? = null
-    var currentLongitude: Double? = null
-    var lastUpdate: java.time.LocalDateTime? = null
+    // --- РЕЙТИНГ ---
+    @Column(nullable = false, columnDefinition = "double precision default 5.0")
+    var rating: Double = 5.0
+
+    @Column(nullable = false, columnDefinition = "integer default 0")
+    var ratingCount: Int = 0
+    // ------------------
+
+    // --- ГЕОЛОКАЦІЯ ---
+    var latitude: Double? = null
+    var longitude: Double? = null
+    var bearing: Float? = 0.0f
+    var lastUpdate: LocalDateTime? = null
+    // ------------------
 
     @Column(nullable = true)
     var photoUrl: String? = null
@@ -50,16 +63,16 @@ class Driver : User() {
     )
     var allowedTariffs: MutableSet<CarTariff> = mutableSetOf()
 
-    // --- НОВІ ПОЛЯ ДЛЯ ЛАНЦЮГА ТА ДОДОМУ ---
+    // --- НАЛАШТУВАННЯ ПОШУКУ ---
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, columnDefinition = "varchar(20) default 'MANUAL'")
-    var searchMode: DriverSearchMode = DriverSearchMode.MANUAL
+    @Column(nullable = false, columnDefinition = "varchar(20) default 'OFFLINE'")
+    var searchMode: DriverSearchMode = DriverSearchMode.OFFLINE
 
     @Column(nullable = false, columnDefinition = "double precision default 3.0")
     var searchRadius: Double = 3.0 
 
-    // Налаштування "Додому" (тепер список секторів)
+    // Налаштування "Додому"
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
         name = "driver_home_sectors",
@@ -73,11 +86,12 @@ class Driver : User() {
 
     @Column(nullable = true)
     var lastHomeUsageDate: LocalDateTime? = null 
-    // ---------------------------------------
+    
+    @OneToMany(mappedBy = "driver", cascade = [CascadeType.ALL], fetch = FetchType.LAZY)
+    var activityHistory: MutableList<DriverActivityHistory> = mutableListOf()
 
     override fun isAccountNonLocked(): Boolean {
         if (isBlocked) return false
-        if (activityScore <= 0) return false 
         val expires = tempBlockExpiresAt
         if (expires != null) {
             return !LocalDateTime.now().isBefore(expires)

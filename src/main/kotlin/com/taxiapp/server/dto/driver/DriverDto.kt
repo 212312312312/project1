@@ -15,27 +15,27 @@ data class DriverDto(
     val isOnline: Boolean,
     val isBlocked: Boolean,
     val tempBlockExpiresAt: LocalDateTime?,
-    val currentLatitude: Double?,
-    val currentLongitude: Double?,
+    // ИСПРАВЛЕНО: currentLatitude -> latitude
+    val latitude: Double?, 
+    val longitude: Double?,
     val car: CarDto?,
     val allowedTariffs: List<CarTariffDto>,
     val photoUrl: String?,
-    
-    // --- НОВЕ ПОЛЕ ---
     val activityScore: Int
 ) {
     constructor(driver: Driver) : this(
-        id = driver.id,
+        id = driver.id!!, // Добавил !! на всякий случай, если id nullable
         phoneNumber = driver.userPhone ?: "",
-        fullName = driver.fullName,
+        fullName = driver.fullName ?: "",
         email = driver.email,
         rnokpp = driver.rnokpp,
         driverLicense = driver.driverLicense,
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
         tempBlockExpiresAt = driver.tempBlockExpiresAt,
-        currentLatitude = driver.currentLatitude,
-        currentLongitude = driver.currentLongitude,
+        // ИСПРАВЛЕНО: Берем из driver.latitude
+        latitude = driver.latitude,
+        longitude = driver.longitude,
         car = driver.car?.let { CarDto(it) },
         allowedTariffs = driver.allowedTariffs.map { CarTariffDto(it) },
         photoUrl = driver.photoUrl?.let { filename ->
@@ -44,7 +44,6 @@ data class DriverDto(
                 .path(filename)
                 .toUriString()
         },
-        // Передаємо бали з сутності
         activityScore = driver.activityScore
     )
 }

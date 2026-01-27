@@ -9,7 +9,6 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
-// ИСПРАВЛЕНО: Добавили api/v1 и изменили путь на /location-map
 @RequestMapping("/api/v1/admin/drivers/location-map")
 class DriverLocationController(
     private val driverLocationService: DriverLocationService

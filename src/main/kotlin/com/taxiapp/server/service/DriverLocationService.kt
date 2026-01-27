@@ -2,28 +2,78 @@ package com.taxiapp.server.service
 
 import com.taxiapp.server.dto.driver.DriverLocationDto
 import com.taxiapp.server.dto.driver.UpdateLocationRequest
+import com.taxiapp.server.dto.order.TrackingLocationDto
+import com.taxiapp.server.model.enums.DriverSearchMode
 import com.taxiapp.server.repository.DriverRepository
+import com.taxiapp.server.repository.TaxiOrderRepository
+import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
-class DriverLocationService(private val driverRepository: DriverRepository) {
+class DriverLocationService(
+    private val driverRepository: DriverRepository,
+    private val orderRepository: TaxiOrderRepository,
+    private val messagingTemplate: SimpMessagingTemplate
+) {
 
     @Transactional
     fun updateLocation(driverId: Long, request: UpdateLocationRequest) {
-        if (request.lat == 0.0 && request.lng == 0.0) return
-        driverRepository.updateCoordinatesAndTimestamp(driverId, request.lat, request.lng, java.time.LocalDateTime.now())
+        val driver = driverRepository.findById(driverId).orElseThrow { RuntimeException("Driver not found") }
+        
+        // Теперь эти поля существуют в Driver.kt
+        driver.latitude = request.lat
+        driver.longitude = request.lng
+        
+        // Обновляем bearing, если пришел (или берем 0)
+        val newBearing = request.bearing ?: 0f
+        driver.bearing = newBearing
+        
+        driverRepository.save(driver)
+
+        // Ретрансляция (Tracking)
+        val activeOrderOpt = orderRepository.findActiveOrderByDriverId(driverId)
+        
+        if (activeOrderOpt.isPresent) {
+            val order = activeOrderOpt.get()
+            
+            val trackingDto = TrackingLocationDto(
+                lat = request.lat,
+                lng = request.lng,
+                bearing = newBearing
+            )
+
+            messagingTemplate.convertAndSend("/topic/order/${order.id}/tracking", trackingDto)
+        }
     }
 
-    // --- НОВЫЙ МЕТОД ---
     @Transactional
     fun clearLocation(driverId: Long) {
-        driverRepository.clearCoordinates(driverId)
+        val driver = driverRepository.findById(driverId).orElse(null) ?: return
+        driver.latitude = null
+        driver.longitude = null
+        // Теперь OFFLINE точно есть в enum
+        driver.searchMode = DriverSearchMode.OFFLINE
+        driverRepository.save(driver)
     }
 
-    @Transactional(readOnly = true)
     fun getOnlineDriversForMap(): List<DriverLocationDto> {
-        val threshold = java.time.LocalDateTime.now().minusMinutes(3)
-        return driverRepository.findAllActiveOnMap(threshold).map { DriverLocationDto(it) }
+        // Фильтруем водителей, у которых есть координаты и они не OFFLINE
+        val drivers = driverRepository.findAll().filter { 
+            it.latitude != null && it.longitude != null && it.searchMode != DriverSearchMode.OFFLINE 
+        }
+        
+        return drivers.map { driver ->
+            DriverLocationDto(
+                driverId = driver.id!!,
+                fullName = driver.fullName ?: "Водій",
+                lat = driver.latitude!!,
+                lng = driver.longitude!!,
+                bearing = driver.bearing ?: 0f,
+                status = driver.searchMode.name,
+                carModel = driver.car?.model ?: "Не вказано",
+                carColor = driver.car?.color ?: ""
+            )
+        }
     }
 }

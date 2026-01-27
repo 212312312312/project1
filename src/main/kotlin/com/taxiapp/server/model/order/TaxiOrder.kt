@@ -3,7 +3,7 @@ package com.taxiapp.server.model.order
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
-import com.taxiapp.server.model.sector.Sector // Убедись, что импорт есть
+import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.services.TaxiServiceEntity
 import jakarta.persistence.*
 import org.hibernate.annotations.CreationTimestamp
@@ -30,22 +30,18 @@ class TaxiOrder(
 
     var offerExpiresAt: LocalDateTime? = null,
 
-    // Список ID водіїв, які відмовилися
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "order_rejected_drivers", joinColumns = [JoinColumn(name = "order_id")])
     @Column(name = "driver_id")
     var rejectedDriverIds: MutableSet<Long> = mutableSetOf(),
 
-    // --- СЕКТОР ПРИЗНАЧЕННЯ (Куда) ---
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "destination_sector_id")
     var destinationSector: Sector? = null,
 
-    // --- НОВОЕ ПОЛЕ: СЕКТОР ПОДАЧІ (Откуда) ---
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "origin_sector_id")
     var originSector: Sector? = null,
-    // ------------------------------------------
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -111,6 +107,14 @@ class TaxiOrder(
 
     @Column(nullable = false)
     var addedValue: Double = 0.0,
+
+    // --- ФЛАГИ ОЦЕНКИ (НОВОЕ) ---
+    @Column(nullable = false)
+    var isRatedByClient: Boolean = false,
+
+    @Column(nullable = false)
+    var isRatedByDriver: Boolean = false,
+    // ----------------------------
 
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(

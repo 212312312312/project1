@@ -9,5 +9,7 @@ data class UpdateLocationRequest(
 
     // Связываем входящее поле "longitude" с нашей переменной lng
     @JsonProperty("longitude")
-    val lng: Double
+    val lng: Double,
+
+    val bearing: Float? = 0f
 )

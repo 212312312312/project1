@@ -5,11 +5,13 @@ import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
 import org.springframework.data.jpa.repository.JpaRepository
-import org.springframework.data.jpa.repository.Modifying // <-- ДОДАНО
+import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param // <-- ВАЖНО
 import org.springframework.stereotype.Repository
-import org.springframework.transaction.annotation.Transactional // <-- ДОДАНО
+import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
+import java.util.Optional // <-- ВАЖНО
 
 @Repository
 interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
@@ -32,7 +34,7 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     )): List<TaxiOrder>
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.client.userPhone LIKE %:phone% OR o.driver.userPhone LIKE %:phone%")
-    fun searchArchiveByPhone(phone: String): List<TaxiOrder>
+    fun searchArchiveByPhone(@Param("phone") phone: String): List<TaxiOrder> // Добавил @Param
     
     fun findAllByDriverAndStatusIn(driver: Driver, statuses: List<OrderStatus>): List<TaxiOrder>
 
@@ -48,9 +50,11 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByStatusAndOfferExpiresAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
 
-    // --- НОВИЙ МЕТОД (Виправлення видалення секторів) ---
     @Modifying
     @Transactional
     @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
-    fun clearSectorReference(sectorId: Long)
+    fun clearSectorReference(@Param("sectorId") sectorId: Long) // Добавил @Param
+
+    @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'ARRIVED', 'IN_PROGRESS')")
+    fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>
 }

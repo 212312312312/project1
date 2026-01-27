@@ -14,27 +14,45 @@ data class OrderDriverDto(
     val carPlateNumber: String?,
     val photoUrl: String?,
     
-    // --- НОВЫЕ ПОЛЯ ---
     val completedRides: Int,
-    val monthsInService: Int
+    val monthsInService: Int,
+
+    // --- ВАЖЛИВО: Додаємо координати для миттєвого відображення на клієнті ---
+    val latitude: Double?,
+    val longitude: Double?,
+    val bearing: Float?
 ) {
     constructor(driver: Driver) : this(
-        id = driver.id,
-        fullName = driver.fullName,
+        id = driver.id!!, // Використовуємо !! якщо впевнені, що ID є (або driver.id ?: 0L)
+        fullName = driver.fullName ?: "Водій",
         phoneNumber = driver.userPhone ?: "",
-        carModel = driver.car?.let { "${it.make} ${it.model}" },
+        carModel = driver.car?.let { "${it.make} ${it.model}" } ?: "Авто",
         carColor = driver.car?.color ?: "Колір не вказано",
         carPlateNumber = driver.car?.plateNumber,
+        
         photoUrl = driver.photoUrl?.let { filename ->
-            ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/images/")
-                .path(filename)
-                .toUriString()
+            if (filename.startsWith("http")) {
+                filename
+            } else {
+                ServletUriComponentsBuilder.fromCurrentContextPath()
+                    .path("/images/") // Перевір шлях, у тебе було /images/
+                    .path(filename)
+                    .toUriString()
+            }
         },
         
-        // ЗАПОЛНЕНИЕ НОВЫХ ПОЛЕЙ
         completedRides = driver.completedRides,
-        // Считаем разницу в месяцах между регистрацией и сейчас
-        monthsInService = ChronoUnit.MONTHS.between(driver.createdAt, LocalDateTime.now()).toInt()
+        
+        // Перевірка на null для createdAt
+        monthsInService = if (driver.createdAt != null) {
+            ChronoUnit.MONTHS.between(driver.createdAt, LocalDateTime.now()).toInt()
+        } else {
+            0
+        },
+
+        // --- ЗАПОВНЮЄМО КООРДИНАТИ З БД ---
+        latitude = driver.latitude,
+        longitude = driver.longitude,
+        bearing = driver.bearing
     )
 }

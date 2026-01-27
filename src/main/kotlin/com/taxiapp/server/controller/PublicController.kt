@@ -1,22 +1,19 @@
 package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.order.CalculatePriceRequest
-import com.taxiapp.server.dto.order.CalculatedTariffDto
 import com.taxiapp.server.dto.tariff.CarTariffDto
-import com.taxiapp.server.service.OrderService // <-- Добавили импорт сервиса
+import com.taxiapp.server.service.OrderService
+import com.taxiapp.server.service.SettingsService // <-- Импорт
 import com.taxiapp.server.service.TariffAdminService
 import org.springframework.http.ResponseEntity
-import org.springframework.web.bind.annotation.GetMapping
-import org.springframework.web.bind.annotation.PostMapping // <-- Добавили импорт
-import org.springframework.web.bind.annotation.RequestBody // <-- Добавили импорт
-import org.springframework.web.bind.annotation.RequestMapping
-import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.*
 
 @RestController
-@RequestMapping("/api/v1/public") // Убедись, что путь совпадает с тем, куда стучится клиент (в клиенте было /public, здесь /api/v1/public. Проверь ApiService в Android)
+@RequestMapping("/api/v1/public")
 class PublicController(
     private val tariffAdminService: TariffAdminService,
-    private val orderService: OrderService // <-- Внедрили OrderService
+    private val orderService: OrderService,
+    private val settingsService: SettingsService // <-- ДОБАВИЛИ СЕРВИС
 ) {
 
     @GetMapping("/tariffs")
@@ -25,7 +22,16 @@ class PublicController(
     }
 
     @PostMapping("/calculate-price")
-    fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CarTariffDto> { // Було CalculatedTariffDto
+    fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CarTariffDto> {
         return orderService.calculatePricesForRoute(request.googleRoutePolyline, request.distanceMeters)
+    }
+
+    @GetMapping("/settings/car-icon")
+    fun getCarIconUrl(): ResponseEntity<Map<String, String>> {
+        // --- ИСПРАВЛЕНИЕ: Ключ должен совпадать с тем, что в React (client_car_icon) ---
+        val iconUrl = settingsService.getSettingValue("client_car_icon") ?: ""
+        // -------------------------------------------------------------------------------
+        
+        return ResponseEntity.ok(mapOf("url" to iconUrl))
     }
 }

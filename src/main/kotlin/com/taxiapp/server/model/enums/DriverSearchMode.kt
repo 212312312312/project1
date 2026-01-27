@@ -1,7 +1,9 @@
 package com.taxiapp.server.model.enums
 
 enum class DriverSearchMode {
-    MANUAL, // Звичайний режим (тільки Ефір)
-    CHAIN,  // Ланцюг (автопошук)
-    HOME    // Додому
+    OFFLINE, // Водій офлайн
+    MANUAL,  // Ефір (Вільний)
+    CHAIN,   // Ланцюг (Автоприйом)
+    HOME,    // Додому
+    BUSY     // Зайнятий замовленням
 }

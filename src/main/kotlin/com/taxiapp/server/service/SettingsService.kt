@@ -20,6 +20,12 @@ class SettingsService(
         return repository.findAll().associate { it.key to it.value }
     }
 
+    // --- ДОБАВЛЕННЫЙ МЕТОД (Исправляет ошибку в PublicController) ---
+    fun getSettingValue(key: String): String? {
+        return repository.findById(key).map { it.value }.orElse(null)
+    }
+    // ----------------------------------------------------------------
+
     fun uploadSettingImage(key: String, file: MultipartFile): String {
         // 1. Создаем папку, если нет
         val directory = File(uploadDir)
@@ -35,8 +41,8 @@ class SettingsService(
         // 3. Сохраняем файл
         Files.copy(file.inputStream, filePath, StandardCopyOption.REPLACE_EXISTING)
 
-        // 4. Формируем URL (доступный из браузера)
-        // В WebConfig мы настроим, что /uploads/** ведет в папку uploads
+        // 4. Формируем URL
+        // ВАЖНО: При деплое замени localhost на реальный домен или IP сервера!
         val fileUrl = "http://localhost:8080/uploads/settings/$fileName"
 
         // 5. Сохраняем в БД

@@ -452,8 +452,9 @@ class OrderService(
 
     private fun matchesFilter(order: TaxiOrder, filter: DriverFilter, driver: Driver): Boolean {
         if (filter.fromType == "DISTANCE") {
+            // ИСПРАВЛЕНО: currentLatitude -> latitude
             val distToOrder = GeometryUtils.calculateDistance(
-                driver.currentLatitude ?: 0.0, driver.currentLongitude ?: 0.0,
+                driver.latitude ?: 0.0, driver.longitude ?: 0.0,
                 order.originLat ?: 0.0, order.originLng ?: 0.0
             )
             if (distToOrder > (filter.fromDistance ?: 30.0)) return false

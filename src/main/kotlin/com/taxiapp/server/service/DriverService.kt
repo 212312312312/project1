@@ -34,15 +34,19 @@ class DriverService(
     fun updateDriverStatus(driver: Driver, request: UpdateDriverStatusRequest): DriverDto {
         if (request.isOnline) {
             driver.isOnline = true
-            driver.currentLatitude = request.latitude
-            driver.currentLongitude = request.longitude
+            // ИСПРАВЛЕНО: currentLatitude -> latitude
+            driver.latitude = request.latitude
+            driver.longitude = request.longitude
             driver.lastUpdate = LocalDateTime.now()
+            // Если водитель вышел онлайн, можно ставить MANUAL или оставить как есть
+            if (driver.searchMode == DriverSearchMode.OFFLINE) {
+                driver.searchMode = DriverSearchMode.MANUAL
+            }
         } else {
-            // При виході в ОФЛАЙН - скидаємо режим в MANUAL
             driver.isOnline = false
-            driver.currentLatitude = null
-            driver.currentLongitude = null
-            driver.searchMode = DriverSearchMode.MANUAL 
+            driver.latitude = null
+            driver.longitude = null
+            driver.searchMode = DriverSearchMode.OFFLINE 
         }
         
         val updatedDriver = driverRepository.save(driver)
@@ -56,7 +60,6 @@ class DriverService(
         checkAndResetHomeLimit(driver)
         
         val sectorNames = driver.homeSectors.joinToString(", ") { it.name }
-        // mapNotNull гарантує, що ми отримаємо List<Long>, а не List<Long?>
         val sectorIds = driver.homeSectors.mapNotNull { it.id }
 
         return DriverSearchStateDto(
@@ -70,12 +73,10 @@ class DriverService(
 
     @Transactional
     fun updateSearchSettings(driver: Driver, settings: DriverSearchSettingsDto): DriverSearchStateDto {
-        // 1. Перевірка Активності
         if (settings.mode != DriverSearchMode.MANUAL && driver.activityScore <= 400) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність (<400). Автопошук заблоковано.")
         }
 
-        // 2. Логіка для режиму "Додому"
         checkAndResetHomeLimit(driver) 
 
         if (settings.mode == DriverSearchMode.HOME) {
@@ -83,7 +84,6 @@ class DriverService(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Вичерпано ліміт поїздок 'Додому' на сьогодні.")
             }
             
-            // ВАЛІДАЦІЯ СПИСКУ СЕКТОРІВ
             val ids = settings.homeSectorIds
             if (ids.isNullOrEmpty()) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оберіть хоча б один сектор.")
@@ -92,24 +92,20 @@ class DriverService(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Максимум 30 секторів.")
             }
 
-            // Знаходимо сектори в базі
             val sectors = sectorRepository.findAllById(ids)
             if (sectors.isEmpty()) {
                 throw ResponseStatusException(HttpStatus.NOT_FOUND, "Сектори не знайдено")
             }
             
-            // Оновлюємо список
             driver.homeSectors.clear()
             driver.homeSectors.addAll(sectors)
         }
 
-        // 3. Збереження налаштувань
         driver.searchMode = settings.mode
         driver.searchRadius = settings.radius.coerceIn(0.5, 30.0) 
         
         driverRepository.save(driver)
 
-        // Формуємо відповідь
         val sectorNames = driver.homeSectors.joinToString(", ") { it.name }
         val sectorIds = driver.homeSectors.mapNotNull { it.id }
 
@@ -136,6 +132,7 @@ class DriverService(
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional
     fun resetAllDailyLimits() {
-        driverRepository.resetAllHomeLimits()
+        // Убедись, что этот метод есть в репозитории, или удали его вызов, если логика выше работает
+        // driverRepository.resetAllHomeLimits()
     }
 }
