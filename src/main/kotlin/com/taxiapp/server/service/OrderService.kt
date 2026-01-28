@@ -625,6 +625,8 @@ class OrderService(
         if (order.status != OrderStatus.ACCEPTED) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невірний статус")
 
         order.status = OrderStatus.DRIVER_ARRIVED
+        order.arrivedAt = LocalDateTime.now() // <--- СОХРАНЯЕМ ЧАС
+        
         return TaxiOrderDto(orderRepository.save(order))
     }
 

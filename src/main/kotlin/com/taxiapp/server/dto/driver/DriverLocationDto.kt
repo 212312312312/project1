@@ -3,12 +3,13 @@ package com.taxiapp.server.dto.driver
 import com.taxiapp.server.model.user.Driver
 
 data class DriverLocationDto(
-    val driverId: Long,     // Используем driverId для ясности
+    val driverId: Long,
     val fullName: String,
     val lat: Double,
     val lng: Double,
-    val bearing: Float,     // Добавили поворот
-    val status: String,     // Статус (MANUAL, BUSY, etc.)
+    val bearing: Float,
+    val status: String,
+    val isOnline: Boolean,  // <--- ДОБАВИЛИ ЭТО ПОЛЕ
     val carModel: String,
     val carColor: String
 ) {
@@ -20,6 +21,7 @@ data class DriverLocationDto(
         lng = driver.longitude ?: 0.0,
         bearing = driver.bearing ?: 0f,
         status = driver.searchMode.name,
+        isOnline = driver.isOnline, // <--- ЗАПОЛНЯЕМ ЕГО ИЗ DRIVER
         carModel = driver.car?.model ?: "Не вказано",
         carColor = driver.car?.color ?: ""
     )

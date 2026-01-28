@@ -16,6 +16,9 @@ class TaxiOrder(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
 
+    @Column(name = "arrived_at")
+    var arrivedAt: LocalDateTime? = null, // <--- ДОБАВИЛИ
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", nullable = false)
     var client: Client,

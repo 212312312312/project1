@@ -3,6 +3,7 @@ package com.taxiapp.server.dto.order
 import com.taxiapp.server.dto.service.TaxiServiceDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
+// import com.taxiapp.server.model.order.WaypointDto <--- УДАЛИЛИ ЭТУ СТРОКУ, ОНА ВЫЗЫВАЛА ОШИБКУ
 import java.time.LocalDateTime
 
 data class TaxiOrderDto(
@@ -26,6 +27,11 @@ data class TaxiOrderDto(
     val destLng: Double?,
     val googleRoutePolyline: String?,
 
+    val arrivedAt: LocalDateTime? = null,
+    val carModel: String? = null,
+    val carPlate: String? = null,
+    val carColor: String? = null,
+
     val stops: List<WaypointDto> = emptyList(),
     val fullRouteDescription: String,
     val formattedWaypoints: String,
@@ -34,7 +40,6 @@ data class TaxiOrderDto(
     val addedValue: Double,
     val services: List<TaxiServiceDto> = emptyList(),
 
-    // Поля секторов
     val fromSector: String? = null,
     val toSector: String? = null
 ) {
@@ -47,7 +52,7 @@ data class TaxiOrderDto(
         toAddress = order.toAddress,
         createdAt = order.createdAt,
         completedAt = order.completedAt,
-        price = order.price ?: 0.0,
+        price = order.price,
         
         distanceMeters = order.distanceMeters,
         durationSeconds = order.durationSeconds,
@@ -58,6 +63,11 @@ data class TaxiOrderDto(
         destLat = order.destLat,
         destLng = order.destLng,
         googleRoutePolyline = order.googleRoutePolyline,
+
+        arrivedAt = order.arrivedAt,
+        carModel = order.driver?.car?.let { "${it.make} ${it.model}" },
+        carPlate = order.driver?.car?.plateNumber,
+        carColor = order.driver?.car?.color, 
 
         stops = order.stops
             .sortedBy { it.stopOrder }
@@ -107,7 +117,6 @@ data class TaxiOrderDto(
             )
         },
 
-        // --- ИСПРАВЛЕНИЕ: БЕРЕМ ИМЯ СЕКТОРА ИЗ БАЗЫ ---
         toSector = order.destinationSector?.name,
         fromSector = order.originSector?.name
     )

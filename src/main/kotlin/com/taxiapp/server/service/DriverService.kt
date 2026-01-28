@@ -9,6 +9,7 @@ import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.SectorRepository
+import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -19,7 +20,8 @@ import java.time.LocalDateTime
 @Service
 class DriverService(
     private val driverRepository: DriverRepository,
-    private val sectorRepository: SectorRepository
+    private val sectorRepository: SectorRepository,
+    private val messagingTemplate: SimpMessagingTemplate // 1. Добавили для мгновенного обновления карты
 ) {
     
     @Transactional(readOnly = true)
@@ -34,23 +36,33 @@ class DriverService(
     fun updateDriverStatus(driver: Driver, request: UpdateDriverStatusRequest): DriverDto {
         if (request.isOnline) {
             driver.isOnline = true
-            // ИСПРАВЛЕНО: currentLatitude -> latitude
             driver.latitude = request.latitude
             driver.longitude = request.longitude
             driver.lastUpdate = LocalDateTime.now()
-            // Если водитель вышел онлайн, можно ставить MANUAL или оставить как есть
+            
+            // Если водитель вышел онлайн, включаем режим MANUAL (Эфир), если он был OFFLINE
             if (driver.searchMode == DriverSearchMode.OFFLINE) {
                 driver.searchMode = DriverSearchMode.MANUAL
             }
         } else {
+            // ЛОГИКА ИСПРАВЛЕНА:
+            // Мы ставим isOnline = false, но НЕ удаляем координаты.
+            // Водитель останется на карте "серым".
             driver.isOnline = false
-            driver.latitude = null
-            driver.longitude = null
+            
+            // driver.latitude = null  <-- УДАЛЕНО
+            // driver.longitude = null <-- УДАЛЕНО
+            
             driver.searchMode = DriverSearchMode.OFFLINE 
         }
         
         val updatedDriver = driverRepository.save(driver)
-        return DriverDto(updatedDriver)
+        val driverDto = DriverDto(updatedDriver)
+
+        // 3. Отправляем обновление в сокет, чтобы карта в админке перекрасила маркер сразу
+        messagingTemplate.convertAndSend("/topic/admin/drivers", driverDto)
+
+        return driverDto
     }
 
     // --- НОВІ МЕТОДИ ДЛЯ ЛАНЦЮГА ТА ДОДОМУ ---
@@ -132,7 +144,6 @@ class DriverService(
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional
     fun resetAllDailyLimits() {
-        // Убедись, что этот метод есть в репозитории, или удали его вызов, если логика выше работает
         // driverRepository.resetAllHomeLimits()
     }
 }

@@ -21,11 +21,9 @@ class DriverLocationService(
     fun updateLocation(driverId: Long, request: UpdateLocationRequest) {
         val driver = driverRepository.findById(driverId).orElseThrow { RuntimeException("Driver not found") }
         
-        // Теперь эти поля существуют в Driver.kt
         driver.latitude = request.lat
         driver.longitude = request.lng
         
-        // Обновляем bearing, если пришел (или берем 0)
         val newBearing = request.bearing ?: 0f
         driver.bearing = newBearing
         
@@ -49,18 +47,20 @@ class DriverLocationService(
 
     @Transactional
     fun clearLocation(driverId: Long) {
+        // Этот метод вызывается при logout/закрытии приложения - здесь очищаем полностью
         val driver = driverRepository.findById(driverId).orElse(null) ?: return
         driver.latitude = null
         driver.longitude = null
-        // Теперь OFFLINE точно есть в enum
         driver.searchMode = DriverSearchMode.OFFLINE
+        driver.isOnline = false // На всякий случай дублируем
         driverRepository.save(driver)
     }
 
     fun getOnlineDriversForMap(): List<DriverLocationDto> {
-        // Фильтруем водителей, у которых есть координаты и они не OFFLINE
+        // ИСПРАВЛЕНО: Убрали фильтр "&& it.searchMode != OFFLINE".
+        // Теперь показываем всех, у кого есть координаты.
         val drivers = driverRepository.findAll().filter { 
-            it.latitude != null && it.longitude != null && it.searchMode != DriverSearchMode.OFFLINE 
+            it.latitude != null && it.longitude != null 
         }
         
         return drivers.map { driver ->
@@ -71,6 +71,7 @@ class DriverLocationService(
                 lng = driver.longitude!!,
                 bearing = driver.bearing ?: 0f,
                 status = driver.searchMode.name,
+                isOnline = driver.isOnline, // Важно передать это для React (зеленый/серый)
                 carModel = driver.car?.model ?: "Не вказано",
                 carColor = driver.car?.color ?: ""
             )
