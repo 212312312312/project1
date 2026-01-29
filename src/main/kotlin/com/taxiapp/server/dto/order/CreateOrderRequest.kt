@@ -3,6 +3,7 @@ package com.taxiapp.server.dto.order
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotNull
+import java.time.LocalDateTime
 
 data class CreateOrderRequestDto(
     @field:NotBlank(message = "Адреса 'Звідки' не може бути порожньою")
@@ -18,7 +19,6 @@ data class CreateOrderRequestDto(
     @field:Min(value = 0, message = "Ціна не може бути негативною")
     val price: Double,
     
-    // --- НОВІ ПОЛЯ ---
     val originLat: Double?,
     val originLng: Double?,
     val destLat: Double?,
@@ -29,10 +29,11 @@ data class CreateOrderRequestDto(
     val durationSeconds: Int,
     val comment: String? = null,
     
-    // ВИПРАВЛЕНО: Залишаємо serviceIds лише ТУТ
     val serviceIds: List<Long> = emptyList(),
 
     val paymentMethod: String = "CASH",
-    // val serviceIds: List<Long> = emptyList(), <--- ЦЕЙ РЯДОК БУВ ЗАЙВИМ (ДУБЛІКАТ)
-    val addedValue: Double = 0.0
+    val addedValue: Double = 0.0,
+
+    // --- НОВЕ ПОЛЕ ---
+    val scheduledAt: LocalDateTime? = null
 )

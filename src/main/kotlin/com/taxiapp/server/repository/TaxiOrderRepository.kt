@@ -18,12 +18,19 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByClient(client: Client): List<TaxiOrder>
 
+    // Додали SCHEDULED у список активних, щоб клієнт міг їх бачити, 
+    // але зазвичай заплановані показують окремо. Залишимо поки так.
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.createdAt DESC")
     fun findActiveOrders(statuses: List<OrderStatus> = listOf(
         OrderStatus.REQUESTED, 
         OrderStatus.ACCEPTED, 
-        OrderStatus.IN_PROGRESS
+        OrderStatus.IN_PROGRESS,
+        OrderStatus.SCHEDULED // <-- Можна додати сюди, або зробити окремий метод
     )): List<TaxiOrder>
+
+    // Окремий метод для диспетчера і водія для чистоти
+    @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'SCHEDULED' ORDER BY o.scheduledAt ASC")
+    fun findAllScheduledOrders(): List<TaxiOrder>
 
     fun findByDriverAndStatusIn(driver: Driver, statuses: List<OrderStatus>): TaxiOrder?
 
@@ -50,6 +57,10 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByStatusAndOfferExpiresAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
 
+    // --- НОВИЙ МЕТОД: Знайти заплановані, час яких настав (або настане скоро) ---
+    // Шукаємо замовлення зі статусом SCHEDULED, де час запланованої поїздки менше ніж (зараз + 30 хв)
+    fun findAllByStatusAndScheduledAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
+
     @Modifying
     @Transactional
     @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
@@ -58,7 +69,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'ARRIVED', 'IN_PROGRESS')")
     fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>
 
-    // --- НОВОЕ: Статистика водителя ---
     @Query("""
         SELECT o FROM TaxiOrder o 
         WHERE o.driver.id = :driverId 

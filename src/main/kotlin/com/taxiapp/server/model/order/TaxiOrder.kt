@@ -16,8 +16,11 @@ class TaxiOrder(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
 
+    @Column(name = "scheduled_at")
+    var scheduledAt: LocalDateTime? = null, // <--- НОВЕ ПОЛЕ: ЧАС ПОДАЧІ
+
     @Column(name = "arrived_at")
-    var arrivedAt: LocalDateTime? = null, // <--- ДОБАВИЛИ
+    var arrivedAt: LocalDateTime? = null,
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", nullable = false)
@@ -111,13 +114,11 @@ class TaxiOrder(
     @Column(nullable = false)
     var addedValue: Double = 0.0,
 
-    // --- ФЛАГИ ОЦЕНКИ (НОВОЕ) ---
     @Column(nullable = false)
     var isRatedByClient: Boolean = false,
 
     @Column(nullable = false)
     var isRatedByDriver: Boolean = false,
-    // ----------------------------
 
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(

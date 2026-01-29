@@ -28,6 +28,7 @@ data class TaxiOrderDto(
     val googleRoutePolyline: String?,
 
     val arrivedAt: LocalDateTime? = null,
+    val scheduledAt: LocalDateTime?,
     val carModel: String? = null,
     val carPlate: String? = null,
     val carColor: String? = null,
@@ -65,6 +66,7 @@ data class TaxiOrderDto(
         googleRoutePolyline = order.googleRoutePolyline,
 
         arrivedAt = order.arrivedAt,
+        scheduledAt = order.scheduledAt,
         carModel = order.driver?.car?.let { "${it.make} ${it.model}" },
         carPlate = order.driver?.car?.plateNumber,
         carColor = order.driver?.car?.color, 
