@@ -17,10 +17,16 @@ class DriverFilter(
     var driver: Driver,
 
     var name: String,
-    var isActive: Boolean = false,
+    
+    var isActive: Boolean = false, // Загальний статус "Ввімкнено"
+
+    // РЕЖИМИ (прапорці)
+    var isEther: Boolean = false,  // <--- НОВЕ ПОЛЕ: Перегляд в ефірі
+    var isAuto: Boolean = false,   // Робот (одноразовий)
+    var isCycle: Boolean = false,  // Робот (циклічний)
 
     // Блок ЗВІДКИ
-    var fromType: String, // "DISTANCE" или "SECTORS"
+    var fromType: String,
     var fromDistance: Double? = null,
     
     @ElementCollection
@@ -33,20 +39,17 @@ class DriverFilter(
     var toSectors: MutableList<Long> = mutableListOf(),
 
     // Блок ТАРИФ
-    var tariffType: String, // "SIMPLE" или "COMPLEX"
+    var tariffType: String,
     
-    // Простой
     var minPrice: Double? = null,
     var minPricePerKm: Double? = null,
-
 
     var complexMinPrice: Double? = null,
     var complexKmInMin: Double? = null, 
     var complexPriceKmCity: Double? = null,
     var complexPriceKmSuburbs: Double? = null,
 
-    // ОПЛАТА
-    var paymentType: String, // "CASH", "CARD", "ANY"
+    var paymentType: String,
 
     @CreationTimestamp
     var createdAt: LocalDateTime = LocalDateTime.now()

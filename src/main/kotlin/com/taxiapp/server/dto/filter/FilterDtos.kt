@@ -1,7 +1,19 @@
 package com.taxiapp.server.dto.filter
 
+data class UpdateFilterModeRequest(
+    val isActive: Boolean,
+    val isEther: Boolean, // <--- НОВЕ
+    val isAuto: Boolean,
+    val isCycle: Boolean
+)
+
 data class CreateFilterRequest(
     val name: String,
+    
+    val isEther: Boolean = false, // <--- НОВЕ
+    val isAuto: Boolean = false,
+    val isCycle: Boolean = false,
+
     val fromType: String,
     val fromDistance: Double?,
     val fromSectors: List<Long>,
@@ -10,9 +22,9 @@ data class CreateFilterRequest(
     val minPrice: Double?,
     val minPricePerKm: Double?,
     val complexMinPrice: Double?,
-    val complexKmInMin: Double?,      // ДОДАТИ ЦЕ
+    val complexKmInMin: Double?,      
     val complexPriceKmCity: Double?,
-    val complexPriceKmSuburbs: Double?, // ДОДАТИ ЦЕ
+    val complexPriceKmSuburbs: Double?, 
     val paymentType: String
 )
 
@@ -20,6 +32,9 @@ data class DriverFilterDto(
     val id: Long,
     val name: String,
     val isActive: Boolean,
+    val isEther: Boolean, // <--- НОВЕ
+    val isAuto: Boolean,   
+    val isCycle: Boolean,  
     val description: String,
     val fromType: String,
     val fromDistance: Double?,
@@ -29,8 +44,8 @@ data class DriverFilterDto(
     val minPrice: Double?,
     val minPricePerKm: Double?,
     val complexMinPrice: Double?,
-    val complexKmInMin: Double?,      // ДОДАТИ ЦЕ
+    val complexKmInMin: Double?,      
     val complexPriceKmCity: Double?,
-    val complexPriceKmSuburbs: Double?, // ДОДАТИ ЦЕ
+    val complexPriceKmSuburbs: Double?, 
     val paymentType: String
 )

@@ -273,25 +273,50 @@ class OrderService(
             newOrder.originLat!!,
             newOrder.originLng!!,
             destSector?.id,
-            rejectedIds
+            null
         ).orElse(null)
 
         if (bestDriver != null) {
-            newOrder.status = OrderStatus.OFFERING 
+            newOrder.status = OrderStatus.OFFERING
             newOrder.offeredDriver = bestDriver
-            newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20) 
+            newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
             notificationService.sendOrderOffer(bestDriver, newOrder)
         } else {
-            newOrder.status = OrderStatus.REQUESTED
+            // 2. АВТО-ФІЛЬТР (Нова логіка)
+            // Якщо водія поблизу/ланцюгу не знайдено, шукаємо того, хто ловить "Авто" фільтром
+            val autoDriver = findDriverByAutoFilter(newOrder)
+            
+            if (autoDriver != null) {
+                logger.info("Found AUTO driver ${autoDriver.id} for order")
+                newOrder.status = OrderStatus.OFFERING
+                newOrder.offeredDriver = autoDriver
+                newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
+                notificationService.sendOrderOffer(autoDriver, newOrder)
+            } else {
+                // 3. ЕФІР
+                newOrder.status = OrderStatus.REQUESTED
+            }
         }
 
         val savedOrder = orderRepository.save(newOrder)
-
         if (savedOrder.status == OrderStatus.REQUESTED) {
             broadcastOrderChange(savedOrder, "ADD")
         }
 
         return TaxiOrderDto(savedOrder)
+    }
+
+    private fun findDriverByAutoFilter(order: TaxiOrder): Driver? {
+        // Шукаємо активні фільтри, де включено АВТО або ЦИКЛ
+        val activeAutoFilters = filterRepository.findAllActiveAutoFilters() 
+        // Примітка: Тобі треба оновити запит в репозиторії! (Див. пункт 5)
+        
+        for (filter in activeAutoFilters) {
+            if (matchesFilter(order, filter, filter.driver)) {
+                return filter.driver
+            }
+        }
+        return null
     }
 
     @Transactional
@@ -337,10 +362,8 @@ class OrderService(
         val orderDto = TaxiOrderDto(order)
         val message = OrderSocketMessage(action, order.id!!, if (action == "ADD") orderDto else null)
 
-        // 1. Отправляем диспетчеру ВСЕГДА (включая SCHEDULED)
         messagingTemplate.convertAndSend("/topic/admin/orders", message)
 
-        // 2. Если это SCHEDULED, то водителям пока не отправляем
         if (order.status == OrderStatus.SCHEDULED) return
 
         val onlineDrivers = driverRepository.findAll().filter { it.isOnline }
@@ -355,9 +378,21 @@ class OrderService(
             }
 
             val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
-                .filter { it.isActive }
+                .filter { it.isActive } 
+            
+            // Якщо немає фільтрів взагалі - показуємо все (або ні? зазвичай так).
+            // Але якщо є фільтри - перевіряємо чи підходить хоч один з увімкненим ЕФІРОМ.
+            
+            val shouldSend = if (activeFilters.isEmpty()) {
+                true // Якщо немає фільтрів, водій бачить все (залежить від твоєї бізнес-логіки)
+            } else {
+                activeFilters.any { filter -> 
+                    // Фільтр має бути активним, мати режим ЕФІР і підходити під замовлення
+                    filter.isEther && matchesFilter(order, filter, driver) 
+                }
+            }
 
-            if (activeFilters.isEmpty() || activeFilters.any { matchesFilter(order, it, driver) }) {
+            if (shouldSend) {
                 val msgAdd = OrderSocketMessage(action, order.id!!, orderDto)
                 messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgAdd)
             }
@@ -624,8 +659,8 @@ class OrderService(
 
     @Transactional
     fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
-        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
@@ -634,6 +669,23 @@ class OrderService(
         driverActivityService.processOrderCompletion(driver, order)
         driverRepository.save(driver)
         
+        // --- ЛОГИКА АВТО/ЦИКЛ ---
+        val filters = filterRepository.findAllByDriverId(driver.id!!)
+        for (f in filters) {
+            // Вимикаємо ТІЛЬКИ режим "Авто" (одноразовий).
+            // isCycle не чіпаємо. isEther не чіпаємо.
+            if (f.isActive && f.isAuto) {
+                f.isAuto = false // Вимикаємо авто-режим
+                
+                // Якщо більше нічого не включено (ні ефір, ні цикл) - вимикаємо фільтр повністю
+                if (!f.isEther && !f.isCycle) {
+                    f.isActive = false
+                }
+                filterRepository.save(f)
+            }
+        }
+        // -----------------------------------------------------------
+
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {
                 val activePromoUsage = promoCodeService.findActiveUsage(order.client)
