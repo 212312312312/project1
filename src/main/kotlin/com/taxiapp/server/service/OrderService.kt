@@ -140,6 +140,7 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
+        // --- Валідація часу ---
         if (request.scheduledAt != null) {
             val now = LocalDateTime.now()
             if (request.scheduledAt.isBefore(now)) {
@@ -150,6 +151,7 @@ class OrderService(
             }
         }
 
+        // --- Розрахунок ціни ---
         var finalPrice = calculateExactTripPrice(
             tariffId = request.tariffId,
             polyline = request.googleRoutePolyline,
@@ -159,6 +161,7 @@ class OrderService(
             isDebug = true
         )
 
+        // --- Логіка знижок (Promo) ---
         var discountAmount = 0.0
         var isPromoCodeUsedForThisOrder = false
         var promoCodeApplied = false
@@ -195,6 +198,7 @@ class OrderService(
         finalPrice -= discountAmount
         if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice
 
+        // --- Визначення секторів ---
         val allSectors = sectorRepository.findAll()
         val destSector = if (request.destLat != null && request.destLng != null) {
             allSectors.find { sector ->
@@ -212,11 +216,12 @@ class OrderService(
 
         val initialStatus = if (request.scheduledAt != null) OrderStatus.SCHEDULED else OrderStatus.REQUESTED
 
+        // --- Створення об'єкта замовлення ---
         val newOrder = TaxiOrder(
             client = client,
             fromAddress = request.fromAddress,
             toAddress = request.toAddress,
-            status = initialStatus, 
+            status = initialStatus,
             createdAt = LocalDateTime.now(),
             tariff = tariff,
             price = finalPrice,
@@ -256,45 +261,62 @@ class OrderService(
             newOrder.stops.addAll(stopsList)
         }
 
-        // --- ВАЖНО: Если запланированный - сохраняем и уведомляем диспетчера ---
+        // --- Збереження запланованого замовлення ---
         if (initialStatus == OrderStatus.SCHEDULED) {
             logger.info("Order scheduled for ${newOrder.scheduledAt}")
             val savedScheduled = orderRepository.save(newOrder)
-            // Диспетчер получит это сообщение благодаря обновленному broadcastOrderChange
-            broadcastOrderChange(savedScheduled, "ADD") 
+            broadcastOrderChange(savedScheduled, "ADD")
             return TaxiOrderDto(savedScheduled)
         }
 
-        val rejectedIds = if (newOrder.rejectedDriverIds.isNotEmpty()) {
-            newOrder.rejectedDriverIds.toList()
-        } else null
+        // =====================================================================
+        // 🚀 ЛОГІКА РОЗПОДІЛУ (WATERFALL): Ланцюг -> Авто/Цикл -> Ефір
+        // =====================================================================
+        
+        val rejectedIds = if (newOrder.rejectedDriverIds.isNotEmpty()) newOrder.rejectedDriverIds.toList() else null
 
-        val bestDriver = driverRepository.findBestDriverForOrder(
-            newOrder.originLat!!,
-            newOrder.originLng!!,
-            destSector?.id,
-            null
+        // 1. ЛАНЦЮГ (Chain) - тут оставляем "геометрический" поиск, так как это очень близко
+        val chainDriver = driverRepository.findBestChainDriver(
+            pickupLat = newOrder.originLat!!,
+            pickupLng = newOrder.originLng!!,
+            rejectedDriverIds = rejectedIds
         ).orElse(null)
 
-        if (bestDriver != null) {
-            newOrder.status = OrderStatus.OFFERING
-            newOrder.offeredDriver = bestDriver
-            newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
-            notificationService.sendOrderOffer(bestDriver, newOrder)
+        if (chainDriver != null) {
+            // Теперь дистанция считается от точки ВЫСАДКИ (destLat) текущего заказа водителя
+            // до точки ПОДАЧИ (originLat) нового заказа.
+            // И используется личный радиус водителя.
+            logger.info(">>> CHAIN driver found: ${chainDriver.id}")
+            assignOrderToDriver(newOrder, chainDriver)
         } else {
-            // 2. АВТО-ФІЛЬТР (Нова логіка)
-            // Якщо водія поблизу/ланцюгу не знайдено, шукаємо того, хто ловить "Авто" фільтром
+            // 2. AUTO/CYCLE - УМНЫЙ ПОИСК
+            // Сначала ищем по Авто-фильтрам (эксклюзив)
             val autoDriver = findDriverByAutoFilter(newOrder)
-            
+
             if (autoDriver != null) {
-                logger.info("Found AUTO driver ${autoDriver.id} for order")
-                newOrder.status = OrderStatus.OFFERING
-                newOrder.offeredDriver = autoDriver
-                newOrder.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
-                notificationService.sendOrderOffer(autoDriver, newOrder)
+                logger.info(">>> FILTER driver selected: ${autoDriver.id}")
+                assignOrderToDriver(newOrder, autoDriver)
             } else {
-                // 3. ЕФІР
-                newOrder.status = OrderStatus.REQUESTED
+                // 3. ETHER / BEST CANDIDATE (Эфир или поиск лучшего)
+                
+                // Получаем ТОП-5 ближайших по прямой
+                val candidates = driverRepository.findBestDriversCandidates(
+                    newOrder.originLat!!,
+                    newOrder.originLng!!,
+                    destSector?.id,
+                    rejectedIds
+                )
+
+                if (candidates.isNotEmpty()) {
+                    // Выбираем того, кто доедет быстрее всего (реальные дороги)
+                    val bestDriver = selectFastestDriver(candidates, newOrder.originLat!!, newOrder.originLng!!)
+                    
+                    logger.info(">>> SMART Selection: Winner ${bestDriver.id} from ${candidates.size} candidates.")
+                    assignOrderToDriver(newOrder, bestDriver)
+                } else {
+                    logger.info(">>> No drivers found. Sending to Ether.")
+                    newOrder.status = OrderStatus.REQUESTED
+                }
             }
         }
 
@@ -306,17 +328,63 @@ class OrderService(
         return TaxiOrderDto(savedOrder)
     }
 
+    private fun assignOrderToDriver(order: TaxiOrder, driver: Driver) {
+        val dist = calculateDistanceKm(
+            driver.latitude ?: 0.0,
+            driver.longitude ?: 0.0,
+            order.originLat!!,
+            order.originLng!!
+        )
+        logger.info(">>> Assigning order ${order.id} to driver ${driver.id} (Distance: ${String.format("%.2f", dist)} km)")
+
+        order.status = OrderStatus.OFFERING
+        order.offeredDriver = driver
+        order.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
+        notificationService.sendOrderOffer(driver, order)
+    }
+
+    private fun selectFastestDriver(drivers: List<Driver>, targetLat: Double, targetLng: Double): Driver {
+        // Простая эвристика: выбираем того, кто ближе, но с учетом "коэффициента извилистости"
+        return drivers.minByOrNull { driver ->
+            estimateDrivingTimeSeconds(driver.latitude!!, driver.longitude!!, targetLat, targetLng)
+        } ?: drivers.first()
+    }
+
+    private fun estimateDrivingTimeSeconds(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val distKm = calculateDistanceKm(lat1, lon1, lat2, lon2)
+        val realDistKm = distKm * 1.4 // Учитываем повороты
+        val speedKmh = 30.0 // Средняя скорость в городе
+        return (realDistKm / speedKmh) * 3600
+    }
+
+
+    
     private fun findDriverByAutoFilter(order: TaxiOrder): Driver? {
-        // Шукаємо активні фільтри, де включено АВТО або ЦИКЛ
-        val activeAutoFilters = filterRepository.findAllActiveAutoFilters() 
-        // Примітка: Тобі треба оновити запит в репозиторії! (Див. пункт 5)
-        
-        for (filter in activeAutoFilters) {
-            if (matchesFilter(order, filter, filter.driver)) {
-                return filter.driver
-            }
-        }
-        return null
+        val rejectedIds = if (order.rejectedDriverIds.isNotEmpty()) order.rejectedDriverIds.toList() else null
+
+        // Викликаємо метод репозиторію, який ми створили раніше
+        val filters = filterRepository.findMatchingAutoFilters(
+            orderLat = order.originLat ?: 0.0,
+            orderLng = order.originLng ?: 0.0,
+            orderSectorId = order.originSector?.id,
+            orderPrice = order.price,
+            rejectedDriverIds = rejectedIds
+        )
+
+        // Якщо знайшли фільтри, беремо першого водія
+        // (Можна додати сортування по дистанції, якщо репозиторій повертає кілька)
+        return filters.firstOrNull()?.driver
+    }
+
+    private fun calculateDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371 // Радиус Земли
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return r * c
     }
 
     @Transactional
@@ -325,14 +393,22 @@ class OrderService(
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         
         if (order.status == OrderStatus.OFFERING && order.offeredDriver?.id == driver.id) {
-            logger.info("Водій ${driver.id} відхилив замовлення ${order.id}")
+            logger.info("Водій ${driver.id} відхилив пропозицію ${order.id}")
+            
+            // --- ЛОГИКА ШТРАФА ---
+            // Если заказ был в статусе OFFERING и имел назначенного водителя, значит это был
+            // либо АВТО, либо ЦЕПОЧКА, либо ПЕРСОНАЛЬНОЕ предложение.
+            // За отказ - штраф.
+            
+            driverActivityService.updateScore(driver, -50, "Відмова від запропонованого замовлення #${order.id}")
+            
             order.rejectedDriverIds.add(driver.id!!)
-            order.status = OrderStatus.REQUESTED
+            order.status = OrderStatus.REQUESTED // Сбрасываем в Эфир
             order.offeredDriver = null
             order.offerExpiresAt = null
             
             val saved = orderRepository.save(order)
-            broadcastOrderChange(saved, "ADD") 
+            broadcastOrderChange(saved, "ADD") // Уведомляем всех в Эфире
         }
     }
 
@@ -344,8 +420,14 @@ class OrderService(
             .filter { it.offerExpiresAt != null && it.offerExpiresAt!!.isBefore(now) }
 
         for (order in expiredOrders) {
-            logger.info("Час пропозиції замовлення ${order.id} вичерпано. Переведення в Ефір.")
-            order.offeredDriver?.let { order.rejectedDriverIds.add(it.id!!) }
+            logger.info("Час пропозиції замовлення ${order.id} вичерпано. Штраф і перехід в Ефір.")
+            
+            // Если таймер истек - тоже штрафуем? Обычно да, так как это игнорирование.
+            order.offeredDriver?.let { 
+                 driverActivityService.updateScore(it, -50, "Пропущено замовлення #${order.id}")
+                 order.rejectedDriverIds.add(it.id!!)
+            }
+
             order.status = OrderStatus.REQUESTED
             order.offeredDriver = null
             order.offerExpiresAt = null
@@ -659,33 +741,43 @@ class OrderService(
 
     @Transactional
     fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         
+        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
 
+        // Оновлюємо статистику
         driver.completedRides += 1
         driverActivityService.processOrderCompletion(driver, order)
         driverRepository.save(driver)
-        
-        // --- ЛОГИКА АВТО/ЦИКЛ ---
+
+        // =======================================================
+        // 🔄 ОБРОБКА РЕЖИМІВ АВТО/ЦИКЛ ПРИ ЗАВЕРШЕННІ
+        // =======================================================
         val filters = filterRepository.findAllByDriverId(driver.id!!)
         for (f in filters) {
-            // Вимикаємо ТІЛЬКИ режим "Авто" (одноразовий).
-            // isCycle не чіпаємо. isEther не чіпаємо.
+            // Режим "Авто" (isAuto) - це одноразовий пошук.
+            // Якщо він був включений, ми його вимикаємо.
             if (f.isActive && f.isAuto) {
-                f.isAuto = false // Вимикаємо авто-режим
-                
-                // Якщо більше нічого не включено (ні ефір, ні цикл) - вимикаємо фільтр повністю
+                f.isAuto = false 
+
+                // Якщо при цьому не включені "Ефір" і "Цикл", то фільтр стає неактивним повністю.
                 if (!f.isEther && !f.isCycle) {
                     f.isActive = false
                 }
                 filterRepository.save(f)
             }
+            
+            // Режим "Цикл" (isCycle) - це нескінченний автопошук.
+            // Ми його НЕ чіпаємо. Він залишається true, і водій одразу 
+            // готовий отримувати нові замовлення через createOrder -> findDriverByAutoFilter.
         }
-        // -----------------------------------------------------------
+        // =======================================================
 
+        // Обробка промокодів
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {
                 val activePromoUsage = promoCodeService.findActiveUsage(order.client)
@@ -694,7 +786,7 @@ class OrderService(
                 promoService.markRewardAsUsed(order.client)
             }
         }
-        
+
         promoService.updateProgressOnRideCompletion(order.client, order)
         return TaxiOrderDto(orderRepository.save(order))
     }

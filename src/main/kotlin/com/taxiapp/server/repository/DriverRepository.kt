@@ -13,7 +13,6 @@ import java.util.Optional
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
 
-    // ИСПРАВЛЕНО: d.latitude вместо d.currentLatitude
     @Query("""
         SELECT d FROM Driver d 
         WHERE d.latitude IS NOT NULL 
@@ -22,7 +21,36 @@ interface DriverRepository : JpaRepository<Driver, Long> {
     """)
     fun findAllActiveOnMap(@Param("threshold") threshold: LocalDateTime): List<Driver>
 
-    // ИСПРАВЛЕНО: d.latitude вместо d.currentLatitude
+    // --- ЛАНЦЮГ (CHAIN) ---
+    // Исправлено: используем d.search_radius
+    @Query(value = """
+        SELECT d.*, u.* FROM drivers d
+        JOIN users u ON d.id = u.id
+        JOIN taxi_orders o ON o.driver_id = d.id
+        WHERE d.is_online = true 
+          AND d.activity_score > 0
+          AND o.status = 'IN_PROGRESS'
+          AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
+          AND (
+             6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:pickupLat)) * cos(radians(o.dest_lat)) * cos(radians(o.dest_lng) - radians(:pickupLng)) + 
+                sin(radians(:pickupLat)) * sin(radians(o.dest_lat))
+             ))) <= d.search_radius
+          )
+        ORDER BY (
+             6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:pickupLat)) * cos(radians(o.dest_lat)) * cos(radians(o.dest_lng) - radians(:pickupLng)) + 
+                sin(radians(:pickupLat)) * sin(radians(o.dest_lat))
+             )))
+        ) ASC
+        LIMIT 1
+    """, nativeQuery = true)
+    fun findBestChainDriver(
+        @Param("pickupLat") pickupLat: Double, 
+        @Param("pickupLng") pickupLng: Double,
+        @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?
+    ): Optional<Driver>
+
     @Modifying
     @Transactional
     @Query("UPDATE Driver d SET d.latitude = :lat, d.longitude = :lng, d.lastUpdate = :now WHERE d.id = :id")
@@ -48,10 +76,7 @@ interface DriverRepository : JpaRepository<Driver, Long> {
 
     fun findAllByHomeSectorsId(sectorId: Long): List<Driver>
 
-    // Native Query: здесь мы используем имена КОЛОНОК в БД.
-    // Если Hibernate создавал таблицу, колонки называются как поля (latitude).
-    // Если таблица старая, возможно там current_latitude. 
-    // Я ставлю latitude, так как мы обновили модель. Если упадет - значит колонки в БД старые.
+    // НОВЫЙ МЕТОД: Возвращает список кандидатов (для умного выбора)
     @Query(value = """
         SELECT d.*, u.* FROM drivers d
         JOIN users u ON d.id = u.id
@@ -59,40 +84,64 @@ interface DriverRepository : JpaRepository<Driver, Long> {
         WHERE d.is_online = true 
           AND u.is_blocked = false 
           AND d.activity_score > -1
-          
-          -- Игнорируем OFFLINE
           AND d.search_mode != 'OFFLINE'
-          
           AND d.latitude IS NOT NULL 
           AND d.longitude IS NOT NULL
-          
           AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
-
           AND (
-              (d.search_mode = 'CHAIN')
-              OR
-              (d.search_mode = 'MANUAL')
-              OR 
+              (d.search_mode = 'CHAIN') OR
+              (d.search_mode = 'MANUAL') OR 
               (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
           )
-        
-        -- Радиус (Haversine)
         AND (
-            6371 * acos(
-                least(1.0, greatest(-1.0, 
-                    cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
-                    sin(radians(:pickupLat)) * sin(radians(d.latitude))
-                ))
-            )
-        ) <= d.search_radius
-        
+            6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
+                sin(radians(:pickupLat)) * sin(radians(d.latitude))
+            ))) <= d.search_radius
+        )
         ORDER BY (
-            6371 * acos(
-                least(1.0, greatest(-1.0, 
-                    cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
-                    sin(radians(:pickupLat)) * sin(radians(d.latitude))
-                ))
-            )
+            6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
+                sin(radians(:pickupLat)) * sin(radians(d.latitude))
+            )))
+        ) ASC
+        LIMIT 5
+    """, nativeQuery = true)
+    fun findBestDriversCandidates(
+        @Param("pickupLat") pickupLat: Double, 
+        @Param("pickupLng") pickupLng: Double, 
+        @Param("destinationSectorId") destinationSectorId: Long?,
+        @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?
+    ): List<Driver>
+
+    // СТАРЫЙ МЕТОД (Возвращен для совместимости, чтобы убрать ошибку на строке 812)
+    @Query(value = """
+        SELECT d.*, u.* FROM drivers d
+        JOIN users u ON d.id = u.id
+        LEFT JOIN driver_home_sectors dhs ON d.id = dhs.driver_id
+        WHERE d.is_online = true 
+          AND u.is_blocked = false 
+          AND d.activity_score > -1
+          AND d.search_mode != 'OFFLINE'
+          AND d.latitude IS NOT NULL 
+          AND d.longitude IS NOT NULL
+          AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
+          AND (
+              (d.search_mode = 'CHAIN') OR
+              (d.search_mode = 'MANUAL') OR 
+              (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
+          )
+        AND (
+            6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
+                sin(radians(:pickupLat)) * sin(radians(d.latitude))
+            ))) <= d.search_radius
+        )
+        ORDER BY (
+            6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
+                sin(radians(:pickupLat)) * sin(radians(d.latitude))
+            )))
         ) ASC
         LIMIT 1
     """, nativeQuery = true)
