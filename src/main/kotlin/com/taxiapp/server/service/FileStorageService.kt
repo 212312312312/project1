@@ -28,14 +28,14 @@ class FileStorageService {
 
     /**
      * Сохраняет файл и возвращает его уникальное имя
+     * ВАЖНО: Метод называется storeFile, чтобы совпадать с DriverAppController
      */
-    fun store(file: MultipartFile): String {
+    fun storeFile(file: MultipartFile): String {
         if (file.isEmpty) {
             throw RuntimeException("Не удалось сохранить пустой файл.")
         }
         
         // 1. Получаем расширение (напр. "png")
-        // Исправил substringAfterLast на более безопасный вариант
         val originalFilename = file.originalFilename ?: "unknown.jpg"
         val extension = if (originalFilename.contains(".")) {
             originalFilename.substringAfterLast('.')
@@ -50,7 +50,7 @@ class FileStorageService {
         val destinationFile = rootLocation.resolve(uniqueFilename)
             .normalize().toAbsolutePath()
 
-        // 4. Копируем байты (с перезаписью, если вдруг UUID совпадет, что почти невозможно)
+        // 4. Копируем байты
         try {
             Files.copy(file.inputStream, destinationFile, StandardCopyOption.REPLACE_EXISTING)
         } catch (e: Exception) {
@@ -62,7 +62,7 @@ class FileStorageService {
     }
 
     /**
-     * Загружает файл как "Ресурс" для раздачи (используется если нужно отдать файл через контроллер, а не напрямую)
+     * Загружает файл как "Ресурс" для раздачи
      */
     fun loadAsResource(filename: String): Resource {
         try {

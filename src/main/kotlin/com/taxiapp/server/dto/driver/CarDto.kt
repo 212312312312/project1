@@ -9,11 +9,15 @@ data class CarDto(
     val model: String,
     val color: String,
     val plateNumber: String,
-    val vin: String,
+    val vin: String?, // Nullable
     val year: Int,
     
-    val carType: String?,
+    val carType: String?, // Nullable
     val photoUrl: String?,
+
+    // Статусы
+    val status: String?,
+    val rejectionReason: String?,
 
     // Нові поля (посилання)
     val techPassportFront: String?,
@@ -28,7 +32,7 @@ data class CarDto(
     val photoSeatsBack: String?
 ) {
     constructor(car: Car) : this(
-        id = car.id,
+        id = car.id!!,
         make = car.make,
         model = car.model,
         color = car.color,
@@ -36,8 +40,9 @@ data class CarDto(
         vin = car.vin,
         year = car.year,
         carType = car.carType,
+        status = car.status.name,
+        rejectionReason = car.rejectionReason,
         
-        // Генеруємо посилання для всіх фото
         photoUrl = generateUrl(car.photoUrl),
         
         techPassportFront = generateUrl(car.techPassportFront),

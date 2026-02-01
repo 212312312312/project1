@@ -133,6 +133,32 @@ class DriverAdminController(
     ): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.updateDriverActivity(id, request.points, request.reason))
     }
+
+    @GetMapping("/cars/pending")
+    fun getPendingCars(): List<com.taxiapp.server.model.user.Car> {
+        return driverAdminService.getPendingCars()
+    }
+
+    // Одобрить
+    @PostMapping("/cars/{id}/approve")
+    fun approveCar(@PathVariable id: Long): ResponseEntity<MessageResponse> {
+        return ResponseEntity.ok(driverAdminService.approveCar(id))
+    }
+
+    // Отклонить (причина передается как простой текст в теле)
+    @PostMapping("/cars/{id}/reject")
+    fun rejectCar(@PathVariable id: Long, @RequestBody reason: String): ResponseEntity<MessageResponse> {
+        return ResponseEntity.ok(driverAdminService.rejectCar(id, reason))
+    }
+
+    @PutMapping("/cars/{id}")
+    fun updateCarDetails(
+        @PathVariable id: Long, 
+        @RequestBody request: com.taxiapp.server.dto.driver.CarDto
+    ): ResponseEntity<Any> {
+        driverAdminService.updateCarDetails(id, request)
+        return ResponseEntity.ok(mapOf("message" to "Дані авто оновлено"))
+    }
 }
 
 // DTO для запиту зміни активності

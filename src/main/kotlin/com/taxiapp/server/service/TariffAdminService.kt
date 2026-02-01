@@ -35,7 +35,7 @@ class TariffAdminService(
             name = tariff.name,
             basePrice = tariff.basePrice,
             pricePerKm = tariff.pricePerKm,
-            pricePerKmOutCity = tariff.pricePerKmOutCity, // <-- ДОДАНО (Виправлення помилки)
+            pricePerKmOutCity = tariff.pricePerKmOutCity,
             freeWaitingMinutes = tariff.freeWaitingMinutes,
             pricePerWaitingMinute = tariff.pricePerWaitingMinute,
             isActive = tariff.isActive,
@@ -54,15 +54,16 @@ class TariffAdminService(
     fun createTariff(requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
         
+        // ISPR: store -> storeFile
         val filename: String? = file?.let {
-            fileStorageService.store(it)
+            fileStorageService.storeFile(it)
         }
 
         val newTariff = CarTariff(
             name = request.name,
             basePrice = request.basePrice,
             pricePerKm = request.pricePerKm,
-            pricePerKmOutCity = request.pricePerKmOutCity, // <-- ДОДАНО: Зберігаємо ціну за містом
+            pricePerKmOutCity = request.pricePerKmOutCity,
             freeWaitingMinutes = request.freeWaitingMinutes,
             pricePerWaitingMinute = request.pricePerWaitingMinute,
             isActive = request.isActive,
@@ -84,13 +85,14 @@ class TariffAdminService(
 
         if (file != null) {
             fileStorageService.delete(tariff.imageUrl)
-            newFilename = fileStorageService.store(file)
+            // ISPR: store -> storeFile
+            newFilename = fileStorageService.storeFile(file)
         }
 
         tariff.name = request.name
         tariff.basePrice = request.basePrice
         tariff.pricePerKm = request.pricePerKm
-        tariff.pricePerKmOutCity = request.pricePerKmOutCity // <-- ДОДАНО: Оновлюємо ціну за містом
+        tariff.pricePerKmOutCity = request.pricePerKmOutCity 
         tariff.freeWaitingMinutes = request.freeWaitingMinutes
         tariff.pricePerWaitingMinute = request.pricePerWaitingMinute
         tariff.isActive = request.isActive
@@ -114,6 +116,6 @@ class TariffAdminService(
     fun getTariffById(id: Long): CarTariffDto {
         val tariff = tariffRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
-        return toDto(tariff) // <-- Використовуємо toDto замість конструктора, щоб не дублювати логіку
+        return toDto(tariff) 
     }
 }

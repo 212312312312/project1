@@ -1,5 +1,7 @@
 package com.taxiapp.server.model.user
 
+import com.taxiapp.server.model.enums.CarStatus
+import com.fasterxml.jackson.annotation.JsonIgnore
 import jakarta.persistence.*
 
 @Entity
@@ -8,6 +10,11 @@ class Car(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "driver_id", nullable = false)
+    @JsonIgnore
+    var driver: Driver? = null,
 
     @Column(nullable = false)
     var make: String,
@@ -61,5 +68,10 @@ class Car(
     var photoSeatsFront: String? = null,
 
     @Column(name = "photo_seats_back")
-    var photoSeatsBack: String? = null
+    var photoSeatsBack: String? = null,
+
+    @Enumerated(EnumType.STRING)
+    var status: CarStatus = CarStatus.ACTIVE, // Для старых машин по умолчанию ACTIVE
+
+    var rejectionReason: String? = null // Причина отказа, если статус REJECTED
 )

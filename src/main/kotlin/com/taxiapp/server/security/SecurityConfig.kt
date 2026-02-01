@@ -55,6 +55,8 @@ class SecurityConfig(
                     // !!! ВАЖЛИВО: ДОЗВОЛЯЄМО WEBSOCKET ПІДКЛЮЧЕННЯ БЕЗ ТОКЕНА !!!
                     .requestMatchers("/ws-taxi/**").permitAll()
                     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                    .requestMatchers("/api/v1/driver/forms/**").permitAll()
+                    .requestMatchers("/api/v1/driver/cars/add").permitAll()
 
                     // 2. СЕРВІСИ
                     .requestMatchers(HttpMethod.GET, "/api/v1/services/**", "/api/services/**").permitAll()

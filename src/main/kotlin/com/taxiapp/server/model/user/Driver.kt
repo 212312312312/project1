@@ -1,5 +1,6 @@
 package com.taxiapp.server.model.user
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import com.taxiapp.server.model.driver.DriverActivityHistory
 import com.taxiapp.server.model.enums.DriverSearchMode
 import com.taxiapp.server.model.order.CarTariff
@@ -48,9 +49,15 @@ class Driver : User() {
 
     var tempBlockExpiresAt: LocalDateTime? = null
 
-    @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = true)
+    // АКТИВНОЕ АВТО (на котором водитель сейчас)
+    @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false) // orphanRemoval = false, чтобы не удалять машину при смене
     @JoinColumn(name = "car_id", referencedColumnName = "id")
     var car: Car? = null
+
+    // ВЕСЬ ГАРАЖ (Список всех машин водителя)
+    @OneToMany(mappedBy = "driver", fetch = FetchType.LAZY)
+    @JsonIgnore // Чтобы избежать бесконечного цикла
+    var cars: MutableList<Car> = mutableListOf()
 
     @OneToMany(mappedBy = "driver")
     val orders: List<TaxiOrder> = emptyList()

@@ -15,16 +15,20 @@ data class DriverDto(
     val isOnline: Boolean,
     val isBlocked: Boolean,
     val tempBlockExpiresAt: LocalDateTime?,
-    // ИСПРАВЛЕНО: currentLatitude -> latitude
+    val rating: Double, // Добавил рейтинг в DTO
+    val ratingCount: Int, // Добавил кол-во оценок
     val latitude: Double?, 
     val longitude: Double?,
-    val car: CarDto?,
+    
+    val car: CarDto?, // Активное авто
+    val cars: List<CarDto>?, // <-- НОВОЕ: Весь список машин
+    
     val allowedTariffs: List<CarTariffDto>,
     val photoUrl: String?,
     val activityScore: Int
 ) {
     constructor(driver: Driver) : this(
-        id = driver.id!!, // Добавил !! на всякий случай, если id nullable
+        id = driver.id!!,
         phoneNumber = driver.userPhone ?: "",
         fullName = driver.fullName ?: "",
         email = driver.email,
@@ -33,10 +37,17 @@ data class DriverDto(
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
         tempBlockExpiresAt = driver.tempBlockExpiresAt,
-        // ИСПРАВЛЕНО: Берем из driver.latitude
+        rating = driver.rating,
+        ratingCount = driver.ratingCount,
         latitude = driver.latitude,
         longitude = driver.longitude,
+        
+        // Маппинг активного авто
         car = driver.car?.let { CarDto(it) },
+        
+        // Маппинг списка всех машин (гараж)
+        cars = driver.cars.map { CarDto(it) },
+
         allowedTariffs = driver.allowedTariffs.map { CarTariffDto(it) },
         photoUrl = driver.photoUrl?.let { filename ->
             ServletUriComponentsBuilder.fromCurrentContextPath()
