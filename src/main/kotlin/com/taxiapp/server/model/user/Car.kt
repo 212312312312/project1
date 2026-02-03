@@ -17,27 +17,26 @@ class Car(
     var driver: Driver? = null,
 
     @Column(nullable = false)
-    var make: String,
+    var make: String = "",
 
     @Column(nullable = false)
-    var model: String,
+    var model: String = "",
 
     @Column(nullable = false)
-    var color: String,
+    var color: String = "",
 
     @Column(name = "plate_number", nullable = false)
-    var plateNumber: String,
+    var plateNumber: String = "",
 
     @Column(nullable = false)
-    var vin: String,
+    var vin: String = "",
 
     @Column(name = "manufacture_year", nullable = false)
-    var year: Int,
+    var year: Int = 0,
 
     @Column(name = "car_type")
     var carType: String? = null,
 
-    // Основне фото (загальне)
     @Column(name = "photo_url")
     var photoUrl: String? = null,
 
@@ -48,10 +47,11 @@ class Car(
     @Column(name = "tech_passport_back")
     var techPassportBack: String? = null,
 
+    // ПОВЕРНУЛИ СТАРУ НАЗВУ (було insurance, стало insurancePhoto)
     @Column(name = "insurance_photo")
     var insurancePhoto: String? = null,
 
-    // --- ФОТО АВТО (6 СТОРІН) ---
+    // --- ФОТО АВТО ---
     @Column(name = "photo_front")
     var photoFront: String? = null,
 
@@ -64,14 +64,16 @@ class Car(
     @Column(name = "photo_right")
     var photoRight: String? = null,
 
+    // ПОВЕРНУЛИ СТАРУ НАЗВУ (було photoSalonFront, стало photoSeatsFront)
     @Column(name = "photo_seats_front")
     var photoSeatsFront: String? = null,
 
+    // ПОВЕРНУЛИ СТАРУ НАЗВУ (було photoSalonBack, стало photoSeatsBack)
     @Column(name = "photo_seats_back")
     var photoSeatsBack: String? = null,
 
     @Enumerated(EnumType.STRING)
-    var status: CarStatus = CarStatus.ACTIVE, // Для старых машин по умолчанию ACTIVE
+    var status: CarStatus = CarStatus.ACTIVE,
 
-    var rejectionReason: String? = null // Причина отказа, если статус REJECTED
+    var rejectionReason: String? = null
 )

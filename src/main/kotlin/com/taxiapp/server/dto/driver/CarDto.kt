@@ -9,21 +9,20 @@ data class CarDto(
     val model: String,
     val color: String,
     val plateNumber: String,
-    val vin: String?, // Nullable
+    val vin: String?,
     val year: Int,
-    
-    val carType: String?, // Nullable
-    val photoUrl: String?,
+    val carType: String?,
+    val photoUrl: String?, // Главное фото
 
-    // Статусы
     val status: String?,
     val rejectionReason: String?,
 
-    // Нові поля (посилання)
+    // Документы
     val techPassportFront: String?,
     val techPassportBack: String?,
     val insurancePhoto: String?,
     
+    // Фото сторон
     val photoFront: String?,
     val photoBack: String?,
     val photoLeft: String?,
@@ -47,7 +46,7 @@ data class CarDto(
         
         techPassportFront = generateUrl(car.techPassportFront),
         techPassportBack = generateUrl(car.techPassportBack),
-        insurancePhoto = generateUrl(car.insurancePhoto),
+        insurancePhoto = generateUrl(car.insurancePhoto), // Убедись, что в Car.kt поле называется insurancePhoto
         
         photoFront = generateUrl(car.photoFront),
         photoBack = generateUrl(car.photoBack),

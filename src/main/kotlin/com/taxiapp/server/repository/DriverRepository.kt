@@ -1,5 +1,6 @@
 package com.taxiapp.server.repository
 
+import com.taxiapp.server.model.enums.RegistrationStatus
 import com.taxiapp.server.model.user.Driver
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Modifying
@@ -12,6 +13,12 @@ import java.util.Optional
 
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
+
+
+    fun findAllByRegistrationStatusNot(status: RegistrationStatus): List<Driver>
+
+    // 2. Знайти всіх з конкретним статусом (для списку "Заявки")
+    fun findAllByRegistrationStatus(status: RegistrationStatus): List<Driver>
 
     @Query("""
         SELECT d FROM Driver d 

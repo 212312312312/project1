@@ -3,6 +3,7 @@ package com.taxiapp.server.model.user
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.taxiapp.server.model.driver.DriverActivityHistory
 import com.taxiapp.server.model.enums.DriverSearchMode
+import com.taxiapp.server.model.enums.RegistrationStatus
 import com.taxiapp.server.model.order.CarTariff
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.sector.Sector
@@ -17,20 +18,20 @@ class Driver : User() {
     @Column(nullable = false)
     var isOnline: Boolean = false
 
-    // --- РЕЙТИНГ ---
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, columnDefinition = "varchar(20) default 'PENDING'")
+    var registrationStatus: RegistrationStatus = RegistrationStatus.PENDING
+
     @Column(nullable = false, columnDefinition = "double precision default 5.0")
     var rating: Double = 5.0
 
     @Column(nullable = false, columnDefinition = "integer default 0")
     var ratingCount: Int = 0
-    // ------------------
 
-    // --- ГЕОЛОКАЦІЯ ---
     var latitude: Double? = null
     var longitude: Double? = null
     var bearing: Float? = 0.0f
     var lastUpdate: LocalDateTime? = null
-    // ------------------
 
     @Column(nullable = true)
     var photoUrl: String? = null
@@ -43,20 +44,26 @@ class Driver : User() {
 
     @Column(name = "driver_license")
     var driverLicense: String? = null
-    
+
+    // --- ДОДАЄМО ПОЛЯ ДЛЯ ФОТО ПРАВ (яких не вистачало) ---
+    @Column(name = "driver_license_front")
+    var driverLicenseFront: String? = null
+
+    @Column(name = "driver_license_back")
+    var driverLicenseBack: String? = null
+    // ------------------------------------------------------
+
     @Column(nullable = false, columnDefinition = "integer default 1000")
     var activityScore: Int = 1000
 
     var tempBlockExpiresAt: LocalDateTime? = null
 
-    // АКТИВНОЕ АВТО (на котором водитель сейчас)
-    @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false) // orphanRemoval = false, чтобы не удалять машину при смене
+    @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false)
     @JoinColumn(name = "car_id", referencedColumnName = "id")
     var car: Car? = null
 
-    // ВЕСЬ ГАРАЖ (Список всех машин водителя)
     @OneToMany(mappedBy = "driver", fetch = FetchType.LAZY)
-    @JsonIgnore // Чтобы избежать бесконечного цикла
+    @JsonIgnore
     var cars: MutableList<Car> = mutableListOf()
 
     @OneToMany(mappedBy = "driver")
@@ -70,8 +77,6 @@ class Driver : User() {
     )
     var allowedTariffs: MutableSet<CarTariff> = mutableSetOf()
 
-    // --- НАЛАШТУВАННЯ ПОШУКУ ---
-
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, columnDefinition = "varchar(20) default 'OFFLINE'")
     var searchMode: DriverSearchMode = DriverSearchMode.OFFLINE
@@ -79,7 +84,6 @@ class Driver : User() {
     @Column(nullable = false, columnDefinition = "double precision default 3.0")
     var searchRadius: Double = 3.0 
 
-    // Налаштування "Додому"
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
         name = "driver_home_sectors",

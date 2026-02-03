@@ -12,20 +12,27 @@ data class DriverDto(
     val email: String?,
     val rnokpp: String?,
     val driverLicense: String?,
+    
+    // --- НОВЫЕ ПОЛЯ (ФОТО ПРАВ) ---
+    val driverLicenseFront: String?,
+    val driverLicenseBack: String?,
+    // -----------------------------
+
     val isOnline: Boolean,
     val isBlocked: Boolean,
     val tempBlockExpiresAt: LocalDateTime?,
-    val rating: Double, // Добавил рейтинг в DTO
-    val ratingCount: Int, // Добавил кол-во оценок
+    val rating: Double,
+    val ratingCount: Int,
     val latitude: Double?, 
     val longitude: Double?,
     
-    val car: CarDto?, // Активное авто
-    val cars: List<CarDto>?, // <-- НОВОЕ: Весь список машин
+    val car: CarDto?,        // Активное авто
+    val cars: List<CarDto>?, // Весь гараж
     
     val allowedTariffs: List<CarTariffDto>,
-    val photoUrl: String?,
-    val activityScore: Int
+    val photoUrl: String?,   // Аватарка
+    val activityScore: Int,
+    val registrationStatus: String // Добавим статус, чтобы видеть PENDING/APPROVED
 ) {
     constructor(driver: Driver) : this(
         id = driver.id!!,
@@ -34,6 +41,11 @@ data class DriverDto(
         email = driver.email,
         rnokpp = driver.rnokpp,
         driverLicense = driver.driverLicense,
+        
+        // Генерируем ссылки на фото прав
+        driverLicenseFront = generateUrl(driver.driverLicenseFront),
+        driverLicenseBack = generateUrl(driver.driverLicenseBack),
+
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
         tempBlockExpiresAt = driver.tempBlockExpiresAt,
@@ -42,19 +54,27 @@ data class DriverDto(
         latitude = driver.latitude,
         longitude = driver.longitude,
         
-        // Маппинг активного авто
+        // Маппинг машины (CarDto уже настроен правильно, он подтянет фото авто, ТП и страховки)
         car = driver.car?.let { CarDto(it) },
-        
-        // Маппинг списка всех машин (гараж)
         cars = driver.cars.map { CarDto(it) },
 
         allowedTariffs = driver.allowedTariffs.map { CarTariffDto(it) },
-        photoUrl = driver.photoUrl?.let { filename ->
-            ServletUriComponentsBuilder.fromCurrentContextPath()
+        
+        // Генерируем ссылку на аватарку
+        photoUrl = generateUrl(driver.photoUrl),
+        
+        activityScore = driver.activityScore,
+        registrationStatus = driver.registrationStatus.name
+    )
+
+    // Вспомогательный метод (компаньон), чтобы генерировать ссылки внутри DTO
+    companion object {
+        private fun generateUrl(filename: String?): String? {
+            if (filename.isNullOrBlank()) return null
+            return ServletUriComponentsBuilder.fromCurrentContextPath()
                 .path("/images/")
                 .path(filename)
                 .toUriString()
-        },
-        activityScore = driver.activityScore
-    )
+        }
+    }
 }

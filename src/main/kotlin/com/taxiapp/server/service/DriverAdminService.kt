@@ -6,6 +6,7 @@ import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.TempBlockRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.model.enums.OrderStatus
+import com.taxiapp.server.model.enums.RegistrationStatus // <--- 1. ДОДАНО ІМПОРТ (виправляємо першу помилку)
 import com.taxiapp.server.model.enums.Role
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
@@ -301,15 +302,12 @@ class DriverAdminService(
         val car = carRepository.findById(carId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Авто не знайдено") }
 
-        // ИСПРАВЛЕНИЕ: Используем elvis operator (?:), так как request.vin/carType может быть null, 
-        // а сущность Car скорее всего ожидает String
         car.make = request.make
         car.model = request.model
         car.plateNumber = request.plateNumber
         car.color = request.color
         car.year = request.year
         
-        // Если пришел null, сохраняем пустую строку или старое значение (если нужно)
         car.vin = request.vin ?: "NO_VIN" 
         car.carType = request.carType ?: "Standard"
 
@@ -354,5 +352,34 @@ class DriverAdminService(
         driverActivityService.updateScore(driver, points, reason)
 
         return DriverDto(driver)
+    }
+
+    // --- 2. ДОДАНІ ВІДСУТНІ МЕТОДИ (Виправляємо другу помилку) ---
+
+    @Transactional
+    fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>) {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+
+        val tariffs = tariffRepository.findAllById(tariffIds).toMutableSet()
+        
+        if (tariffs.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно обрати хоча б один тариф!")
+        }
+
+        driver.registrationStatus = RegistrationStatus.APPROVED
+        driver.car?.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
+        driver.allowedTariffs = tariffs
+
+        driverRepository.save(driver)
+    }
+
+    @Transactional
+    fun rejectDriverRegistration(driverId: Long, reason: String) {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+        
+        driver.registrationStatus = RegistrationStatus.REJECTED
+        driverRepository.save(driver)
     }
 }
