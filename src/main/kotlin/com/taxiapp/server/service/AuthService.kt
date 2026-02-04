@@ -37,7 +37,6 @@ class AuthService(
 ) {
 
     // ... (Методи login, requestSms, verifySms, requestDriverRegistrationSms БЕЗ ЗМІН) ...
-    // Залиш їх як є
 
     fun login(request: LoginRequest): LoginResponse {
         println(">>> LOGIN: Початок входу для ${request.login}")
@@ -118,7 +117,7 @@ class AuthService(
         userRepository.save(user)
     }
 
-    // --- ОСЬ ТУТ БУЛА ПОМИЛКА, ВИПРАВЛЯЄМО ---
+    // --- ТУТ БУЛА ПОМИЛКА: request.vin більше не існує ---
     @Transactional
     fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartFile>): MessageResponse {
         if (userRepository.existsByUserPhone(request.phoneNumber)) {
@@ -137,8 +136,16 @@ class AuthService(
         val techBackUrl = files["techPassportBack"]?.let { fileStorageService.storeFile(it) }
         val insuranceUrl = files["insurance"]?.let { fileStorageService.storeFile(it) }
         val carPhotoUrl = files["carPhoto"]?.let { fileStorageService.storeFile(it) }
+        
+        // Нові фото
+        val carFrontUrl = files["carFront"]?.let { fileStorageService.storeFile(it) }
+        val carBackUrl = files["carBack"]?.let { fileStorageService.storeFile(it) }
+        val carLeftUrl = files["carLeft"]?.let { fileStorageService.storeFile(it) }
+        val carRightUrl = files["carRight"]?.let { fileStorageService.storeFile(it) }
+        val carIntFrontUrl = files["carInteriorFront"]?.let { fileStorageService.storeFile(it) }
+        val carIntBackUrl = files["carInteriorBack"]?.let { fileStorageService.storeFile(it) }
 
-        // 1. Спочатку створюємо об'єкт Водія (але ще не зберігаємо в БД)
+        // 1. Створюємо водія
         val driver = Driver().apply {
             fullName = request.fullName
             userLogin = request.phoneNumber
@@ -158,13 +165,13 @@ class AuthService(
             registrationStatus = RegistrationStatus.PENDING
         }
 
-        // 2. Створюємо об'єкт Машини
+        // 2. Створюємо машину (ВИПРАВЛЕНО: vin = "")
         val car = Car(
             make = request.make,
             model = request.model,
             color = request.color,
             plateNumber = request.plateNumber,
-            vin = request.vin,
+            vin = "", // <--- ТУТ БУЛА ПОМИЛКА. Ставимо порожній рядок.
             year = request.year,
             carType = request.carType
         ).apply {
@@ -172,25 +179,19 @@ class AuthService(
             this.techPassportBack = techBackUrl
             this.insurancePhoto = insuranceUrl 
             
-            this.photoFront = carPhotoUrl 
-            this.photoBack = null 
-            this.photoLeft = null
-            this.photoRight = null
+            // Назначаємо нові фото (якщо старі не потрібні, їх можна не сетати, або залишити для сумісності)
+            this.photoFront = carFrontUrl ?: carPhotoUrl
+            this.photoBack = carBackUrl
+            this.photoLeft = carLeftUrl
+            this.photoRight = carRightUrl
+            this.photoSeatsFront = carIntFrontUrl
+            this.photoSeatsBack = carIntBackUrl
             
-            this.photoSeatsFront = null
-            this.photoSeatsBack = null
-            
-            // !!! ВАЖЛИВО: Прив'язуємо машину до водія (зворотній зв'язок) !!!
             this.driver = driver 
         }
 
-        // 3. Прив'язуємо водія до машини (прямий зв'язок)
         driver.car = car
-        
-        // 4. Додаємо машину в "гараж" (список машин водія)
         driver.cars.add(car)
-
-        // 5. Зберігаємо водія (Hibernate каскадом збереже і машину, бо ми налаштували зв'язки)
         driverRepository.save(driver)
 
         return MessageResponse("Заявку прийнято. Очікуйте підтвердження.")

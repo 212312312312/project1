@@ -63,7 +63,12 @@ class AuthController(
         @RequestPart("techPassportFront", required = false) techPassportFront: MultipartFile?,
         @RequestPart("techPassportBack", required = false) techPassportBack: MultipartFile?,
         @RequestPart("insurance", required = false) insurance: MultipartFile?,
-        @RequestPart("carPhoto", required = false) carPhoto: MultipartFile?
+        @RequestPart("carFront", required = false) carFront: MultipartFile?,
+        @RequestPart("carBack", required = false) carBack: MultipartFile?,
+        @RequestPart("carLeft", required = false) carLeft: MultipartFile?,
+        @RequestPart("carRight", required = false) carRight: MultipartFile?,
+        @RequestPart("carInteriorFront", required = false) carInteriorFront: MultipartFile?,
+        @RequestPart("carInteriorBack", required = false) carInteriorBack: MultipartFile?
     ): MessageResponse {
         // Десериализация JSON вручную
         val mapper = jacksonObjectMapper()
@@ -77,7 +82,12 @@ class AuthController(
         techPassportFront?.let { files["techPassportFront"] = it }
         techPassportBack?.let { files["techPassportBack"] = it }
         insurance?.let { files["insurance"] = it }
-        carPhoto?.let { files["carPhoto"] = it }
+        carFront?.let { files["carFront"] = it }
+        carBack?.let { files["carBack"] = it }
+        carLeft?.let { files["carLeft"] = it }
+        carRight?.let { files["carRight"] = it }
+        carInteriorFront?.let { files["carInteriorFront"] = it }
+        carInteriorBack?.let { files["carInteriorBack"] = it }
 
         return authService.registerDriver(request, files)
     }

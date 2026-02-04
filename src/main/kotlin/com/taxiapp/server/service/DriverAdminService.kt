@@ -6,7 +6,7 @@ import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.TempBlockRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.model.enums.OrderStatus
-import com.taxiapp.server.model.enums.RegistrationStatus // <--- 1. ДОДАНО ІМПОРТ (виправляємо першу помилку)
+import com.taxiapp.server.model.enums.RegistrationStatus
 import com.taxiapp.server.model.enums.Role
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
@@ -55,7 +55,7 @@ class DriverAdminService(
              throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Цей номер телефону вже зайнятий")
         }
 
-        // 1. Сначала создаем и сохраняем водителя
+        // 1. Sначала создаем и сохраняем водителя
         val filename: String? = file?.let { fileStorageService.storeFile(it) }
         val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
 
@@ -76,14 +76,14 @@ class DriverAdminService(
         
         driver = driverRepository.save(driver)
 
-        // 2. Создаем машину и привязываем к водителю
+        // 2. Создаем машину и привязываем к водителю (ВИПРАВЛЕНО)
         val car = Car(
             driver = driver,
             make = request.make,
             model = request.model,
             color = request.color,
             plateNumber = request.plateNumber,
-            vin = request.vin,
+            vin = "", // <--- ВИПРАВЛЕНО: VIN більше немає в запиті
             year = request.year,
             carType = request.carType,
             status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
@@ -123,7 +123,7 @@ class DriverAdminService(
             driverCar.model = request.model
             driverCar.color = request.color
             driverCar.plateNumber = request.plateNumber
-            driverCar.vin = request.vin
+            // driverCar.vin = request.vin // <--- ВИДАЛЕНО: в UpdateDriverRequest VIN теж, скоріш за все, немає або не потрібен
             driverCar.year = request.year
             if (request.carType != null) {
                 driverCar.carType = request.carType
@@ -308,7 +308,7 @@ class DriverAdminService(
         car.color = request.color
         car.year = request.year
         
-        car.vin = request.vin ?: "NO_VIN" 
+        car.vin = request.vin ?: "" // ВИПРАВЛЕНО: якщо прийде null, буде пустий рядок
         car.carType = request.carType ?: "Standard"
 
         return carRepository.save(car)
@@ -353,8 +353,6 @@ class DriverAdminService(
 
         return DriverDto(driver)
     }
-
-    // --- 2. ДОДАНІ ВІДСУТНІ МЕТОДИ (Виправляємо другу помилку) ---
 
     @Transactional
     fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>) {

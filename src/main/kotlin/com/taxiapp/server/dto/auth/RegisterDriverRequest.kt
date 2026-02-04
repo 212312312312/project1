@@ -9,21 +9,19 @@ data class RegisterDriverRequest(
     val phoneNumber: String,
 
     @field:NotBlank(message = "SMS код не може бути порожнім")
-    val smsCode: String, // <-- НОВЕ ПОЛЕ: для фінальної перевірки
+    val smsCode: String, 
 
     @field:NotBlank(message = "Пароль не може бути порожнім")
     @field:Size(min = 6, message = "Пароль повинен містити мінімум 6 символів")
     val password: String,
 
     @field:NotBlank(message = "ПІБ не може бути порожнім")
-    val fullName: String, // Front-end склеїть Прізвище + Ім'я + По батькові сюди
+    val fullName: String,
 
-    // --- ДОДАТКОВІ ПОЛЯ ---
     val email: String? = null,
     val rnokpp: String? = null,
     val driverLicense: String? = null,
     
-    // --- АВТО ---
     @field:NotBlank(message = "Марка авто не може бути порожньою")
     val make: String,
 
@@ -36,8 +34,7 @@ data class RegisterDriverRequest(
     @field:NotBlank(message = "Номер авто не може бути порожнім")
     val plateNumber: String,
 
-    @field:NotBlank(message = "VIN не може бути порожнім")
-    val vin: String,
+    // VIN ВИДАЛЕНО
 
     @field:Min(value = 1990, message = "Рік випуску повинен бути не раніше 1990")
     val year: Int,
