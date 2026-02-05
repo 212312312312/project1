@@ -8,10 +8,10 @@ import java.time.LocalDateTime
 data class SmsVerificationCode(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long = 0,
+    var id: Long = 0,
 
     @Column(unique = true, nullable = false)
-    val userPhone: String, // Номер телефона
+    var userPhone: String, // Номер телефона
 
     @Column(nullable = false)
     var code: String, // 6-значный код

@@ -36,57 +36,122 @@ class AuthService(
     private val fileStorageService: FileStorageService
 ) {
 
-    // ... (Методи login, requestSms, verifySms, requestDriverRegistrationSms БЕЗ ЗМІН) ...
+    // --- НОРМАЛИЗАЦИЯ НОМЕРА ---
+    // Приводим +380XXXXXXXXX к 0XXXXXXXXX (формат базы данных)
+    private fun normalizePhone(phone: String): String {
+        return if (phone.startsWith("+380")) {
+            "0" + phone.substring(4)
+        } else {
+            phone
+        }
+    }
 
     fun login(request: LoginRequest): LoginResponse {
-        println(">>> LOGIN: Початок входу для ${request.login}")
-        var userOptional = userRepository.findByUserLogin(request.login)
-        if (userOptional.isEmpty) userOptional = userRepository.findByUserPhone(request.login)
+        val loginCandidate = request.login
+        // Если логин похож на телефон (начинается с +380), нормализуем его
+        val normalizedLogin = if (loginCandidate.startsWith("+380")) normalizePhone(loginCandidate) else loginCandidate
+
+        println(">>> LOGIN: Початок входу для $normalizedLogin")
+        
+        var userOptional = userRepository.findByUserLogin(normalizedLogin)
+        if (userOptional.isEmpty) userOptional = userRepository.findByUserPhone(normalizedLogin)
+        
         if (userOptional.isEmpty) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено")
         val user = userOptional.get()
+        
         if (user is Driver) {
             if (user.registrationStatus == RegistrationStatus.PENDING) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваша заявка на реєстрацію ще на розгляді.")
             if (user.registrationStatus == RegistrationStatus.REJECTED) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Вашу заявку відхилено.")
         }
         if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+        
         try {
-            authenticationManager.authenticate(UsernamePasswordAuthenticationToken(request.login, request.password))
+            // Аутентификация тоже по нормализованному логину, если это телефон
+            authenticationManager.authenticate(UsernamePasswordAuthenticationToken(normalizedLogin, request.password))
         } catch (e: Exception) { throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Невірний логін або пароль") }
-        val userDetails = userDetailsService.loadUserByUsername(request.login)
+        
+        val userDetails = userDetailsService.loadUserByUsername(normalizedLogin)
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
         return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false)
     }
 
+    // --- DRIVER LOGIN SMS (NEW) ---
+    @Transactional
+    fun requestDriverLoginSms(request: SmsRequestDto): MessageResponse {
+        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+
+        val user = userRepository.findByUserPhone(normalizedPhone).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Водія з таким номером не знайдено")
+        }
+        if (user !is Driver) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Цей номер не належить водію")
+        }
+        sendSmsInternal(normalizedPhone)
+        return MessageResponse("Код надіслано")
+    }
+
+    @Transactional
+    fun verifyDriverLoginSms(request: SmsVerifyDto): LoginResponse {
+        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        
+        checkDriverSmsCode(normalizedPhone, request.code) 
+        // smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) } // <--- ПОКА ЗАКОММЕНТИРОВАНО ДЛЯ ТЕСТОВ
+
+        val user = userRepository.findByUserPhone(normalizedPhone).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено")
+        }
+
+        if (user is Driver) {
+            if (user.registrationStatus == RegistrationStatus.PENDING) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваша заявка на реєстрацію ще на розгляді.")
+            if (user.registrationStatus == RegistrationStatus.REJECTED) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Вашу заявку відхилено.")
+        } else {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не акаунт водія")
+        }
+
+        if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+
+        val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: normalizedPhone)
+        val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false)
+    }
+
+    // --- CLIENT LOGIN / REGISTER ---
     @Transactional
     fun requestSmsCode(request: SmsRequestDto): MessageResponse {
-        sendSmsInternal(request.phoneNumber)
+        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        sendSmsInternal(normalizedPhone)
         return MessageResponse("Код надіслано")
     }
 
     @Transactional
     fun verifySmsCodeAndLogin(request: SmsVerifyDto): LoginResponse {
-        val phone = request.phoneNumber
-        checkDriverSmsCode(phone, request.code)
-        smsCodeRepository.findByUserPhone(phone).ifPresent { smsCodeRepository.delete(it) }
-        var user = userRepository.findByUserPhone(phone).orElse(null)
+        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        
+        checkDriverSmsCode(normalizedPhone, request.code)
+        smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+        
+        var user = userRepository.findByUserPhone(normalizedPhone).orElse(null)
         var isNew = false
         if (user == null) {
             isNew = true
             val newClient = Client().apply {
-                userPhone = phone; userLogin = phone; fullName = "Райдер"
+                userPhone = normalizedPhone; userLogin = normalizedPhone; fullName = "Райдер"
                 passwordHash = passwordEncoder.encode("sms_login"); role = Role.CLIENT; isBlocked = false
             }
             user = clientRepository.save(newClient)
         }
-        val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: phone)
+        val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: normalizedPhone)
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
         return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Клієнт", user.role.name, isNew)
     }
 
+    // --- DRIVER REGISTRATION FLOW ---
     @Transactional
     fun requestDriverRegistrationSms(request: SmsRequestDto): MessageResponse {
-        if (userRepository.existsByUserPhone(request.phoneNumber)) throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
-        sendSmsInternal(request.phoneNumber)
+        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        
+        if (userRepository.existsByUserPhone(normalizedPhone)) throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
+        sendSmsInternal(normalizedPhone)
         return MessageResponse("Код надіслано")
     }
 
@@ -101,31 +166,55 @@ class AuthService(
     }
 
     private fun sendSmsInternal(phone: String) {
-        if (blacklistRepository.existsByPhoneNumber(phone)) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Номер заблоковано")
+        if (blacklistRepository.existsByPhoneNumber(phone)) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Номер заблоковано")
+        }
+        
         val code = (100000 + Random().nextInt(900000)).toString()
-        smsCodeRepository.findByUserPhone(phone).ifPresent { smsCodeRepository.delete(it) }
-        val smsEntity = SmsVerificationCode(userPhone = phone, code = code, expiresAt = LocalDateTime.now().plusMinutes(10))
-        smsCodeRepository.save(smsEntity)
+        
+        // Попытка найти существующую запись
+        val existingSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
+
+        if (existingSms != null) {
+            // Если запись есть — обновляем её
+            existingSms.code = code
+            existingSms.expiresAt = LocalDateTime.now().plusMinutes(10)
+            smsCodeRepository.save(existingSms)
+        } else {
+            // Если записи нет — создаем новую
+            val smsEntity = SmsVerificationCode(
+                userPhone = phone, 
+                code = code, 
+                expiresAt = LocalDateTime.now().plusMinutes(10)
+            )
+            smsCodeRepository.save(smsEntity)
+        }
+
         smsService.sendSms(phone, "Ваш код таксі: $code")
     }
 
     fun updateFcmToken(userLogin: String, token: String) {
-        val user = userRepository.findByUserPhone(userLogin).orElseGet { 
-                userRepository.findByUserLogin(userLogin).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") }
+        // При обновлении токена userLogin может прийти как +380..., так и 0...
+        // Но обычно userLogin == userPhone в БД
+        val normalizedLogin = if (userLogin.startsWith("+380")) normalizePhone(userLogin) else userLogin
+        
+        val user = userRepository.findByUserPhone(normalizedLogin).orElseGet { 
+                userRepository.findByUserLogin(normalizedLogin).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") }
             }
         user.fcmToken = token
         userRepository.save(user)
     }
 
-    // --- ТУТ БУЛА ПОМИЛКА: request.vin більше не існує ---
     @Transactional
     fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartFile>): MessageResponse {
-        if (userRepository.existsByUserPhone(request.phoneNumber)) {
+        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+
+        if (userRepository.existsByUserPhone(normalizedPhone)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
         }
 
-        checkDriverSmsCode(request.phoneNumber, request.smsCode)
-        smsCodeRepository.findByUserPhone(request.phoneNumber).ifPresent { smsCodeRepository.delete(it) }
+        checkDriverSmsCode(normalizedPhone, request.smsCode)
+        smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
 
         // Зберігаємо файли
         val avatarUrl = files["avatar"]?.let { fileStorageService.storeFile(it) }
@@ -148,8 +237,8 @@ class AuthService(
         // 1. Створюємо водія
         val driver = Driver().apply {
             fullName = request.fullName
-            userLogin = request.phoneNumber
-            userPhone = request.phoneNumber
+            userLogin = normalizedPhone // Сохраняем в БД как 0...
+            userPhone = normalizedPhone // Сохраняем в БД как 0...
             passwordHash = passwordEncoder.encode(request.password)
             this.email = request.email
             this.rnokpp = request.rnokpp
@@ -165,13 +254,13 @@ class AuthService(
             registrationStatus = RegistrationStatus.PENDING
         }
 
-        // 2. Створюємо машину (ВИПРАВЛЕНО: vin = "")
+        // 2. Створюємо машину
         val car = Car(
             make = request.make,
             model = request.model,
             color = request.color,
             plateNumber = request.plateNumber,
-            vin = "", // <--- ТУТ БУЛА ПОМИЛКА. Ставимо порожній рядок.
+            vin = "", 
             year = request.year,
             carType = request.carType
         ).apply {
@@ -179,7 +268,6 @@ class AuthService(
             this.techPassportBack = techBackUrl
             this.insurancePhoto = insuranceUrl 
             
-            // Назначаємо нові фото (якщо старі не потрібні, їх можна не сетати, або залишити для сумісності)
             this.photoFront = carFrontUrl ?: carPhotoUrl
             this.photoBack = carBackUrl
             this.photoLeft = carLeftUrl

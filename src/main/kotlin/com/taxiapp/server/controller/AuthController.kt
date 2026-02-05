@@ -21,14 +21,25 @@ class AuthController(
     private val authService: AuthService
 ) {
 
-    // --- ВХІД ---
+    // --- ВХІД (Пароль) ---
     @PostMapping("/login")
     fun login(@RequestBody request: LoginRequest): LoginResponse {
         return authService.login(request)
     }
 
+    // --- ВОДІЙ: Вхід через SMS (НОВЕ) ---
+    @PostMapping("/driver/login/sms/request")
+    fun requestDriverLoginSms(@Valid @RequestBody request: SmsRequestDto): MessageResponse {
+        return authService.requestDriverLoginSms(request)
+    }
+
+    @PostMapping("/driver/login/sms/verify")
+    fun verifyDriverLoginSms(@Valid @RequestBody request: SmsVerifyDto): LoginResponse {
+        return authService.verifyDriverLoginSms(request)
+    }
+
     // --- КЛІЄНТ: SMS Вхід/Реєстрація ---
-    @PostMapping("/client/sms/request") 
+    @PostMapping("/client/sms/request")
     fun requestSms(@Valid @RequestBody request: SmsRequestDto): MessageResponse {
         return authService.requestSmsCode(request)
     }
@@ -95,7 +106,7 @@ class AuthController(
     // --- FCM TOKEN ---
     @PostMapping("/fcm-token")
     fun updateFcmToken(
-        principal: Principal, 
+        principal: Principal,
         @RequestBody body: Map<String, String>
     ): ResponseEntity<Void> {
         val token = body["token"]
