@@ -9,6 +9,7 @@ import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.SectorRepository
+import com.taxiapp.server.repository.UserRepository
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
@@ -16,14 +17,24 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import org.springframework.http.HttpStatus
 import java.time.LocalDateTime
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 @Service
 class DriverService(
     private val driverRepository: DriverRepository,
     private val sectorRepository: SectorRepository,
-    private val messagingTemplate: SimpMessagingTemplate // 1. Добавили для мгновенного обновления карты
+    private val messagingTemplate: SimpMessagingTemplate,
+    private val smsService: SmsService,
+    private val userRepository: UserRepository
 ) {
+    // Временное хранилище для кодов подтверждения (Номер -> Код)
+    private val verificationCodes = ConcurrentHashMap<String, String>()
     
+    // Временное хранилище токенов смены телефона (Токен -> Старый номер телефона)
+    private val changePhoneTokens = ConcurrentHashMap<String, String>()
+
     @Transactional(readOnly = true)
     fun getDriverProfile(user: User): DriverDto {
         val driver = driverRepository.findById(user.id)
@@ -40,32 +51,119 @@ class DriverService(
             driver.longitude = request.longitude
             driver.lastUpdate = LocalDateTime.now()
             
-            // Если водитель вышел онлайн, включаем режим MANUAL (Эфир), если он был OFFLINE
             if (driver.searchMode == DriverSearchMode.OFFLINE) {
                 driver.searchMode = DriverSearchMode.MANUAL
             }
         } else {
-            // ЛОГИКА ИСПРАВЛЕНА:
-            // Мы ставим isOnline = false, но НЕ удаляем координаты.
-            // Водитель останется на карте "серым".
             driver.isOnline = false
-            
-            // driver.latitude = null  <-- УДАЛЕНО
-            // driver.longitude = null <-- УДАЛЕНО
-            
             driver.searchMode = DriverSearchMode.OFFLINE 
         }
         
         val updatedDriver = driverRepository.save(driver)
         val driverDto = DriverDto(updatedDriver)
 
-        // 3. Отправляем обновление в сокет, чтобы карта в админке перекрасила маркер сразу
         messagingTemplate.convertAndSend("/topic/admin/drivers", driverDto)
 
         return driverDto
     }
 
-    // --- НОВІ МЕТОДИ ДЛЯ ЛАНЦЮГА ТА ДОДОМУ ---
+    // --- ЛОГИКА СМЕНЫ НОМЕРА ТЕЛЕФОНА ---
+
+    fun sendVerificationCodeToCurrentPhone(user: User) {
+        val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
+        
+        // ИСПРАВЛЕНО: Теперь 6 цифр (100000..999999)
+        val code = Random.nextInt(100000, 999999).toString()
+        
+        // Сохраняем код в память
+        verificationCodes[phone] = code
+        
+        // Используем существующий метод sendSms
+        smsService.sendSms(phone, "Код зміни номера: $code")
+    }
+
+    fun verifyCurrentPhoneCode(user: User, code: String): String {
+        val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
+        
+        // "Магический код" для тестов (если нужно)
+        if (code == "000000") {
+             val token = UUID.randomUUID().toString()
+             changePhoneTokens[token] = phone
+             return token
+        }
+
+        val savedCode = verificationCodes[phone]
+
+        if (savedCode != null && savedCode == code) {
+            verificationCodes.remove(phone) // Код использован
+            
+            // Генерируем простой токен для смены
+            val token = UUID.randomUUID().toString()
+            changePhoneTokens[token] = phone // Запоминаем, кто подтвердил
+            
+            return token
+        } else {
+            throw RuntimeException("Невірний код")
+        }
+    }
+
+    fun sendVerificationCodeToNewPhone(newPhone: String) {
+        if (userRepository.existsByUserPhone(newPhone)) {
+            throw RuntimeException("Цей номер вже зареєстрований")
+        }
+        
+        // ИСПРАВЛЕНО: Теперь 6 цифр (100000..999999)
+        val code = Random.nextInt(100000, 999999).toString()
+        
+        verificationCodes[newPhone] = code
+        smsService.sendSms(newPhone, "Код підтвердження нового номера: $code")
+    }
+
+    @Transactional
+    // ВАЖНО: Возвращаем User, чтобы контроллер мог выдать новый токен
+    fun changePhone(user: User, newPhone: String, code: String, changeToken: String): User {
+        val currentPhone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
+
+        // 1. Проверяем токен смены (что шаг 1 пройден)
+        val savedPhoneForToken = changePhoneTokens[changeToken]
+        if (savedPhoneForToken == null || savedPhoneForToken != currentPhone) {
+             throw RuntimeException("Помилка безпеки: підтвердіть старий номер знову")
+        }
+        
+        // 2. Проверяем код на НОВОМ номере
+        // Магический код для тестов
+        if (code == "000000") {
+             // skip check
+        } else {
+            val savedCode = verificationCodes[newPhone]
+            if (savedCode == null || savedCode != code) {
+                throw RuntimeException("Невірний код для нового номера")
+            }
+        }
+
+        // 3. Очистка и смена номера
+        verificationCodes.remove(newPhone)
+        changePhoneTokens.remove(changeToken)
+
+        user.userPhone = newPhone
+        // Если логин совпадал с телефоном, меняем и логин
+        if (user.userLogin == currentPhone) {
+            user.userLogin = newPhone
+        }
+        
+        // Возвращаем обновленного пользователя
+        return userRepository.save(user)
+    }
+
+    fun updateRnokpp(user: User, rnokpp: String) {
+        val driver = driverRepository.findById(user.id)
+            .orElseThrow { RuntimeException("Водій не знайдений") }
+        
+        driver.rnokpp = rnokpp
+        driverRepository.save(driver)
+    }
+
+    // --- МЕТОДЫ ПОИСКА И НАСТРОЕК (оставлены без изменений) ---
 
     @Transactional(readOnly = true)
     fun getSearchState(driver: Driver): DriverSearchStateDto {
@@ -144,6 +242,5 @@ class DriverService(
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional
     fun resetAllDailyLimits() {
-        // driverRepository.resetAllHomeLimits()
     }
 }

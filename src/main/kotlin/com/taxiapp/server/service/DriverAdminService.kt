@@ -55,7 +55,7 @@ class DriverAdminService(
              throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Цей номер телефону вже зайнятий")
         }
 
-        // 1. Sначала создаем и сохраняем водителя
+        // 1. Создаем водителя
         val filename: String? = file?.let { fileStorageService.storeFile(it) }
         val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
 
@@ -76,14 +76,14 @@ class DriverAdminService(
         
         driver = driverRepository.save(driver)
 
-        // 2. Создаем машину и привязываем к водителю (ВИПРАВЛЕНО)
+        // 2. Создаем авто
         val car = Car(
             driver = driver,
             make = request.make,
             model = request.model,
             color = request.color,
             plateNumber = request.plateNumber,
-            vin = "", // <--- ВИПРАВЛЕНО: VIN більше немає в запиті
+            vin = "", // VIN при регистрации больше не обязателен
             year = request.year,
             carType = request.carType,
             status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
@@ -93,7 +93,7 @@ class DriverAdminService(
         
         val savedCar = carRepository.save(car)
 
-        // 3. Делаем машину активной
+        // 3. Делаем авто активным
         driver.car = savedCar
         driverRepository.save(driver)
 
@@ -119,24 +119,29 @@ class DriverAdminService(
         if (driverCar != null) {
             saveCarPhotos(driverCar, carFiles)
             
-            driverCar.make = request.make
-            driverCar.model = request.model
-            driverCar.color = request.color
-            driverCar.plateNumber = request.plateNumber
-            // driverCar.vin = request.vin // <--- ВИДАЛЕНО: в UpdateDriverRequest VIN теж, скоріш за все, немає або не потрібен
-            driverCar.year = request.year
+            // ИСПРАВЛЕНО: Если в запросе null, оставляем старое значение
+            request.make?.let { driverCar.make = it }
+            request.model?.let { driverCar.model = it }
+            request.color?.let { driverCar.color = it }
+            request.plateNumber?.let { driverCar.plateNumber = it }
+            request.year?.let { driverCar.year = it }
+            
             if (request.carType != null) {
                 driverCar.carType = request.carType
             }
         }
 
-        val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
+        // Обновляем тарифы только если они переданы
+        if (request.tariffIds.isNotEmpty()) {
+            val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
+            driver.allowedTariffs = tariffs
+        }
 
-        driver.fullName = request.fullName
-        driver.email = request.email
-        driver.rnokpp = request.rnokpp
-        driver.driverLicense = request.driverLicense
-        driver.allowedTariffs = tariffs
+        // Обновляем поля водителя (тоже с проверкой на null)
+        request.fullName?.let { driver.fullName = it }
+        request.email?.let { driver.email = it }
+        request.rnokpp?.let { driver.rnokpp = it }
+        request.driverLicense?.let { driver.driverLicense = it }
         
         val updatedDriver = driverRepository.save(driver)
         return DriverDto(updatedDriver)
@@ -157,7 +162,7 @@ class DriverAdminService(
         
         val driver = car.driver!!
         
-        // Если у водителя нет активной машины, назначаем эту
+        // Если у водителя нет активного авто, назначаем это
         if (driver.car == null) {
             driver.car = car
             driverRepository.save(driver)
@@ -308,7 +313,7 @@ class DriverAdminService(
         car.color = request.color
         car.year = request.year
         
-        car.vin = request.vin ?: "" // ВИПРАВЛЕНО: якщо прийде null, буде пустий рядок
+        car.vin = request.vin ?: "" // Если null, ставим пустую строку
         car.carType = request.carType ?: "Standard"
 
         return carRepository.save(car)

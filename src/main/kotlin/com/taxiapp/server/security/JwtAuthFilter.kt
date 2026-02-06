@@ -25,17 +25,24 @@ class JwtAuthFilter(
     ) {
         val authHeader: String? = request.getHeader("Authorization")
 
-        // Если заголовка нет или он неправильный — пропускаем фильтр
+        // Если заголовка нет или он не начинается с Bearer — пропускаем
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             filterChain.doFilter(request, response)
             return
         }
 
-        val jwtToken = authHeader.substring(7)
+        // ВАЖНОЕ ИСПРАВЛЕНИЕ: 
+        // 1. substring(7) убирает "Bearer "
+        // 2. trim() убирает случайные пробелы в начале или конце, из-за которых падала ошибка Base64
+        val jwtToken = authHeader.substring(7).trim()
 
         try {
-            // Пытаемся достать имя пользователя. 
-            // Если токен просрочен, здесь вылетит ExpiredJwtException
+            // Если токен пустой после обрезки — пропускаем
+            if (jwtToken.isEmpty()) {
+                filterChain.doFilter(request, response)
+                return
+            }
+
             val username = jwtUtils.extractUsername(jwtToken)
 
             if (username != null && SecurityContextHolder.getContext().authentication == null) {
@@ -43,9 +50,9 @@ class JwtAuthFilter(
 
                 if (jwtUtils.validateToken(jwtToken, userDetails)) {
                     
-                    // --- ЛОГ (ДІАГНОСТИКА) ---
-                    println(">>> JWT FILTER: User found: ${userDetails.username}")
-                    // -------------------------
+                    // --- ЛОГ ДЛЯ ОТЛАДКИ ---
+                    // println(">>> JWT FILTER: User authenticated: ${userDetails.username}")
+                    // -----------------------
 
                     val authToken = UsernamePasswordAuthenticationToken(
                         userDetails,
@@ -57,12 +64,10 @@ class JwtAuthFilter(
                 }
             }
         } catch (e: ExpiredJwtException) {
-            // ВАЖНО: Если токен просрочен, мы просто пишем лог и идем дальше.
-            // Мы НЕ выбрасываем ошибку, чтобы сервер не упал с кодом 500.
-            // Запрос пойдет дальше без авторизации.
-            println(">>> JWT FILTER: Token expired for request: ${request.requestURI}")
+            // Токен просрочен — не считаем это критической ошибкой сервера (не 500), просто не пускаем
+            println(">>> JWT FILTER: Token expired for: ${request.requestURI}")
         } catch (e: Exception) {
-            // Любая другая ошибка валидации токена
+            // Ошибка парсинга (например, неверный формат)
             println(">>> JWT FILTER: Error parsing token: ${e.message}")
         }
 

@@ -1,7 +1,11 @@
 package com.taxiapp.server.controller
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.taxiapp.server.dto.auth.LoginResponse
+import com.taxiapp.server.dto.auth.MessageResponse
+import com.taxiapp.server.dto.auth.SmsRequestDto
 import com.taxiapp.server.dto.driver.DriverDto
+import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.dto.driver.UpdateDriverStatusRequest
 import com.taxiapp.server.dto.driver.UpdateLocationRequest
 import com.taxiapp.server.model.enums.CarStatus
@@ -24,13 +28,13 @@ import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.web.bind.annotation.*
-import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.multipart.MultipartHttpServletRequest
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
-// DTO для SOS сигналу
+// --- DTO КЛАССЫ ---
+
 data class SosSignalDto(
     val driverId: Long,
     val driverName: String,
@@ -39,6 +43,16 @@ data class SosSignalDto(
     val lat: Double,
     val lng: Double,
     val timestamp: String
+)
+
+data class ChangePhoneConfirmRequest(
+    val newPhone: String,
+    val code: String,
+    val changeToken: String
+)
+
+data class CodeVerifyRequest(
+    val code: String
 )
 
 @RestController
@@ -61,9 +75,7 @@ class DriverAppController(
         @AuthenticationPrincipal userDetails: UserDetails,
         @Valid @RequestBody request: UpdateDriverStatusRequest
     ): ResponseEntity<DriverDto> {
-        val username = userDetails.username
-        val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
-            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений")
+        val driver = getDriverFromUser(userDetails)
 
         if (!driver.isAccountNonLocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблокований")
@@ -94,13 +106,11 @@ class DriverAppController(
         @RequestBody loc: UpdateLocationRequest, 
         @AuthenticationPrincipal userDetails: UserDetails
     ): ResponseEntity<String> {
-        val username = userDetails.username
-        val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
-            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений")
+        val driver = getDriverFromUser(userDetails)
 
         val sosDto = SosSignalDto(
-            driverId = driver.id!!,
-            driverName = driver.fullName ?: "Водій #${driver.id}",
+            driverId = driver.id, 
+            driverName = driver.fullName,
             phone = driver.userPhone ?: "Не вказано", 
             carNumber = driver.car?.plateNumber ?: "Без авто",
             lat = loc.lat,
@@ -114,12 +124,83 @@ class DriverAppController(
 
     @GetMapping("/me")
     fun getDriverProfile(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverDto> {
-        val username = userDetails.username
-        val driver = (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
-            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено")
-
+        val driver = getDriverFromUser(userDetails)
         return ResponseEntity.ok(DriverDto(driver))
     }
+
+    // --- ЛОГИКА СМЕНЫ НОМЕРА ТЕЛЕФОНА ---
+
+    @PostMapping("/profile/change-phone/request-current")
+    fun requestCodeForCurrentPhone(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<MessageResponse> {
+        val driver = getDriverFromUser(userDetails)
+        driverService.sendVerificationCodeToCurrentPhone(driver) 
+        return ResponseEntity.ok(MessageResponse("Код відправлено на поточний номер"))
+    }
+
+    @PostMapping("/profile/change-phone/verify-current")
+    fun verifyCurrentPhoneCode(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestBody request: CodeVerifyRequest 
+    ): ResponseEntity<Map<String, String>> {
+        val driver = getDriverFromUser(userDetails)
+        val changeToken = driverService.verifyCurrentPhoneCode(driver, request.code)
+        return ResponseEntity.ok(mapOf("changeToken" to changeToken))
+    }
+
+    @PostMapping("/profile/change-phone/request-new")
+    fun requestCodeForNewPhone(
+        @RequestBody request: SmsRequestDto
+    ): ResponseEntity<MessageResponse> {
+        driverService.sendVerificationCodeToNewPhone(request.phoneNumber)
+        return ResponseEntity.ok(MessageResponse("Код відправлено на новий номер"))
+    }
+
+    @PostMapping("/profile/change-phone/confirm-new")
+    fun confirmNewPhone(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestBody request: ChangePhoneConfirmRequest
+    ): ResponseEntity<LoginResponse> {
+        val driver = getDriverFromUser(userDetails)
+        
+        // 1. Меняем номер в базе и получаем обновленного пользователя
+        val updatedUser = driverService.changePhone(driver, request.newPhone, request.code, request.changeToken)
+        
+        // 2. Генерируем НОВЫЙ токен (ИСПРАВЛЕНО: передаем только 3 аргумента)
+        val newToken = jwtUtils.generateToken(
+            updatedUser, 
+            updatedUser.id, 
+            updatedUser.role.name
+        )
+        
+        // 3. Возвращаем LoginResponse (ИСПРАВЛЕНО: заполняем все 6 полей)
+        return ResponseEntity.ok(LoginResponse(
+            token = newToken,
+            role = updatedUser.role.name,
+            userId = updatedUser.id,
+            phoneNumber = updatedUser.userPhone ?: "",
+            fullName = updatedUser.fullName ?: "",
+            isNewUser = false
+        ))
+    }
+
+    // --- ЛОГИКА ОБНОВЛЕНИЯ РНОКПП ---
+
+    @PutMapping("/profile/rnokpp")
+    fun updateRnokpp(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestBody request: UpdateDriverRequest
+    ): ResponseEntity<MessageResponse> {
+        val driver = getDriverFromUser(userDetails)
+        
+        if (request.rnokpp == null || request.rnokpp.length != 10) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "РНОКПП повинен містити 10 цифр")
+        }
+        
+        driverService.updateRnokpp(driver, request.rnokpp)
+        return ResponseEntity.ok(MessageResponse("РНОКПП оновлено"))
+    }
+
+    // --- КАРТА И АВТОМОБИЛИ ---
 
     @DeleteMapping("/location")
     fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
@@ -131,8 +212,6 @@ class DriverAppController(
         }
         return ResponseEntity.ok().build()
     }
-
-    // --- ДИНАМИЧЕСКИЕ ФОРМЫ (УЛУЧШЕННАЯ ВЕРСИЯ) ---
 
     @GetMapping("/forms/add-car", produces = [MediaType.TEXT_HTML_VALUE])
     fun getAddCarForm(@RequestParam token: String): String {
@@ -146,23 +225,19 @@ class DriverAppController(
         request: MultipartHttpServletRequest
     ): ResponseEntity<Any> {
         
-        println("\n>>> ПОЛУЧЕНА ПОЛНАЯ ЗАЯВКА НА АВТО <<<")
+        println("\n>>> ОТРИМАНО ЗАЯВКУ НА АВТО <<<")
         
         val driver = validateTokenAndGetDriver(token)
 
-        // 1. Сохраняем ВСЕ файлы, которые пришли
         val savedPhotos = mutableMapOf<String, String>()
         request.fileMap.forEach { (key, file) ->
             if (!file.isEmpty) {
-                // key - это "tech_passport_front", "photo_left" и т.д.
                 savedPhotos[key] = fileStorageService.storeFile(file)
             }
         }
 
-        // 2. Парсим JSON
         val node = ObjectMapper().readTree(carJson)
         
-        // Хелпер для поиска текста (ищет по нескольким ключам)
         fun txt(vararg keys: String): String {
             for (k in keys) {
                 if (node.has(k)) return node.get(k).asText()
@@ -170,22 +245,18 @@ class DriverAppController(
             return "Unknown"
         }
         
-        // Хелпер для поиска фото (берет сохраненный путь)
         fun photo(key: String): String? = savedPhotos[key]
 
-        // 3. Собираем данные
         val plate = txt("plate_number", "license_plate", "number", "gos_nomer")
         val make = txt("brand", "make")
         val model = txt("model")
         val color = txt("color")
         val vin = if (node.has("vin")) node.get("vin").asText() else "NO_VIN"
         
-        // Год выпуска (парсим в Int, если ошибка - 2020)
         val year = try {
             if (node.has("year")) node.get("year").asInt() else 2020
         } catch (e: Exception) { 2020 }
 
-        // 4. Создаем машину со ВСЕМИ полями
         val newCar = Car(
             driver = driver,
             make = make,
@@ -194,31 +265,20 @@ class DriverAppController(
             color = color,
             vin = vin, 
             year = year, 
-            
-            // --- ДОКУМЕНТЫ ---
             techPassportFront = photo("tech_passport_front"),
             techPassportBack  = photo("tech_passport_back"),
             insurancePhoto    = photo("insurance_photo"),
-
-            // --- ЭКСТЕРЬЕР ---
-            photoFront = photo("photo_front"), // Главное фото
+            photoFront = photo("photo_front"),
             photoBack  = photo("photo_back"),
             photoLeft  = photo("photo_left"),
             photoRight = photo("photo_right"),
-
-            // --- ИНТЕРЬЕР ---
             photoSeatsFront = photo("photo_seats_front"),
             photoSeatsBack  = photo("photo_seats_back"),
-            
-            // Главное фото для списка (используем фото спереди)
             photoUrl = photo("photo_front"), 
-            
             status = CarStatus.PENDING 
         )
         
         carRepository.save(newCar)
-
-        println("Авто сохранено: $make $model ($plate). Фотографий загружено: ${savedPhotos.size}")
 
         return ResponseEntity.ok("""
             <!DOCTYPE html>
@@ -261,7 +321,6 @@ class DriverAppController(
         return ResponseEntity.ok(cars)
     }
 
-    // Сделать машину активной (выбрать, на какой я работаю сейчас)
     @PostMapping("/cars/{carId}/select")
     fun selectActiveCar(
         @AuthenticationPrincipal userDetails: UserDetails,
@@ -278,14 +337,12 @@ class DriverAppController(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Це авто ще не перевірено або заблоковано")
         }
 
-        // Обновляем текущую машину водителя
         driver.car = car
         driverRepository.save(driver)
 
         return ResponseEntity.ok(mapOf("message" to "Активне авто змінено на ${car.make} ${car.model}"))
     }
     
-    // Вспомогательный метод (чтобы не дублировать код поиска)
     private fun getDriverFromUser(userDetails: UserDetails): Driver {
         val username = userDetails.username
         return (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))
