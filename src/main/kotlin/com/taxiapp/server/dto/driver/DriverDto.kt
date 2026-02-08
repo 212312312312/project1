@@ -13,10 +13,15 @@ data class DriverDto(
     val rnokpp: String?,
     val driverLicense: String?,
     
-    // --- НОВЫЕ ПОЛЯ (ФОТО ПРАВ) ---
     val driverLicenseFront: String?,
     val driverLicenseBack: String?,
-    // -----------------------------
+
+    // --- НОВЫЕ ПОЛЯ (ИНВАЛИДНОСТЬ) ---
+    val hasMovementIssue: Boolean,
+    val hasHearingIssue: Boolean,
+    val isDeaf: Boolean,
+    val hasSpeechIssue: Boolean,
+    // --------------------------------
 
     val isOnline: Boolean,
     val isBlocked: Boolean,
@@ -26,13 +31,13 @@ data class DriverDto(
     val latitude: Double?, 
     val longitude: Double?,
     
-    val car: CarDto?,        // Активное авто
-    val cars: List<CarDto>?, // Весь гараж
+    val car: CarDto?,        
+    val cars: List<CarDto>?, 
     
     val allowedTariffs: List<CarTariffDto>,
-    val photoUrl: String?,   // Аватарка
+    val photoUrl: String?,   
     val activityScore: Int,
-    val registrationStatus: String // Добавим статус, чтобы видеть PENDING/APPROVED
+    val registrationStatus: String
 ) {
     constructor(driver: Driver) : this(
         id = driver.id!!,
@@ -42,9 +47,14 @@ data class DriverDto(
         rnokpp = driver.rnokpp,
         driverLicense = driver.driverLicense,
         
-        // Генерируем ссылки на фото прав
         driverLicenseFront = generateUrl(driver.driverLicenseFront),
         driverLicenseBack = generateUrl(driver.driverLicenseBack),
+
+        // Маппинг новых полей
+        hasMovementIssue = driver.hasMovementIssue,
+        hasHearingIssue = driver.hasHearingIssue,
+        isDeaf = driver.isDeaf,
+        hasSpeechIssue = driver.hasSpeechIssue,
 
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
@@ -54,20 +64,17 @@ data class DriverDto(
         latitude = driver.latitude,
         longitude = driver.longitude,
         
-        // Маппинг машины (CarDto уже настроен правильно, он подтянет фото авто, ТП и страховки)
         car = driver.car?.let { CarDto(it) },
         cars = driver.cars.map { CarDto(it) },
 
         allowedTariffs = driver.allowedTariffs.map { CarTariffDto(it) },
         
-        // Генерируем ссылку на аватарку
         photoUrl = generateUrl(driver.photoUrl),
         
         activityScore = driver.activityScore,
         registrationStatus = driver.registrationStatus.name
     )
 
-    // Вспомогательный метод (компаньон), чтобы генерировать ссылки внутри DTO
     companion object {
         private fun generateUrl(filename: String?): String? {
             if (filename.isNullOrBlank()) return null

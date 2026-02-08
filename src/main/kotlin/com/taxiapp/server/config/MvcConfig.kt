@@ -14,7 +14,7 @@ class MvcConfig : WebMvcConfigurer {
      */
     override fun addCorsMappings(registry: CorsRegistry) {
         registry.addMapping("/**")
-            .allowedOrigins("http://localhost:5173", "http://localhost:3000")
+            .allowedOrigins("http://localhost:5173", "http://localhost:3000") // Разрешаем фронтенд
             .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
             .allowedHeaders("*")
             .allowCredentials(true)
@@ -25,20 +25,21 @@ class MvcConfig : WebMvcConfigurer {
      */
     override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
         // Получаем абсолютный путь к папке uploads в корне проекта
-        // System.getProperty("user.dir") возвращает путь к корню проекта
         val uploadPath = Paths.get(System.getProperty("user.dir"), "uploads")
         val uploadUri = uploadPath.toUri().toString()
 
-        // 1. Раздаем картинки водителей и авто
+        // 1. Раздаем картинки водителей и авто по пути /images/...
         // Ссылка: http://localhost:8080/images/car_123.jpg
         registry.addResourceHandler("/images/**")
             .addResourceLocations(uploadUri)
 
-        // 2. Раздаем настройки (если нужно отдельно)
+        // 2. Раздаем файлы по пути /uploads/... (для совместимости)
         // Ссылка: http://localhost:8080/uploads/settings/pic.png
-        // (Опционально, если структура папок сложнее, можно оставить как есть,
-        // но лучше просто использовать один handler)
         registry.addResourceHandler("/uploads/**")
             .addResourceLocations(uploadUri)
+            
+        // 3. Раздаем статику React (если фронт встроен в jar)
+        registry.addResourceHandler("/**")
+            .addResourceLocations("classpath:/static/")
     }
 }

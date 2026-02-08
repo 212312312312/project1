@@ -3,7 +3,9 @@ package com.taxiapp.server.service
 import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.DriverSearchSettingsDto
 import com.taxiapp.server.dto.driver.DriverSearchStateDto
+import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.dto.driver.UpdateDriverStatusRequest
+import com.taxiapp.server.dto.driver.UpdateDisabilityRequest // <--- ВАЖНЫЙ ИМПОРТ
 import com.taxiapp.server.model.enums.DriverSearchMode
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
@@ -43,6 +45,38 @@ class DriverService(
         return DriverDto(driver)
     }
 
+    // --- ОБНОВЛЕНИЕ ОСНОВНОГО ПРОФИЛЯ ---
+    @Transactional
+    fun updateProfile(driver: Driver, request: UpdateDriverRequest): DriverDto {
+        // Если ты добавил эти поля в UpdateDriverRequest, они обновятся здесь.
+        // Если нет — этот код можно закомментировать, так как работает updateDisabilityStatus ниже.
+        // request.hasMovementIssue?.let { driver.hasMovementIssue = it }
+        // request.hasHearingIssue?.let { driver.hasHearingIssue = it }
+        // request.isDeaf?.let { driver.isDeaf = it }
+        // request.hasSpeechIssue?.let { driver.hasSpeechIssue = it }
+
+        // Пример обновления Email, если нужно
+        // request.email?.let { driver.email = it }
+
+        val savedDriver = driverRepository.save(driver)
+        return DriverDto(savedDriver)
+    }
+
+    // --- НОВЫЙ МЕТОД ДЛЯ МЕДИЦИНСКИХ ДАННЫХ (ИСПОЛЬЗУЕТСЯ НОВЫМ КОНТРОЛЛЕРОМ) ---
+    @Transactional
+    fun updateDisabilityStatus(driverId: Long, request: UpdateDisabilityRequest) {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { RuntimeException("Водій не знайдений") }
+
+        driver.hasMovementIssue = request.hasMovementIssue
+        driver.hasHearingIssue = request.hasHearingIssue
+        driver.isDeaf = request.isDeaf
+        driver.hasSpeechIssue = request.hasSpeechIssue
+
+        driverRepository.save(driver)
+    }
+    // -----------------------------------------------------------------------------
+
     @Transactional
     fun updateDriverStatus(driver: Driver, request: UpdateDriverStatusRequest): DriverDto {
         if (request.isOnline) {
@@ -72,20 +106,16 @@ class DriverService(
     fun sendVerificationCodeToCurrentPhone(user: User) {
         val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
         
-        // ИСПРАВЛЕНО: Теперь 6 цифр (100000..999999)
         val code = Random.nextInt(100000, 999999).toString()
         
-        // Сохраняем код в память
         verificationCodes[phone] = code
         
-        // Используем существующий метод sendSms
         smsService.sendSms(phone, "Код зміни номера: $code")
     }
 
     fun verifyCurrentPhoneCode(user: User, code: String): String {
         val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
         
-        // "Магический код" для тестов (если нужно)
         if (code == "000000") {
              val token = UUID.randomUUID().toString()
              changePhoneTokens[token] = phone
@@ -95,11 +125,10 @@ class DriverService(
         val savedCode = verificationCodes[phone]
 
         if (savedCode != null && savedCode == code) {
-            verificationCodes.remove(phone) // Код использован
+            verificationCodes.remove(phone)
             
-            // Генерируем простой токен для смены
             val token = UUID.randomUUID().toString()
-            changePhoneTokens[token] = phone // Запоминаем, кто подтвердил
+            changePhoneTokens[token] = phone
             
             return token
         } else {
@@ -112,7 +141,6 @@ class DriverService(
             throw RuntimeException("Цей номер вже зареєстрований")
         }
         
-        // ИСПРАВЛЕНО: Теперь 6 цифр (100000..999999)
         val code = Random.nextInt(100000, 999999).toString()
         
         verificationCodes[newPhone] = code
@@ -120,18 +148,14 @@ class DriverService(
     }
 
     @Transactional
-    // ВАЖНО: Возвращаем User, чтобы контроллер мог выдать новый токен
     fun changePhone(user: User, newPhone: String, code: String, changeToken: String): User {
         val currentPhone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
 
-        // 1. Проверяем токен смены (что шаг 1 пройден)
         val savedPhoneForToken = changePhoneTokens[changeToken]
         if (savedPhoneForToken == null || savedPhoneForToken != currentPhone) {
              throw RuntimeException("Помилка безпеки: підтвердіть старий номер знову")
         }
         
-        // 2. Проверяем код на НОВОМ номере
-        // Магический код для тестов
         if (code == "000000") {
              // skip check
         } else {
@@ -141,17 +165,14 @@ class DriverService(
             }
         }
 
-        // 3. Очистка и смена номера
         verificationCodes.remove(newPhone)
         changePhoneTokens.remove(changeToken)
 
         user.userPhone = newPhone
-        // Если логин совпадал с телефоном, меняем и логин
         if (user.userLogin == currentPhone) {
             user.userLogin = newPhone
         }
         
-        // Возвращаем обновленного пользователя
         return userRepository.save(user)
     }
 
@@ -163,7 +184,7 @@ class DriverService(
         driverRepository.save(driver)
     }
 
-    // --- МЕТОДЫ ПОИСКА И НАСТРОЕК (оставлены без изменений) ---
+    // --- МЕТОДЫ ПОИСКА И НАСТРОЕК ---
 
     @Transactional(readOnly = true)
     fun getSearchState(driver: Driver): DriverSearchStateDto {

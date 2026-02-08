@@ -17,13 +17,18 @@ data class OrderDriverDto(
     val completedRides: Int,
     val monthsInService: Int,
 
-    // --- ВАЖЛИВО: Додаємо координати для миттєвого відображення на клієнті ---
     val latitude: Double?,
     val longitude: Double?,
-    val bearing: Float?
+    val bearing: Float?,
+
+    // --- НОВЫЕ ПОЛЯ ДЛЯ КЛИЕНТА ---
+    val hasMovementIssue: Boolean,
+    val hasHearingIssue: Boolean,
+    val isDeaf: Boolean,
+    val hasSpeechIssue: Boolean
 ) {
     constructor(driver: Driver) : this(
-        id = driver.id!!, // Використовуємо !! якщо впевнені, що ID є (або driver.id ?: 0L)
+        id = driver.id!!,
         fullName = driver.fullName ?: "Водій",
         phoneNumber = driver.userPhone ?: "",
         carModel = driver.car?.let { "${it.make} ${it.model}" } ?: "Авто",
@@ -35,7 +40,7 @@ data class OrderDriverDto(
                 filename
             } else {
                 ServletUriComponentsBuilder.fromCurrentContextPath()
-                    .path("/images/") // Перевір шлях, у тебе було /images/
+                    .path("/images/")
                     .path(filename)
                     .toUriString()
             }
@@ -43,16 +48,20 @@ data class OrderDriverDto(
         
         completedRides = driver.completedRides,
         
-        // Перевірка на null для createdAt
         monthsInService = if (driver.createdAt != null) {
             ChronoUnit.MONTHS.between(driver.createdAt, LocalDateTime.now()).toInt()
         } else {
             0
         },
 
-        // --- ЗАПОВНЮЄМО КООРДИНАТИ З БД ---
         latitude = driver.latitude,
         longitude = driver.longitude,
-        bearing = driver.bearing
+        bearing = driver.bearing,
+
+        // Маппинг для клиента
+        hasMovementIssue = driver.hasMovementIssue,
+        hasHearingIssue = driver.hasHearingIssue,
+        isDeaf = driver.isDeaf,
+        hasSpeechIssue = driver.hasSpeechIssue
     )
 }

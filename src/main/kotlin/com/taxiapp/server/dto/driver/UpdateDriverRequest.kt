@@ -4,14 +4,13 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class UpdateDriverRequest(
-    // Всі поля nullable, щоб можна було оновлювати їх окремо (PATCH-style)
     val fullName: String? = null,
 
     val email: String? = null,
     val rnokpp: String? = null,
     val driverLicense: String? = null,
 
-    // Автомобіль (теж необов'язкові при оновленні профілю)
+    // Автомобіль
     val make: String? = null,
     val model: String? = null,
     val color: String? = null,
@@ -20,5 +19,11 @@ data class UpdateDriverRequest(
     val year: Int? = null,
     val carType: String? = null,
     
-    val tariffIds: List<Long> = emptyList()
+    val tariffIds: List<Long> = emptyList(),
+
+    // --- НОВЫЕ ПОЛЯ ДЛЯ ОБНОВЛЕНИЯ (ИНВАЛИДНОСТЬ) ---
+    val hasMovementIssue: Boolean? = null,
+    val hasHearingIssue: Boolean? = null,
+    val isDeaf: Boolean? = null,
+    val hasSpeechIssue: Boolean? = null
 )

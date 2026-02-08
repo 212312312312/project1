@@ -45,13 +45,25 @@ class Driver : User() {
     @Column(name = "driver_license")
     var driverLicense: String? = null
 
-    // --- ДОДАЄМО ПОЛЯ ДЛЯ ФОТО ПРАВ (яких не вистачало) ---
     @Column(name = "driver_license_front")
     var driverLicenseFront: String? = null
 
     @Column(name = "driver_license_back")
     var driverLicenseBack: String? = null
-    // ------------------------------------------------------
+
+    // --- ИСПРАВЛЕНО: Добавлен дефолт для БД, чтобы не падала миграция ---
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    var hasMovementIssue: Boolean = false
+
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    var hasHearingIssue: Boolean = false
+
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    var isDeaf: Boolean = false
+
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    var hasSpeechIssue: Boolean = false
+    // --------------------------------------------------------------------
 
     @Column(nullable = false, columnDefinition = "integer default 1000")
     var activityScore: Int = 1000

@@ -4,6 +4,7 @@ import org.springframework.core.io.Resource
 import org.springframework.core.io.UrlResource
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -60,6 +61,12 @@ class FileStorageService {
         // 5. Возвращаем только имя файла
         return uniqueFilename
     }
+
+    // --- ALIAS ДЛЯ СОВМЕСТИМОСТИ С NewsService ---
+    fun saveFile(file: MultipartFile): String {
+        return storeFile(file)
+    }
+    // ---------------------------------------------
 
     /**
      * Загружает файл как "Ресурс" для раздачи

@@ -70,6 +70,18 @@ class DriverAppController(
     @Autowired
     private lateinit var messagingTemplate: SimpMessagingTemplate
 
+    // --- НОВЫЙ МЕТОД ДЛЯ ОБНОВЛЕНИЯ ПРОФИЛЯ (ВКЛ. ИНВАЛИДНОСТЬ) ---
+    @PatchMapping("/profile")
+    fun updateProfile(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestBody request: UpdateDriverRequest
+    ): ResponseEntity<DriverDto> {
+        val driver = getDriverFromUser(userDetails)
+        val updatedDriverDto = driverService.updateProfile(driver, request)
+        return ResponseEntity.ok(updatedDriverDto)
+    }
+    // -------------------------------------------------------------
+
     @PatchMapping("/status")
     fun updateStatus(
         @AuthenticationPrincipal userDetails: UserDetails,
@@ -162,17 +174,14 @@ class DriverAppController(
     ): ResponseEntity<LoginResponse> {
         val driver = getDriverFromUser(userDetails)
         
-        // 1. Меняем номер в базе и получаем обновленного пользователя
         val updatedUser = driverService.changePhone(driver, request.newPhone, request.code, request.changeToken)
         
-        // 2. Генерируем НОВЫЙ токен (ИСПРАВЛЕНО: передаем только 3 аргумента)
         val newToken = jwtUtils.generateToken(
             updatedUser, 
             updatedUser.id, 
             updatedUser.role.name
         )
         
-        // 3. Возвращаем LoginResponse (ИСПРАВЛЕНО: заполняем все 6 полей)
         return ResponseEntity.ok(LoginResponse(
             token = newToken,
             role = updatedUser.role.name,

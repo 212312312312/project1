@@ -3,8 +3,14 @@ package com.taxiapp.server.model.news
 import jakarta.persistence.*
 import java.time.LocalDateTime
 
+enum class NewsTarget {
+    CLIENT,
+    DRIVER,
+    ALL
+}
+
 @Entity
-@Table(name = "app_news") // Называем таблицу app_news, чтобы избежать конфликтов с зарезервированным словом news в некоторых БД
+@Table(name = "app_news")
 data class News(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -16,7 +22,14 @@ data class News(
     @Column(columnDefinition = "TEXT", nullable = false)
     val content: String,
 
-    // Дата создается автоматически при создании объекта
+    // Нові поля
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    val target: NewsTarget = NewsTarget.ALL, // За замовчуванням всім
+
+    @Column(name = "image_url")
+    val imageUrl: String? = null, // Посилання на картинку
+
     @Column(name = "created_at", nullable = false)
     val createdAt: LocalDateTime = LocalDateTime.now()
 )
