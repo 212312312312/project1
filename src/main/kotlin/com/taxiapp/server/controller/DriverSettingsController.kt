@@ -1,6 +1,6 @@
 package com.taxiapp.server.controller
 
-import com.taxiapp.server.dto.auth.MessageResponse // Добавлен импорт
+import com.taxiapp.server.dto.auth.MessageResponse
 import com.taxiapp.server.dto.driver.DriverSearchSettingsDto
 import com.taxiapp.server.dto.driver.DriverSearchStateDto
 import com.taxiapp.server.dto.driver.UpdateDisabilityRequest
@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 
 @RestController
-@RequestMapping("/api/v1/driver") // ВАЖНО: Изменили базовый путь, чтобы поддерживать разные под-пути
+@RequestMapping("/api/v1/driver")
 class DriverSettingsController(
     private val driverService: DriverService,
     private val driverRepository: DriverRepository
@@ -23,19 +23,21 @@ class DriverSettingsController(
 
     // --- НАЛАШТУВАННЯ ПОШУКУ (Search Settings) ---
 
-    @GetMapping("/search-settings") // Добавили уточнение пути здесь
+    @GetMapping("/search-settings")
     fun getSettings(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverSearchStateDto> {
         val driver = getDriver(userDetails)
+        // Используем метод из DriverService
         return ResponseEntity.ok(driverService.getSearchState(driver))
     }
 
-    @PostMapping("/search-settings") // И здесь
+    @PostMapping("/search-settings")
     fun updateSettings(
         @AuthenticationPrincipal userDetails: UserDetails,
         @RequestBody settings: DriverSearchSettingsDto
     ): ResponseEntity<DriverSearchStateDto> {
         val driver = getDriver(userDetails)
         try {
+            // Используем метод из DriverService
             val updatedState = driverService.updateSearchSettings(driver, settings)
             return ResponseEntity.ok(updatedState)
         } catch (e: IllegalArgumentException) {
@@ -43,22 +45,16 @@ class DriverSettingsController(
         }
     }
 
-    // --- МЕДИЧНІ ДАНІ (Disability Status) ---
-
+    // --- МЕДИЧНІ ДАНІ ---
     @PatchMapping("/profile/medical")
     fun updateDisabilityStatus(
-        @AuthenticationPrincipal userDetails: UserDetails, // Используем UserDetails как везде
+        @AuthenticationPrincipal userDetails: UserDetails,
         @RequestBody request: UpdateDisabilityRequest
     ): ResponseEntity<MessageResponse> {
-        // Используем существующий метод getDriver вместо несуществующего extractUserId
-        val driver = getDriver(userDetails) 
-        
+        val driver = getDriver(userDetails)
         driverService.updateDisabilityStatus(driver.id, request)
-        
         return ResponseEntity.ok(MessageResponse("Медичні дані оновлено"))
     }
-
-    // --- ВСПОМОГАТЕЛЬНЫЙ МЕТОД ---
 
     private fun getDriver(userDetails: UserDetails): Driver {
         val username = userDetails.username

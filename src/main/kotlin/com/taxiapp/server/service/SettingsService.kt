@@ -13,39 +13,33 @@ import java.nio.file.StandardCopyOption
 class SettingsService(
     private val repository: AppSettingRepository
 ) {
-    // Папка, где будут лежать картинки (в корне проекта сервера)
+    // Папка для сохранения картинок
     private val uploadDir = "uploads/settings"
 
     fun getAllSettings(): Map<String, String?> {
         return repository.findAll().associate { it.key to it.value }
     }
 
-    // --- ДОБАВЛЕННЫЙ МЕТОД (Исправляет ошибку в PublicController) ---
+    // Этот метод нужен для PublicController
     fun getSettingValue(key: String): String? {
         return repository.findById(key).map { it.value }.orElse(null)
     }
-    // ----------------------------------------------------------------
 
     fun uploadSettingImage(key: String, file: MultipartFile): String {
-        // 1. Создаем папку, если нет
         val directory = File(uploadDir)
         if (!directory.exists()) {
             directory.mkdirs()
         }
 
-        // 2. Генерируем имя файла (key.png или key.jpg)
         val extension = file.originalFilename?.substringAfterLast(".", "png") ?: "png"
         val fileName = "$key.$extension"
         val filePath = Paths.get(uploadDir, fileName)
 
-        // 3. Сохраняем файл
         Files.copy(file.inputStream, filePath, StandardCopyOption.REPLACE_EXISTING)
 
-        // 4. Формируем URL
-        // ВАЖНО: При деплое замени localhost на реальный домен или IP сервера!
+        // URL (в реальном продакшене тут нужен домен)
         val fileUrl = "http://localhost:8080/uploads/settings/$fileName"
 
-        // 5. Сохраняем в БД
         val setting = repository.findById(key).orElse(AppSetting(key, null))
         setting.value = fileUrl
         repository.save(setting)
