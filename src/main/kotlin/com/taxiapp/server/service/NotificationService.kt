@@ -49,6 +49,33 @@ class NotificationService {
         }
     }
 
+    fun sendConfirmationRequest(driver: Driver, order: TaxiOrder) {
+        val token = driver.fcmToken
+        if (token.isNullOrEmpty()) return
+
+        try {
+            val message = Message.builder()
+                .setToken(token)
+                .putData("type", "ORDER_CONFIRMATION") // <--- НОВИЙ ТИП
+                .putData("orderId", order.id.toString())
+                .putData("price", order.price.toString())
+                .putData("address", order.fromAddress ?: "")
+                .putData("time", order.scheduledAt.toString())
+                .setAndroidConfig(
+                    com.google.firebase.messaging.AndroidConfig.builder()
+                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
+                        .setTtl(60000) // Живе 60 секунд (час на підтвердження)
+                        .build()
+                )
+                .build()
+
+            FirebaseMessaging.getInstance().send(message)
+            logger.info(">>> CONFIRMATION REQUEST sent to driver ${driver.id}")
+        } catch (e: Exception) {
+            logger.error("FCM Error: ${e.message}")
+        }
+    }
+
     /**
      * МЕТОД 2: Для НОВОСТЕЙ и КЛИЕНТОВ (Standard Notification).
      * Создает уведомление в шторке (Tray). Используется в NewsService.

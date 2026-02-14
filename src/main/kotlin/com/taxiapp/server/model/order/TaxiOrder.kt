@@ -16,8 +16,17 @@ class TaxiOrder(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
 
+    // ... (всі попередні поля залишаються без змін) ...
     @Column(name = "scheduled_at")
-    var scheduledAt: LocalDateTime? = null, // <--- НОВЕ ПОЛЕ: ЧАС ПОДАЧІ
+    var scheduledAt: LocalDateTime? = null,
+
+    // --- НОВІ ПОЛЯ ДЛЯ ПОПЕРЕДНІХ ЗАМОВЛЕНЬ ---
+    @Column(name = "is_driver_confirmed")
+    var isDriverConfirmed: Boolean? = false,
+
+    @Column(name = "confirmation_requested_at")
+    var confirmationRequestedAt: LocalDateTime? = null, // Коли ми відправили запит (за 30 хв)
+    // ------------------------------------------
 
     @Column(name = "arrived_at")
     var arrivedAt: LocalDateTime? = null,
@@ -104,6 +113,9 @@ class TaxiOrder(
 
     @Column(name = "client_comment", length = 400)
     var comment: String? = null,
+
+    @Column(name = "cancellation_reason")
+    var cancellationReason: String? = null,
 
     @Column(name = "tariff_name")
     var tariffName: String? = null,

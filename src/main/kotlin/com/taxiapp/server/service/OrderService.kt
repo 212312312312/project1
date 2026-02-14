@@ -40,7 +40,8 @@ class OrderService(
     private val sectorRepository: SectorRepository,
     private val messagingTemplate: SimpMessagingTemplate,
     private val driverActivityService: DriverActivityService,
-    private val sectorService: SectorService
+    private val sectorService: SectorService,
+    private val cancellationReasonRepository: CancellationReasonRepository
 ) {
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
@@ -442,39 +443,48 @@ class OrderService(
     // =================================================================================
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
         val orderDto = TaxiOrderDto(order)
+        // Адміни бачать все
         val message = OrderSocketMessage(action, order.id!!, if (action == "ADD") orderDto else null)
-
         messagingTemplate.convertAndSend("/topic/admin/orders", message)
 
-        if (order.status == OrderStatus.SCHEDULED) return
+        // Якщо це заплановане замовлення без водія - воно повинно бути видно
+        // Якщо у замовлення вже є водій - його не повинен бачити ніхто, крім цього водія
 
         val onlineDrivers = driverRepository.findAll().filter { it.isOnline }
 
         for (driver in onlineDrivers) {
             if (driver.activityScore <= 0) continue
 
+            // --- ВИПРАВЛЕННЯ 1: ЛОГІКА ВИДИМОСТІ ---
+            
+            // Якщо ми видаляємо замовлення взагалі
             if (action == "REMOVE") {
-                val msgRemove = OrderSocketMessage(action, order.id!!, null)
+                val msgRemove = OrderSocketMessage("REMOVE", order.id!!, null)
                 messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgRemove)
                 continue
             }
 
+            // Якщо у замовлення Є водій, і це НЕ поточний водій -> надсилаємо REMOVE (хованки)
+            if (order.driver != null && order.driver!!.id != driver.id) {
+                val msgRemove = OrderSocketMessage("REMOVE", order.id!!, null)
+                messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgRemove)
+                continue
+            }
+            // ---------------------------------------
+
             val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
-                .filter { it.isActive } 
-            
-            // Якщо немає фільтрів взагалі - показуємо все (або ні? зазвичай так).
-            // Але якщо є фільтри - перевіряємо чи підходить хоч один з увімкненим ЕФІРОМ.
+                .filter { it.isActive }
             
             val shouldSend = if (activeFilters.isEmpty()) {
-                true // Якщо немає фільтрів, водій бачить все (залежить від твоєї бізнес-логіки)
+                true 
             } else {
                 activeFilters.any { filter -> 
-                    // Фільтр має бути активним, мати режим ЕФІР і підходити під замовлення
                     filter.isEther && matchesFilter(order, filter, driver) 
                 }
             }
 
             if (shouldSend) {
+                // Якщо це заплановане і воно "моє" (я його взяв), або воно нічиє
                 val msgAdd = OrderSocketMessage(action, order.id!!, orderDto)
                 messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgAdd)
             }
@@ -653,16 +663,54 @@ class OrderService(
     }
 
     @Transactional
-    fun driverCancelOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+    fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrderDto {
         val order = orderRepository.findById(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
 
         if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        
         if (order.status == OrderStatus.COMPLETED || order.status == OrderStatus.CANCELLED) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення вже закрите")
         }
 
-        driverActivityService.processOrderCancellation(driver, orderId)
+        // --- ЛОГІКА ПРИЧИН ОТМЕНЫ ---
+        var penalty = 50 
+        var reasonText = "Не вказано"
+
+        if (reasonId != null) {
+            val reasonObj = cancellationReasonRepository.findById(reasonId).orElse(null)
+            if (reasonObj != null) {
+                penalty = reasonObj.penaltyScore
+                reasonText = reasonObj.reasonText
+            }
+        }
+
+        // --- ВИПРАВЛЕННЯ 2: ПОВЕРНЕННЯ В ЕФІР ДЛЯ ЗАПЛАНОВАНИХ ---
+        if (order.status == OrderStatus.SCHEDULED) {
+            logger.info("Driver ${driver.id} rejected SCHEDULED order #${order.id}. Returning to Ether.")
+            
+            // Штрафуємо (якщо треба)
+            driverActivityService.processOrderCancellation(driver, orderId, penalty, "$reasonText (Відмова від запланованого)")
+            
+            // Очищаємо водія, але не скасовуємо замовлення повністю
+            order.rejectedDriverIds.add(driver.id!!)
+            order.driver = null
+            order.isDriverConfirmed = false
+            order.confirmationRequestedAt = null
+            order.offeredDriver = null
+            
+            // Замовлення залишається SCHEDULED, але тепер без водія -> broadcast надішле його всім
+            val saved = orderRepository.save(order)
+            broadcastOrderChange(saved, "ADD") 
+            
+            return TaxiOrderDto(saved)
+        }
+        // ---------------------------------------------------------
+
+        // Стандартне скасування для активних замовлень
+        order.cancellationReason = reasonText
+        driverActivityService.processOrderCancellation(driver, orderId, penalty, reasonText)
+
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
 
@@ -740,6 +788,33 @@ class OrderService(
     }
 
     @Transactional
+    fun confirmScheduledOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+
+        if (order.driver?.id != driver.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        }
+        if (order.status != OrderStatus.SCHEDULED) {
+            // Якщо замовлення вже ACCEPTED, просто повертаємо ОК, нічого не міняємо
+            return TaxiOrderDto(order)
+        }
+
+        logger.info("Driver ${driver.id} CONFIRMED scheduled order #${order.id}")
+        
+        // 1. Ставимо мітку підтвердження
+        order.isDriverConfirmed = true
+        
+        // 2. Переводимо в статус ACCEPTED (Активне)
+        // Тепер воно поводиться як звичайне замовлення: можна натиснути "На місці"
+        order.status = OrderStatus.ACCEPTED
+        
+        val saved = orderRepository.save(order)
+        broadcastOrderChange(saved, "ADD") // Оновлюємо статус у всіх
+        return TaxiOrderDto(saved)
+    }
+
+    @Transactional
     fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
@@ -791,57 +866,107 @@ class OrderService(
         return TaxiOrderDto(orderRepository.save(order))
     }
     
-    // --- ПЛАНУВАЛЬНИК: Активація запланованих поїздок ---
-    @Scheduled(fixedRate = 60000)
+    @Scheduled(fixedRate = 60000) // Перевірка кожну хвилину
     @Transactional
     fun activateScheduledOrders() {
         val now = LocalDateTime.now()
-        val activationThreshold = now.plusMinutes(30)
+        // Шукаємо замовлення, де час подачі настане через 30-35 хвилин (вікно активації)
+        // АБО ті, які вже прострочені (для очищення)
+        val checkThreshold = now.plusMinutes(35) 
 
-        val pendingOrders = orderRepository.findAllByStatusAndScheduledAtBefore(OrderStatus.SCHEDULED, activationThreshold)
+        val pendingOrders = orderRepository.findAllByStatusAndScheduledAtBefore(OrderStatus.SCHEDULED, checkThreshold)
 
         for (order in pendingOrders) {
-            // Перевірка на прострочення (більше години тому)
-            if (order.scheduledAt != null && order.scheduledAt!!.isBefore(now.minusHours(1))) {
+            if (order.scheduledAt == null) continue
+
+            // 1. Якщо замовлення безнадійно прострочене (більше години) -> Скасовуємо
+            if (order.scheduledAt!!.isBefore(now.minusHours(1))) {
                 logger.warn("Scheduled order ${order.id} expired. Cancelling.")
                 order.status = OrderStatus.CANCELLED
                 orderRepository.save(order)
                 continue
             }
 
-            logger.info("ACTIVATING SCHEDULED ORDER #${order.id}")
-
-            // ВАРИАНТ А: Водитель уже принял заказ заранее
-            if (order.driver != null) {
-                logger.info("Order #${order.id} has driver. Switching to ACCEPTED (Start mission).")
-                order.status = OrderStatus.ACCEPTED
-                // Відправляємо пуш водію
-                notificationService.sendOrderOffer(order.driver!!, order)
+            // Ми працюємо тільки з тими, де до подачі залишилось <= 30 хвилин
+            // (але більше ніж -1 година, щоб не чіпати старі)
+            if (order.scheduledAt!!.isAfter(now.plusMinutes(31))) {
+                // Ще рано (більше 31 хвилини до подачі)
+                continue 
             }
-            // ВАРИАНТ Б: Водителя нет, начинаем поиск
-            else {
-                order.status = OrderStatus.REQUESTED
 
-                // --- ВИПРАВЛЕНО ТУТ: Додані реальні аргументи замість "..." ---
+            // === ЛОГІКА ПІДТВЕРДЖЕННЯ (ЗА 30 ХВ) ===
+            
+            if (order.driver != null) {
+                // ВИПРАВЛЕНО: Додано "== true", бо поле може бути null
+                if (order.isDriverConfirmed == true) {
+                    if (order.status == OrderStatus.SCHEDULED) {
+                        order.status = OrderStatus.ACCEPTED
+                        orderRepository.save(order)
+                        broadcastOrderChange(order, "ADD")
+                    }
+                    continue
+                }
+
+                // Водій є, але ще не підтвердив
+                if (order.confirmationRequestedAt == null) {
+                logger.info("Asking confirmation for order #${order.id}")
+                order.confirmationRequestedAt = LocalDateTime.now()
+                orderRepository.save(order)
+                
+                // ВИПРАВЛЕНО: Викликаємо новий метод сповіщення
+                notificationService.sendConfirmationRequest(order.driver!!, order) 
+            } else {
+                    // КРОК 2: Перевіряємо тайм-аут (1 хвилина)
+                    if (now.isAfter(order.confirmationRequestedAt!!.plusMinutes(1))) {
+                        logger.warn("Driver ${order.driver!!.id} failed to confirm order #${order.id}. PENALTY applied.")
+                        
+                        // ШТРАФ
+                        driverActivityService.processOrderCancellation(order.driver!!, order.id!!, 50, "Не підтвердив заплановане")
+                        
+                        // Знімаємо водія
+                        order.rejectedDriverIds.add(order.driver!!.id!!)
+                        order.driver = null
+                        order.isDriverConfirmed = false
+                        order.confirmationRequestedAt = null
+                        
+                        // Статус залишається SCHEDULED, але тепер без водія -> піде в пошук
+                        val saved = orderRepository.save(order)
+                        broadcastOrderChange(saved, "ADD") // Повертається в ефір
+                    }
+                }
+            } 
+            // === ЛОГІКА ПОШУКУ НОВОГО ВОДІЯ ===
+            else {
+                // Водія немає, час підтискає (<= 30 хв). Шукаємо активно.
+                logger.info("Searching driver for scheduled order #${order.id}")
+                
+                // Ставимо REQUESTED/OFFERING щоб запустити механізм торгів, 
+                // але статус самої сутності в базі краще тримати SCHEDULED або REQUESTED
+                
+                // Спробуємо знайти водія
                 val bestDriver = driverRepository.findBestDriverForOrder(
                     order.originLat ?: 0.0,
                     order.originLng ?: 0.0,
                     order.destinationSector?.id,
-                    null // rejectedIds = null, бо це новий пошук
+                    order.rejectedDriverIds.toList()
                 ).orElse(null)
 
                 if (bestDriver != null) {
+                    logger.info("Offering scheduled order #${order.id} to ${bestDriver.id}")
                     order.status = OrderStatus.OFFERING
                     order.offeredDriver = bestDriver
                     order.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
-                    
                     notificationService.sendOrderOffer(bestDriver, order)
-                    logger.info("Order #${order.id} offered to driver ${bestDriver.id}")
+                    orderRepository.save(order)
+                } else {
+                    // Нікого немає - просто висить в ефірі
+                    if (order.status != OrderStatus.REQUESTED) {
+                        order.status = OrderStatus.REQUESTED
+                        orderRepository.save(order)
+                        broadcastOrderChange(order, "ADD")
+                    }
                 }
             }
-
-            val saved = orderRepository.save(order)
-            broadcastOrderChange(saved, "ADD")
         }
     }
 

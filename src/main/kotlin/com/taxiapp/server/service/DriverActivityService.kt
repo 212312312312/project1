@@ -17,7 +17,6 @@ class DriverActivityService(
     private val historyRepository: DriverActivityHistoryRepository
 ) {
 
-    // Получить данные для экрана приложения
     @Transactional(readOnly = true)
     fun getDriverActivity(driver: Driver): DriverActivityDto {
         val history = historyRepository.findTop50ByDriverIdOrderByCreatedAtDesc(driver.id!!)
@@ -30,49 +29,40 @@ class DriverActivityService(
         )
     }
 
-    // Метод начисления баллов при завершении заказа
     @Transactional
     fun processOrderCompletion(driver: Driver, order: TaxiOrder) {
         var pointsToAdd = 0
         val reasons = mutableListOf<String>()
 
-        // 1. Базовые баллы
         pointsToAdd += 2
         reasons.add("Ефір")
 
-        // 2. Дополнительные баллы (раскомментируй, когда будет логика секторов)
-        /* if (order.sector != null && !order.sector!!.isCity) {
-            pointsToAdd += 3
-            reasons.add("За місто")
-        }
-        */
-
-        // Промежуточные точки
         if (order.stops.isNotEmpty()) {
             pointsToAdd += 3
             reasons.add("Проміжні точки")
         }
 
-        // Оплата картой
         if (order.paymentMethod == "CARD") {
             pointsToAdd += 1
             reasons.add("Оплата карткою")
         }
 
-        // Сохраняем изменение
         val reasonString = "Замовлення #${order.id}: " + reasons.joinToString(", ")
         updateScore(driver, pointsToAdd, reasonString, order.id)
     }
 
-    // Метод штрафа при отмене
+    // --- ОБНОВЛЕНО: Принимаем размер штрафа и текст причины ---
     @Transactional
-    fun processOrderCancellation(driver: Driver, orderId: Long) {
-        updateScore(driver, -50, "Скасування замовлення #$orderId", orderId)
+    fun processOrderCancellation(driver: Driver, orderId: Long, penalty: Int, reasonText: String) {
+        // penalty должен приходить положительным числом (например, 50), здесь мы делаем его отрицательным
+        val pointsChange = -penalty
+        val finalReason = "Скасування (#$orderId): $reasonText"
+        
+        updateScore(driver, pointsChange, finalReason, orderId)
     }
+    // -----------------------------------------------------------
 
-    // --- ИСПРАВЛЕНО: УБРАЛИ private, ТЕПЕРЬ МЕТОД ПУБЛИЧНЫЙ ---
-    // Внутренний метод обновления (теперь доступен и для DriverAdminService)
-    @Transactional // Добавил аннотацию на всякий случай, если вызов будет извне
+    @Transactional 
     fun updateScore(driver: Driver, change: Int, reason: String, orderId: Long? = null) {
         val newScore = (driver.activityScore + change).coerceIn(0, 1000)
         

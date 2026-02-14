@@ -3,7 +3,6 @@ package com.taxiapp.server.dto.order
 import com.taxiapp.server.dto.service.TaxiServiceDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
-// import com.taxiapp.server.model.order.WaypointDto <--- УДАЛИЛИ ЭТУ СТРОКУ, ОНА ВЫЗЫВАЛА ОШИБКУ
 import java.time.LocalDateTime
 
 data class TaxiOrderDto(
@@ -42,7 +41,11 @@ data class TaxiOrderDto(
     val services: List<TaxiServiceDto> = emptyList(),
 
     val fromSector: String? = null,
-    val toSector: String? = null
+    val toSector: String? = null,
+
+    // --- НОВЕ ПОЛЕ ---
+    // Передаємо статус підтвердження на клієнт (Web/Android)
+    val isDriverConfirmed: Boolean
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.id ?: 0L,
@@ -120,6 +123,10 @@ data class TaxiOrderDto(
         },
 
         toSector = order.destinationSector?.name,
-        fromSector = order.originSector?.name
+        fromSector = order.originSector?.name,
+
+        // --- Ініціалізація нового поля ---
+        // Якщо в базі null -> вважаємо false
+        isDriverConfirmed = order.isDriverConfirmed ?: false
     )
 }

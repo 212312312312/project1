@@ -55,10 +55,25 @@ class DriverOrderController(
         return ResponseEntity.ok(order)
     }
 
-    @PostMapping("/{id}/cancel")
-    fun cancelOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    @PostMapping("/{id}/confirm")
+    fun confirmScheduledOrder(
+        @PathVariable id: Long,
+        principal: Principal
+    ): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.driverCancelOrder(driver, id)
+        val order = orderService.confirmScheduledOrder(driver, id)
+        return ResponseEntity.ok(order)
+    }
+
+    @PostMapping("/{id}/cancel")
+    fun cancelOrder(
+        @PathVariable id: Long, 
+        @RequestParam(required = false) reasonId: Long?, // <-- Новий параметр
+        principal: Principal
+    ): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        // Передаем reasonId в сервис
+        val order = orderService.driverCancelOrder(driver, id, reasonId)
         return ResponseEntity.ok(order)
     }
 
