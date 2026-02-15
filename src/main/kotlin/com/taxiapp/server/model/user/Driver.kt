@@ -68,6 +68,9 @@ class Driver : User() {
     @Column(nullable = false, columnDefinition = "integer default 1000")
     var activityScore: Int = 1000
 
+    @Column(nullable = false, columnDefinition = "double precision default 0.0")
+    var balance: Double = 0.0
+
     var tempBlockExpiresAt: LocalDateTime? = null
 
     @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false)

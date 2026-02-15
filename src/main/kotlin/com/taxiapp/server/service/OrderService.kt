@@ -41,7 +41,9 @@ class OrderService(
     private val messagingTemplate: SimpMessagingTemplate,
     private val driverActivityService: DriverActivityService,
     private val sectorService: SectorService,
-    private val cancellationReasonRepository: CancellationReasonRepository
+    private val cancellationReasonRepository: CancellationReasonRepository,
+    private val walletTransactionRepository: WalletTransactionRepository, 
+    private val appSettingRepository: AppSettingRepository
 ) {
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
@@ -826,35 +828,56 @@ class OrderService(
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
 
-        // Оновлюємо статистику
+        // 1. Оновлюємо статистику поїздок
         driver.completedRides += 1
         driverActivityService.processOrderCompletion(driver, order)
-        driverRepository.save(driver)
 
         // =======================================================
-        // 🔄 ОБРОБКА РЕЖИМІВ АВТО/ЦИКЛ ПРИ ЗАВЕРШЕННІ
+        // 💰 ФИНАНСОВЫЙ БЛОК: РАСЧЕТ И СПИСАНИЕ КОМИССИИ
         // =======================================================
+        
+        // 1. Получаем процент комиссии из настроек (по умолчанию 10%)
+        val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
+        val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0
+        
+        // 2. Считаем сумму комиссии
+        // Комиссия берется от (Цена + Добавочная стоимость - Скидки)
+        // Но обычно комиссия берется от полной стоимости поездки
+        val commissionAmount = order.price * (commissionPercent / 100.0)
+
+        // 3. Списываем с баланса водителя
+        driver.balance -= commissionAmount
+
+        // 4. Записываем комиссию в заказ
+        order.commissionAmount = commissionAmount
+
+        // 5. Сохраняем историю транзакции
+        val transaction = com.taxiapp.server.model.finance.WalletTransaction(
+            driver = driver,
+            amount = -commissionAmount, // Списание — отрицательное число
+            operationType = com.taxiapp.server.model.enums.TransactionType.COMMISSION,
+            orderId = order.id,
+            description = "Комісія $commissionPercent% за замовлення #${order.id}"
+        )
+        walletTransactionRepository.save(transaction)
+        
+        // =======================================================
+
+        driverRepository.save(driver) // Сохраняем обновленный баланс водителя
+
+        // ... (далее старый код про фильтры и промокоды без изменений) ...
+        
         val filters = filterRepository.findAllByDriverId(driver.id!!)
         for (f in filters) {
-            // Режим "Авто" (isAuto) - це одноразовий пошук.
-            // Якщо він був включений, ми його вимикаємо.
             if (f.isActive && f.isAuto) {
                 f.isAuto = false 
-
-                // Якщо при цьому не включені "Ефір" і "Цикл", то фільтр стає неактивним повністю.
                 if (!f.isEther && !f.isCycle) {
                     f.isActive = false
                 }
                 filterRepository.save(f)
             }
-            
-            // Режим "Цикл" (isCycle) - це нескінченний автопошук.
-            // Ми його НЕ чіпаємо. Він залишається true, і водій одразу 
-            // готовий отримувати нові замовлення через createOrder -> findDriverByAutoFilter.
         }
-        // =======================================================
 
-        // Обробка промокодів
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {
                 val activePromoUsage = promoCodeService.findActiveUsage(order.client)

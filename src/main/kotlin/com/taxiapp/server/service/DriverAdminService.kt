@@ -8,6 +8,8 @@ import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.enums.RegistrationStatus
 import com.taxiapp.server.model.enums.Role
+import com.taxiapp.server.model.enums.TransactionType
+import com.taxiapp.server.model.finance.WalletTransaction
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.CarRepository
@@ -15,6 +17,9 @@ import com.taxiapp.server.repository.CarTariffRepository
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.repository.UserRepository
+import com.taxiapp.server.repository.WalletTransactionRepository
+import org.springframework.data.domain.PageRequest
+import org.springframework.data.domain.Sort
 import org.springframework.http.HttpStatus
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.security.crypto.password.PasswordEncoder
@@ -34,7 +39,8 @@ class DriverAdminService(
     private val fileStorageService: FileStorageService,
     private val driverActivityService: DriverActivityService,
     private val carRepository: CarRepository,
-    private val messagingTemplate: SimpMessagingTemplate
+    private val messagingTemplate: SimpMessagingTemplate,
+    private val walletTransactionRepository: WalletTransactionRepository // <--- ДОДАНО
 ) {
 
     @Transactional(readOnly = true)
@@ -72,6 +78,7 @@ class DriverAdminService(
             this.allowedTariffs = tariffs
             this.photoUrl = filename
             this.activityScore = 1000
+            this.balance = 0.0 // Явно ініціалізуємо баланс
         }
         
         driver = driverRepository.save(driver)
@@ -83,7 +90,7 @@ class DriverAdminService(
             model = request.model,
             color = request.color,
             plateNumber = request.plateNumber,
-            vin = "", // VIN при регистрации больше не обязателен
+            vin = "", 
             year = request.year,
             carType = request.carType,
             status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
@@ -119,7 +126,6 @@ class DriverAdminService(
         if (driverCar != null) {
             saveCarPhotos(driverCar, carFiles)
             
-            // ИСПРАВЛЕНО: Если в запросе null, оставляем старое значение
             request.make?.let { driverCar.make = it }
             request.model?.let { driverCar.model = it }
             request.color?.let { driverCar.color = it }
@@ -131,13 +137,11 @@ class DriverAdminService(
             }
         }
 
-        // Обновляем тарифы только если они переданы
         if (request.tariffIds.isNotEmpty()) {
             val tariffs = tariffRepository.findAllById(request.tariffIds).toMutableSet()
             driver.allowedTariffs = tariffs
         }
 
-        // Обновляем поля водителя (тоже с проверкой на null)
         request.fullName?.let { driver.fullName = it }
         request.email?.let { driver.email = it }
         request.rnokpp?.let { driver.rnokpp = it }
@@ -162,7 +166,6 @@ class DriverAdminService(
         
         val driver = car.driver!!
         
-        // Если у водителя нет активного авто, назначаем это
         if (driver.car == null) {
             driver.car = car
             driverRepository.save(driver)
@@ -313,7 +316,7 @@ class DriverAdminService(
         car.color = request.color
         car.year = request.year
         
-        car.vin = request.vin ?: "" // Если null, ставим пустую строку
+        car.vin = request.vin ?: "" 
         car.carType = request.carType ?: "Standard"
 
         return carRepository.save(car)
@@ -384,5 +387,39 @@ class DriverAdminService(
         
         driver.registrationStatus = RegistrationStatus.REJECTED
         driverRepository.save(driver)
+    }
+
+    // =========================================================================
+    // 💰 НОВІ МЕТОДИ ДЛЯ ФІНАНСІВ (Баланс та Історія)
+    // =========================================================================
+
+    fun getDriverTransactions(driverId: Long): List<WalletTransaction> {
+        val pageable = PageRequest.of(0, 50, Sort.by("createdAt").descending())
+        return walletTransactionRepository.findAllByDriverIdOrderByCreatedAtDesc(driverId, pageable).content
+    }
+
+    @Transactional
+    fun manualBalanceUpdate(driverId: Long, amount: Double, description: String): DriverDto {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+
+        // 1. Оновлюємо баланс
+        driver.balance += amount
+
+        // 2. Тип операції
+        val type = if (amount >= 0) TransactionType.DEPOSIT else TransactionType.WITHDRAWAL
+
+        // 3. Записуємо історію
+        val transaction = WalletTransaction(
+            driver = driver,
+            amount = amount,
+            operationType = type,
+            description = "$description (Адмін)"
+        )
+        walletTransactionRepository.save(transaction)
+        
+        // 4. Зберігаємо
+        val savedDriver = driverRepository.save(driver)
+        return DriverDto(savedDriver)
     }
 }

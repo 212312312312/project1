@@ -126,6 +126,9 @@ class TaxiOrder(
     @Column(nullable = false)
     var addedValue: Double = 0.0,
 
+    @Column(name = "commission_amount", nullable = false, columnDefinition = "double precision default 0.0")
+    var commissionAmount: Double = 0.0,
+
     @Column(nullable = false)
     var isRatedByClient: Boolean = false,
 

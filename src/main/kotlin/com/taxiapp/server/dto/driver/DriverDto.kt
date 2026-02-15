@@ -40,7 +40,8 @@ data class DriverDto(
     val allowedTariffs: List<CarTariffDto>,
     val photoUrl: String?,    
     val activityScore: Int,
-    val registrationStatus: String
+    val registrationStatus: String,
+    val balance: Double
 ) {
     constructor(driver: Driver) : this(
         id = driver.id!!,
@@ -78,7 +79,8 @@ data class DriverDto(
         photoUrl = generateUrl(driver.photoUrl),
         
         activityScore = driver.activityScore,
-        registrationStatus = driver.registrationStatus.name
+        registrationStatus = driver.registrationStatus.name,
+        balance = driver.balance
     )
 
     companion object {

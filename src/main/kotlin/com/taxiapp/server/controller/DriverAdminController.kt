@@ -7,6 +7,7 @@ import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.TempBlockRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.model.enums.RegistrationStatus
+import com.taxiapp.server.model.finance.WalletTransaction
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.DriverAdminService
 import org.springframework.http.HttpStatus
@@ -171,6 +172,27 @@ class DriverAdminController(
     fun rejectDriver(@PathVariable id: Long, @RequestBody reason: String): ResponseEntity<Void> {
         driverAdminService.rejectDriverRegistration(id, reason)
         return ResponseEntity.ok().build()
+    }
+
+    // =========================================================================
+    // 💰 ФІНАНСОВІ ЕНДПОІНТИ (НОВІ)
+    // =========================================================================
+
+    @GetMapping("/{id}/transactions")
+    fun getDriverTransactions(@PathVariable id: Long): ResponseEntity<List<WalletTransaction>> {
+        val transactions = driverAdminService.getDriverTransactions(id)
+        return ResponseEntity.ok(transactions)
+    }
+
+    data class BalanceUpdateRequest(val amount: Double, val description: String)
+
+    @PostMapping("/{id}/balance")
+    fun updateBalance(
+        @PathVariable id: Long,
+        @RequestBody request: BalanceUpdateRequest
+    ): ResponseEntity<DriverDto> {
+        val updatedDriver = driverAdminService.manualBalanceUpdate(id, request.amount, request.description)
+        return ResponseEntity.ok(updatedDriver)
     }
 }
 

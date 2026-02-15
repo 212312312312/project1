@@ -48,14 +48,17 @@ class SecurityConfig(
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests { auth ->
                 auth
-                    // 1. Публічні API (доступні всім)
+                    // 1. Публичные API (доступны всем)
                     .requestMatchers(
                         "/api/v1/auth/**",
                         "/api/v1/public/**",
-                        "/ws-taxi/**"
+                        "/ws-taxi/**",
+                        
+                        // --- ВАЖНО: Разрешаем доступ к странице "Фейковой оплаты" без токена ---
+                        "/api/v1/payments/mock-gateway/**" 
                     ).permitAll()
 
-                    // 2. Статичні ресурси (React build) та завантажені файли
+                    // 2. Статические ресурсы (React build, файлы)
                     .requestMatchers(
                         "/",
                         "/index.html",
@@ -71,17 +74,24 @@ class SecurityConfig(
                         "/*.js",
                         "/*.css",
                         
-                        // Дозволяємо доступ до картинок та папки uploads
                         "/images/**",
                         "/uploads/**"
                     ).permitAll()
 
-                    // 3. !!! НАЛАШТУВАННЯ ДОСТУПУ ПО РОЛЯХ !!!
-                    // Враховуємо префікс ROLE_, який є в базі
+                    // 3. !!! НАСТРОЙКА ДОСТУПА ПО РОЛЯМ !!!
+                    
+                    // --- НОВАЯ СЕКЦИЯ: ПЛАТЕЖИ ---
+                    // Инициировать и проверять оплату могут Водители и Админы
+                    .requestMatchers("/api/v1/payments/**").hasAnyAuthority(
+                        "ROLE_DRIVER", "DRIVER",
+                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
+                    )
+                    // -----------------------------
+
                     .requestMatchers("/api/v1/admin/**").hasAnyAuthority(
                         "ROLE_ADMINISTRATOR", "ADMINISTRATOR", 
                         "ROLE_DISPATCHER", "DISPATCHER",
-                        "ROLE_ADMIN", "ADMIN" // На всяк випадок
+                        "ROLE_ADMIN", "ADMIN"
                     )
                     .requestMatchers("/api/v1/driver/**").hasAnyAuthority(
                         "ROLE_DRIVER", "DRIVER",
@@ -92,7 +102,7 @@ class SecurityConfig(
                         "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
                     )
 
-                    // 4. Всі інші запити вимагають авторизації (будь-якої)
+                    // 4. Все остальные запросы требуют любой авторизации
                     .anyRequest().authenticated()
             }
             .authenticationProvider(authenticationProvider())
@@ -104,7 +114,7 @@ class SecurityConfig(
     @Bean
     fun corsConfigurationSource(): UrlBasedCorsConfigurationSource {
         val configuration = CorsConfiguration()
-        // Дозволяємо всі джерела для зручності розробки
+        // Разрешаем все источники для удобства разработки
         configuration.allowedOriginPatterns = listOf("*")
         configuration.allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
         configuration.allowedHeaders = listOf("*")

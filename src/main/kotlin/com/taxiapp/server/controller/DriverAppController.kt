@@ -11,6 +11,7 @@ import com.taxiapp.server.dto.driver.UpdateLocationRequest
 import com.taxiapp.server.model.enums.CarStatus
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
+import com.taxiapp.server.model.user.User // <--- ДОДАНО
 import com.taxiapp.server.repository.CarRepository
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.DriverLocationService
@@ -111,6 +112,12 @@ class DriverAppController(
             } catch (e: Exception) {}
         }
         return ResponseEntity.ok().build()
+    }
+
+    @GetMapping("/transactions")
+    fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<com.taxiapp.server.model.finance.WalletTransaction>> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        return ResponseEntity.ok(driverService.getDriverTransactions(user))
     }
 
     @PostMapping("/sos")

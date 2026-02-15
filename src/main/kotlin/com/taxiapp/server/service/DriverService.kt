@@ -7,11 +7,15 @@ import com.taxiapp.server.dto.driver.UpdateDisabilityRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.dto.driver.UpdateDriverStatusRequest
 import com.taxiapp.server.model.enums.DriverSearchMode
+import com.taxiapp.server.model.finance.WalletTransaction
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.SectorRepository
 import com.taxiapp.server.repository.UserRepository
+import com.taxiapp.server.repository.WalletTransactionRepository // <--- ДОДАНО
+import org.springframework.data.domain.PageRequest // <--- ДОДАНО
+import org.springframework.data.domain.Sort // <--- ДОДАНО
 import org.springframework.http.HttpStatus
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
@@ -23,12 +27,14 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
+
 @Service
 class DriverService(
     private val driverRepository: DriverRepository,
     private val sectorRepository: SectorRepository,
     private val messagingTemplate: SimpMessagingTemplate,
     private val smsService: SmsService,
+    private val walletTransactionRepository: WalletTransactionRepository,
     private val userRepository: UserRepository
 ) {
     // Временное хранилище для кодов подтверждения (Номер -> Код)
@@ -64,6 +70,11 @@ class DriverService(
         driver.hasSpeechIssue = request.hasSpeechIssue
 
         driverRepository.save(driver)
+    }
+
+    fun getDriverTransactions(driver: Driver): List<WalletTransaction> {
+        val pageable = PageRequest.of(0, 50, Sort.by("createdAt").descending())
+        return walletTransactionRepository.findAllByDriverIdOrderByCreatedAtDesc(driver.id!!, pageable).content
     }
 
     // --- ОБНОВЛЕНИЕ СТАТУСА (ОНЛАЙН/ОФФЛАЙН) ---
