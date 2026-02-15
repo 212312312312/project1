@@ -26,16 +26,19 @@ data class DriverDto(
     val isOnline: Boolean,
     val isBlocked: Boolean,
     val tempBlockExpiresAt: LocalDateTime?,
+    
+    // !!! ИСПРАВЛЕНИЕ ТУТ: Убрали "= driver.rating"
     val rating: Double,
+    
     val ratingCount: Int,
     val latitude: Double?, 
     val longitude: Double?,
     
-    val car: CarDto?,        
+    val car: CarDto?,         
     val cars: List<CarDto>?, 
     
     val allowedTariffs: List<CarTariffDto>,
-    val photoUrl: String?,   
+    val photoUrl: String?,    
     val activityScore: Int,
     val registrationStatus: String
 ) {
@@ -59,7 +62,10 @@ data class DriverDto(
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
         tempBlockExpiresAt = driver.tempBlockExpiresAt,
+        
+        // Значение присваивается здесь, поэтому в шапке класса дефолт не нужен
         rating = driver.rating,
+        
         ratingCount = driver.ratingCount,
         latitude = driver.latitude,
         longitude = driver.longitude,

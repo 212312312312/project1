@@ -535,8 +535,10 @@ class OrderService(
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
         if (driver.activityScore <= 0) return emptyList()
 
-        val statuses = listOf(OrderStatus.REQUESTED, OrderStatus.SCHEDULED)
-        val allOrders = orderRepository.findAllByStatusIn(statuses)
+        // --- ВИПРАВЛЕННЯ: Використовуємо новий метод, щоб приховати зайняті SCHEDULED ---
+        val allOrders = orderRepository.findAllAvailableForEther()
+        // -------------------------------------------------------------------------------
+
         val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
             .filter { it.isActive }
 

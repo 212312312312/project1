@@ -29,6 +29,12 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'SCHEDULED' AND o.driver IS NULL ORDER BY o.scheduledAt ASC")
     fun findAllScheduledOrders(): List<TaxiOrder>
 
+    // --- НОВИЙ МЕТОД ДЛЯ ЕФІРУ ---
+    // Вибирає REQUESTED або SCHEDULED, але тільки ті, де немає водія
+    @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'REQUESTED' OR (o.status = 'SCHEDULED' AND o.driver IS NULL)")
+    fun findAllAvailableForEther(): List<TaxiOrder>
+    // ----------------------------
+
     fun findByDriverAndStatusIn(driver: Driver, statuses: List<OrderStatus>): TaxiOrder?
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.completedAt DESC")
