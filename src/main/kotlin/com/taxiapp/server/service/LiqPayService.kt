@@ -11,7 +11,9 @@ import java.util.Base64
 @Service
 class LiqPayService(
     @Value("\${liqpay.public-key}") private val publicKey: String,
-    @Value("\${liqpay.private-key}") private val privateKey: String
+    @Value("\${liqpay.private-key}") private val privateKey: String,
+    // Добавляем наш URL (Ngrok или боевой домен)
+    @Value("\${app.server.url}") private val serverUrl: String
 ) {
 
     private val objectMapper = ObjectMapper()
@@ -27,15 +29,15 @@ class LiqPayService(
             "order_id" to orderId,
             "version" to "3",
             "public_key" to publicKey,
-            "language" to "uk"
-            // "result_url" — можно добавить ссылку для возврата, но на localhost она не сработает корректно
+            "language" to "uk",
+            // ВАЖНО: Указываем LiqPay, куда стучать с результатом
+            "server_url" to "$serverUrl/api/v1/payments/callback"
         )
 
         val json = objectMapper.writeValueAsString(params)
         val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
         val signature = createSignature(data)
 
-        // Возвращаем готовую ссылку GET-запроса (самый простой вариант для мобилки)
         return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
     }
 
@@ -52,18 +54,14 @@ class LiqPayService(
         val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
         val signature = createSignature(data)
 
-        // LiqPay API требует POST запрос с параметрами data и signature
-        // Для упрощения, можно передать их как Form UrlEncoded
         val url = "https://www.liqpay.ua/api/request"
-        
         val requestBody = "data=$data&signature=$signature"
-        
+
         try {
-            val responseEntity = restTemplate.postForEntity(url, requestBody, String::class.java) // LiqPay может вернуть JSON строкой
+            val responseEntity = restTemplate.postForEntity(url, requestBody, String::class.java)
             val responseBody = responseEntity.body
-            
+
             if (responseBody != null) {
-                // Парсим JSON ответ
                 val responseMap = objectMapper.readValue(responseBody, Map::class.java)
                 return responseMap["status"]?.toString() ?: "error"
             }
@@ -71,6 +69,11 @@ class LiqPayService(
             e.printStackTrace()
         }
         return "error"
+    }
+
+    // Публичный метод проверки подписи для Контроллера
+    fun isValidSignature(data: String, signature: String): Boolean {
+        return createSignature(data) == signature
     }
 
     private fun createSignature(data: String): String {

@@ -25,34 +25,32 @@ class JwtAuthFilter(
     ) {
         val authHeader: String? = request.getHeader("Authorization")
 
-        // Если заголовка нет или он не начинается с Bearer — пропускаем
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            // ЛОГ: Нет заголовка
+            // println(">>> JWT FILTER: No Authorization header for ${request.requestURI}")
             filterChain.doFilter(request, response)
             return
         }
 
-        // ВАЖНОЕ ИСПРАВЛЕНИЕ: 
-        // 1. substring(7) убирает "Bearer "
-        // 2. trim() убирает случайные пробелы в начале или конце, из-за которых падала ошибка Base64
         val jwtToken = authHeader.substring(7).trim()
 
         try {
-            // Если токен пустой после обрезки — пропускаем
             if (jwtToken.isEmpty()) {
+                println(">>> JWT FILTER: Token is empty")
                 filterChain.doFilter(request, response)
                 return
             }
 
             val username = jwtUtils.extractUsername(jwtToken)
+            // ЛОГ: Юзернейм из токена
+            println(">>> JWT FILTER: Extracted username: $username")
 
             if (username != null && SecurityContextHolder.getContext().authentication == null) {
                 val userDetails: UserDetails = userDetailsService.loadUserByUsername(username)
 
                 if (jwtUtils.validateToken(jwtToken, userDetails)) {
-                    
-                    // --- ЛОГ ДЛЯ ОТЛАДКИ ---
-                    // println(">>> JWT FILTER: User authenticated: ${userDetails.username}")
-                    // -----------------------
+                    // ЛОГ: Успешная валидация
+                    println(">>> JWT FILTER: Token VALID. Authenticating user: ${userDetails.username}")
 
                     val authToken = UsernamePasswordAuthenticationToken(
                         userDetails,
@@ -61,14 +59,15 @@ class JwtAuthFilter(
                     )
                     authToken.details = WebAuthenticationDetailsSource().buildDetails(request)
                     SecurityContextHolder.getContext().authentication = authToken
+                } else {
+                    println(">>> JWT FILTER: Token INVALID for user: $username")
                 }
             }
         } catch (e: ExpiredJwtException) {
-            // Токен просрочен — не считаем это критической ошибкой сервера (не 500), просто не пускаем
-            println(">>> JWT FILTER: Token expired for: ${request.requestURI}")
+            println(">>> JWT FILTER: Token EXPIRED for: ${request.requestURI}")
         } catch (e: Exception) {
-            // Ошибка парсинга (например, неверный формат)
             println(">>> JWT FILTER: Error parsing token: ${e.message}")
+            e.printStackTrace()
         }
 
         filterChain.doFilter(request, response)

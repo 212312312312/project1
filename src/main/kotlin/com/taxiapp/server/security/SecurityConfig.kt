@@ -55,7 +55,9 @@ class SecurityConfig(
                         "/ws-taxi/**",
                         
                         // --- ВАЖНО: Разрешаем доступ к странице "Фейковой оплаты" без токена ---
-                        "/api/v1/payments/mock-gateway/**" 
+                        "/api/v1/payments/mock-gateway/**",
+                        "/api/v1/payments/callback"
+
                     ).permitAll()
 
                     // 2. Статические ресурсы (React build, файлы)

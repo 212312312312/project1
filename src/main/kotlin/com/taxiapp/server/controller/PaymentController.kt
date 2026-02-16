@@ -1,10 +1,10 @@
 package com.taxiapp.server.controller
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.taxiapp.server.model.enums.TransactionType
 import com.taxiapp.server.model.finance.PaymentStatus
 import com.taxiapp.server.model.finance.PaymentTransaction
 import com.taxiapp.server.model.finance.WalletTransaction
-import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.PaymentTransactionRepository
@@ -17,7 +17,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
-import java.util.UUID
+import java.util.Base64
 
 @RestController
 @RequestMapping("/api/v1/payments")
@@ -34,13 +34,8 @@ class PaymentController(
     // 1. Инициализация
     @PostMapping("/init")
     fun initPayment(@AuthenticationPrincipal user: User, @RequestBody request: InitPaymentRequest): ResponseEntity<InitPaymentResponse> {
-        // --- ИСПРАВЛЕНИЕ: Надежное получение водителя ---
         val driver = driverRepository.findById(user.id!!)
             .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Водій не знайдений") }
-        
-        // Дополнительная проверка, что это именно водитель (если в базе есть разделение)
-        // Но так как мы ищем через driverRepository, это уже гарантировано будет Driver или ошибка.
-        // ------------------------------------------------
 
         if (request.amount < 1.0) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Мінімальна сума 1 грн")
 
@@ -55,34 +50,81 @@ class PaymentController(
         )
         val savedPayment = paymentRepository.save(payment)
 
-        // Генерируем ссылку
+        // Генерируем ссылку (теперь туда внутри подставится server_url)
         val url = liqPayService.generateCheckoutUrl(
             orderId = orderReference,
             amount = request.amount,
             description = "Поповнення балансу водія ID ${driver.id}"
         )
-        
+
         return ResponseEntity.ok(InitPaymentResponse(url, savedPayment.id!!))
     }
 
-    // 2. Проверка статуса
+    // 2. Проверка статуса (Ручная из приложения)
     @PostMapping("/check/{paymentId}")
     @Transactional
     fun checkStatus(@AuthenticationPrincipal user: User, @PathVariable paymentId: Long): ResponseEntity<Map<String, String>> {
         val payment = paymentRepository.findById(paymentId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
 
-        // Здесь тоже лучше сравнить ID
         if (payment.driver.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-        
+
         if (payment.status == PaymentStatus.SUCCESS) {
             return ResponseEntity.ok(mapOf("status" to "SUCCESS", "message" to "Вже оплачено"))
         }
 
+        // Если callback еще не пришел, проверяем вручную
         val liqPayStatus = liqPayService.getStatus(payment.externalReference!!)
         
-        // Добавляем статус 'wait_accept' (часто бывает в LiqPay при ручном подтверждении)
-        if (liqPayStatus == "success" || liqPayStatus == "sandbox" || liqPayStatus == "wait_accept") {
+        return processPaymentResult(payment, liqPayStatus)
+    }
+
+    // 3. CALLBACK ОТ LIQPAY (Вызывается автоматически сервером LiqPay)
+    @PostMapping("/callback")
+    @Transactional
+    fun handleCallback(
+        @RequestParam data: String,
+        @RequestParam signature: String
+    ): ResponseEntity<String> {
+        println(">>> LIQPAY CALLBACK RECEIVED")
+
+        // 1. Проверяем подпись
+        if (!liqPayService.isValidSignature(data, signature)) {
+            println(">>> LIQPAY CALLBACK: INVALID SIGNATURE")
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Invalid signature")
+        }
+
+        // 2. Декодируем
+        val json = String(Base64.getDecoder().decode(data))
+        val objectMapper = ObjectMapper()
+        val jsonNode = objectMapper.readTree(json)
+
+        val orderReference = jsonNode.get("order_id").asText()
+        val status = jsonNode.get("status").asText()
+
+        println(">>> LIQPAY CALLBACK: Order: $orderReference, Status: $status")
+
+        // 3. Ищем платеж
+        val payment = paymentRepository.findAll().find { it.externalReference == orderReference }
+        
+        if (payment == null) {
+            println(">>> LIQPAY CALLBACK: Payment not found for order $orderReference")
+            return ResponseEntity.ok("Payment not found")
+        }
+
+        if (payment.status == PaymentStatus.SUCCESS) {
+            return ResponseEntity.ok("Already processed")
+        }
+
+        // 4. Зачисляем деньги
+        processPaymentResult(payment, status)
+
+        return ResponseEntity.ok("OK")
+    }
+
+    // Общая логика зачисления средств
+    private fun processPaymentResult(payment: PaymentTransaction, status: String): ResponseEntity<Map<String, String>> {
+        if (status == "success" || status == "sandbox" || status == "wait_accept") {
             payment.status = PaymentStatus.SUCCESS
             payment.finishedAt = LocalDateTime.now()
             paymentRepository.save(payment)
@@ -98,14 +140,16 @@ class PaymentController(
                 description = "LiqPay: ${String.format("%.2f", payment.amount)} UAH"
             )
             walletTransactionRepository.save(walletTx)
+            
+            println(">>> PAYMENT SUCCESS: Driver ${driver.id} balance updated (+${payment.amount})")
 
             return ResponseEntity.ok(mapOf("status" to "SUCCESS", "message" to "Оплата успішна!"))
-        } else if (liqPayStatus == "failure" || liqPayStatus == "error" || liqPayStatus == "reversed") {
+        } else if (status == "failure" || status == "error" || status == "reversed") {
             payment.status = PaymentStatus.FAILED
             paymentRepository.save(payment)
-            return ResponseEntity.ok(mapOf("status" to "FAILED", "message" to "Оплата відхилена ($liqPayStatus)"))
+            return ResponseEntity.ok(mapOf("status" to "FAILED", "message" to "Оплата відхилена ($status)"))
         }
 
-        return ResponseEntity.ok(mapOf("status" to "PENDING", "message" to "Статус: $liqPayStatus"))
+        return ResponseEntity.ok(mapOf("status" to "PENDING", "message" to "Статус: $status"))
     }
 }
