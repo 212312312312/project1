@@ -7,11 +7,11 @@ import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.TempBlockRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.model.enums.RegistrationStatus
-import com.taxiapp.server.model.finance.WalletTransaction
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.DriverAdminService
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
 
@@ -22,9 +22,9 @@ class DriverAdminController(
     private val driverRepository: DriverRepository
 ) {
 
-    // 1. СПИСОК "ВСІ ВОДІЇ" (DriversPage)
-    // Повертає ВСІХ, КРІМ тих, хто PENDING (щоб не змішувати з заявками).
+    // 1. СПИСОК "ВСІ ВОДІЇ"
     @GetMapping
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun getAllDrivers(): ResponseEntity<List<DriverDto>> {
         val drivers = driverRepository.findAllByRegistrationStatusNot(RegistrationStatus.PENDING)
             .sortedBy { it.id }
@@ -33,8 +33,9 @@ class DriverAdminController(
         return ResponseEntity.ok(drivers)
     }
 
-    // CREATE (Ручне створення адміном)
+    // CREATE
     @PostMapping(consumes = ["multipart/form-data"])
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun createDriver(
         @RequestPart("request") requestJson: String,
         @RequestPart("file", required = false) file: MultipartFile?,
@@ -58,6 +59,7 @@ class DriverAdminController(
     
     // UPDATE
     @PutMapping("/{id}", consumes = ["multipart/form-data"])
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun updateDriver(
         @PathVariable id: Long, 
         @RequestPart("request") requestJson: String,
@@ -99,26 +101,31 @@ class DriverAdminController(
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun deleteDriver(@PathVariable id: Long): ResponseEntity<MessageResponse> {
         return ResponseEntity.ok(driverAdminService.deleteDriver(id))
     }
 
     @PostMapping("/{id}/temp-block")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun tempBlockDriver(@PathVariable id: Long, @RequestBody request: TempBlockRequest): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.blockDriverTemporarily(id, request))
     }
     
     @PatchMapping("/{id}/block")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun blockDriverPerm(@PathVariable id: Long): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.blockDriverPermanently(id))
     }
 
     @PatchMapping("/{id}/unblock")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun unblockDriver(@PathVariable id: Long): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.unblockDriver(id))
     }
 
     @PostMapping("/{id}/activity")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun updateActivity(@PathVariable id: Long, @RequestBody request: ChangeActivityRequest): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.updateDriverActivity(id, request.points, request.reason))
     }
@@ -126,21 +133,25 @@ class DriverAdminController(
     // --- РОБОТА З АВТОМОБІЛЯМИ ---
 
     @GetMapping("/cars/pending")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun getPendingCars(): List<com.taxiapp.server.model.user.Car> {
         return driverAdminService.getPendingCars()
     }
 
     @PostMapping("/cars/{id}/approve")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun approveCar(@PathVariable id: Long): ResponseEntity<MessageResponse> {
         return ResponseEntity.ok(driverAdminService.approveCar(id))
     }
 
     @PostMapping("/cars/{id}/reject")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun rejectCar(@PathVariable id: Long, @RequestBody reason: String): ResponseEntity<MessageResponse> {
         return ResponseEntity.ok(driverAdminService.rejectCar(id, reason))
     }
 
     @PutMapping("/cars/{id}")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun updateCarDetails(@PathVariable id: Long, @RequestBody request: com.taxiapp.server.dto.driver.CarDto): ResponseEntity<Any> {
         driverAdminService.updateCarDetails(id, request)
         return ResponseEntity.ok(mapOf("message" to "Дані авто оновлено"))
@@ -148,17 +159,15 @@ class DriverAdminController(
 
     // --- НОВА ЛОГІКА РЕЄСТРАЦІЇ ---
 
-    // 2. СПИСОК "ЗАЯВКИ" (DriverRequestsPage)
-    // Повертає ТІЛЬКИ PENDING
     @GetMapping("/pending-registration")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun getPendingDrivers(): List<DriverDto> {
         return driverRepository.findAllByRegistrationStatus(RegistrationStatus.PENDING)
             .map { DriverDto(it) }
     }
 
-    // 3. Схвалити водія + ПРИЗНАЧИТИ ТАРИФИ
-    // Тепер ми передаємо список ID тарифів
     @PostMapping("/{id}/approve-registration")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun approveDriver(
         @PathVariable id: Long, 
         @RequestBody tariffIds: List<Long>
@@ -167,26 +176,41 @@ class DriverAdminController(
         return ResponseEntity.ok().build()
     }
 
-    // 4. Відхилити водія
     @PostMapping("/{id}/reject-registration")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun rejectDriver(@PathVariable id: Long, @RequestBody reason: String): ResponseEntity<Void> {
         driverAdminService.rejectDriverRegistration(id, reason)
         return ResponseEntity.ok().build()
     }
 
     // =========================================================================
-    // 💰 ФІНАНСОВІ ЕНДПОІНТИ (НОВІ)
+    // 💰 ФІНАНСОВІ ЕНДПОІНТИ (ВИПРАВЛЕНІ)
     // =========================================================================
 
     @GetMapping("/{id}/transactions")
-    fun getDriverTransactions(@PathVariable id: Long): ResponseEntity<List<WalletTransaction>> {
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
+    fun getDriverTransactions(@PathVariable id: Long): ResponseEntity<List<Map<String, Any>>> {
+        // 1. Отримуємо список
         val transactions = driverAdminService.getDriverTransactions(id)
-        return ResponseEntity.ok(transactions)
+        
+        // 2. ВРУЧНУ перетворюємо в DTO, щоб розірвати цикл (Driver -> Transaction -> Driver)
+        // Це вирішує проблему StackOverflowError
+        val dtos = transactions.map { tx ->
+            mapOf(
+                "id" to (tx.id ?: 0L),
+                "amount" to tx.amount,
+                "operationType" to tx.operationType,
+                "description" to (tx.description ?: ""),
+                "createdAt" to tx.createdAt.toString() // String
+            )
+        }
+        return ResponseEntity.ok(dtos)
     }
 
     data class BalanceUpdateRequest(val amount: Double, val description: String)
 
     @PostMapping("/{id}/balance")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun updateBalance(
         @PathVariable id: Long,
         @RequestBody request: BalanceUpdateRequest

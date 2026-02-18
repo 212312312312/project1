@@ -11,13 +11,14 @@ import com.taxiapp.server.dto.driver.UpdateLocationRequest
 import com.taxiapp.server.model.enums.CarStatus
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
-import com.taxiapp.server.model.user.User // <--- ДОДАНО
+import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.CarRepository
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.DriverLocationService
 import com.taxiapp.server.service.DriverService
 import com.taxiapp.server.service.DynamicFormService
 import com.taxiapp.server.service.FileStorageService
+import com.taxiapp.server.service.SettingsService
 import com.taxiapp.server.security.JwtUtils
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
@@ -56,6 +57,15 @@ data class CodeVerifyRequest(
     val code: String
 )
 
+// --- DTO ДЛЯ ТРАНЗАКЦИЙ ---
+data class WalletTransactionDto(
+    val id: Long,
+    val amount: Double,
+    val operationType: String,
+    val description: String?,
+    val createdAt: String
+)
+
 @RestController
 @RequestMapping("/api/v1/driver")
 class DriverAppController(
@@ -65,13 +75,13 @@ class DriverAppController(
     private val jwtUtils: JwtUtils,
     private val dynamicFormService: DynamicFormService,
     private val fileStorageService: FileStorageService,
-    private val carRepository: CarRepository
+    private val carRepository: CarRepository,
+    private val settingsService: SettingsService
 ) {
 
     @Autowired
     private lateinit var messagingTemplate: SimpMessagingTemplate
 
-    // --- НОВЫЙ МЕТОД ДЛЯ ОБНОВЛЕНИЯ ПРОФИЛЯ (ВКЛ. ИНВАЛИДНОСТЬ) ---
     @PatchMapping("/profile")
     fun updateProfile(
         @AuthenticationPrincipal userDetails: UserDetails,
@@ -81,7 +91,6 @@ class DriverAppController(
         val updatedDriverDto = driverService.updateProfile(driver, request)
         return ResponseEntity.ok(updatedDriverDto)
     }
-    // -------------------------------------------------------------
 
     @PatchMapping("/status")
     fun updateStatus(
@@ -114,10 +123,35 @@ class DriverAppController(
         return ResponseEntity.ok().build()
     }
 
+    // --- ОБНОВЛЕННЫЙ МЕТОД ТРАНЗАКЦИЙ ---
     @GetMapping("/transactions")
-    fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<com.taxiapp.server.model.finance.WalletTransaction>> {
+    fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-        return ResponseEntity.ok(driverService.getDriverTransactions(user))
+        
+        val transactions = driverService.getDriverTransactions(user)
+        
+        // Превращаем сложные сущности БД в простые DTO со строковой датой
+        val dtos = transactions.map { tx ->
+            WalletTransactionDto(
+                id = tx.id ?: 0L, // ИСПРАВЛЕНИЕ: tx.id (Long?) -> Long
+                amount = tx.amount,
+                operationType = tx.operationType.name,
+                description = tx.description,
+                createdAt = tx.createdAt.toString() 
+            )
+        }
+        
+        return ResponseEntity.ok(dtos)
+    }
+    // ------------------------------------
+
+    @GetMapping("/commission")
+    fun getCommissionInfo(): ResponseEntity<Map<String, Any>> {
+        val percent = settingsService.getDriverCommissionPercent()
+        return ResponseEntity.ok(mapOf(
+            "percent" to percent,
+            "description" to "Комісія сервісу стягується автоматично після завершення кожного замовлення."
+        ))
     }
 
     @PostMapping("/sos")
@@ -147,7 +181,7 @@ class DriverAppController(
         return ResponseEntity.ok(DriverDto(driver))
     }
 
-    // --- ЛОГИКА СМЕНЫ НОМЕРА ТЕЛЕФОНА ---
+    // --- СМЕНА НОМЕРА ---
 
     @PostMapping("/profile/change-phone/request-current")
     fun requestCodeForCurrentPhone(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<MessageResponse> {
@@ -180,7 +214,6 @@ class DriverAppController(
         @RequestBody request: ChangePhoneConfirmRequest
     ): ResponseEntity<LoginResponse> {
         val driver = getDriverFromUser(userDetails)
-        
         val updatedUser = driverService.changePhone(driver, request.newPhone, request.code, request.changeToken)
         
         val newToken = jwtUtils.generateToken(
@@ -199,24 +232,18 @@ class DriverAppController(
         ))
     }
 
-    // --- ЛОГИКА ОБНОВЛЕНИЯ РНОКПП ---
-
     @PutMapping("/profile/rnokpp")
     fun updateRnokpp(
         @AuthenticationPrincipal userDetails: UserDetails,
         @RequestBody request: UpdateDriverRequest
     ): ResponseEntity<MessageResponse> {
         val driver = getDriverFromUser(userDetails)
-        
         if (request.rnokpp == null || request.rnokpp.length != 10) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "РНОКПП повинен містити 10 цифр")
         }
-        
         driverService.updateRnokpp(driver, request.rnokpp)
         return ResponseEntity.ok(MessageResponse("РНОКПП оновлено"))
     }
-
-    // --- КАРТА И АВТОМОБИЛИ ---
 
     @DeleteMapping("/location")
     fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
@@ -240,9 +267,6 @@ class DriverAppController(
         @RequestParam("data") carJson: String,
         request: MultipartHttpServletRequest
     ): ResponseEntity<Any> {
-        
-        println("\n>>> ОТРИМАНО ЗАЯВКУ НА АВТО <<<")
-        
         val driver = validateTokenAndGetDriver(token)
 
         val savedPhotos = mutableMapOf<String, String>()
@@ -260,7 +284,6 @@ class DriverAppController(
             }
             return "Unknown"
         }
-        
         fun photo(key: String): String? = savedPhotos[key]
 
         val plate = txt("plate_number", "license_plate", "number", "gos_nomer")

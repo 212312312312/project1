@@ -26,6 +26,7 @@ import java.time.temporal.ChronoUnit
 import kotlin.math.ceil
 import kotlin.math.max
 import com.taxiapp.server.dto.tariff.CarTariffDto
+import com.taxiapp.server.service.SettingsService
 
 @Service
 class OrderService(
@@ -836,13 +837,14 @@ class OrderService(
         // 💰 ФИНАНСОВЫЙ БЛОК: РАСЧЕТ И СПИСАНИЕ КОМИССИИ
         // =======================================================
         
-        // 1. Получаем процент комиссии из настроек (по умолчанию 10%)
+        // 1. Получаем актуальный процент комиссии через сервис (вместо ручного поиска в репо)
+        // (Предполагается, что ты добавил settingsService в конструктор)
+        // Если еще не добавил settingsService в конструктор, используй старый способ:
         val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
-        val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0
+        val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0 // Дефолт 10%
         
         // 2. Считаем сумму комиссии
-        // Комиссия берется от (Цена + Добавочная стоимость - Скидки)
-        // Но обычно комиссия берется от полной стоимости поездки
+        // Комиссия берется от полной стоимости поездки
         val commissionAmount = order.price * (commissionPercent / 100.0)
 
         // 3. Списываем с баланса водителя
@@ -852,12 +854,13 @@ class OrderService(
         order.commissionAmount = commissionAmount
 
         // 5. Сохраняем историю транзакции
+        // Важно: TransactionType.COMMISSION должен существовать в enum
         val transaction = com.taxiapp.server.model.finance.WalletTransaction(
             driver = driver,
             amount = -commissionAmount, // Списание — отрицательное число
             operationType = com.taxiapp.server.model.enums.TransactionType.COMMISSION,
             orderId = order.id,
-            description = "Комісія $commissionPercent% за замовлення #${order.id}"
+            description = "Комісія ${String.format("%.1f", commissionPercent)}% за замовлення #${order.id}"
         )
         walletTransactionRepository.save(transaction)
         
@@ -865,8 +868,7 @@ class OrderService(
 
         driverRepository.save(driver) // Сохраняем обновленный баланс водителя
 
-        // ... (далее старый код про фильтры и промокоды без изменений) ...
-        
+        // Отключаем Авто-фильтры после успешного завершения (если так задумано)
         val filters = filterRepository.findAllByDriverId(driver.id!!)
         for (f in filters) {
             if (f.isActive && f.isAuto) {
@@ -878,6 +880,7 @@ class OrderService(
             }
         }
 
+        // Обработка промокодов и программ лояльности
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {
                 val activePromoUsage = promoCodeService.findActiveUsage(order.client)
@@ -888,7 +891,12 @@ class OrderService(
         }
 
         promoService.updateProgressOnRideCompletion(order.client, order)
-        return TaxiOrderDto(orderRepository.save(order))
+        
+        val savedOrder = orderRepository.save(order)
+        // Уведомляем диспетчера, что заказ закрыт
+        broadcastOrderChange(savedOrder, "UPDATE") 
+        
+        return TaxiOrderDto(savedOrder)
     }
     
     @Scheduled(fixedRate = 60000) // Перевірка кожну хвилину

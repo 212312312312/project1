@@ -16,13 +16,23 @@ class SettingsService(
     // Папка для сохранения картинок
     private val uploadDir = "uploads/settings"
 
+    // Ключи настроек
+    companion object {
+        const val KEY_COMMISSION_PERCENT = "driver_commission_percent"
+    }
+
     fun getAllSettings(): Map<String, String?> {
         return repository.findAll().associate { it.key to it.value }
     }
 
-    // Этот метод нужен для PublicController
     fun getSettingValue(key: String): String? {
         return repository.findById(key).map { it.value }.orElse(null)
+    }
+
+    // --- НОВЫЙ МЕТОД: Получить процент комиссии (по умолчанию 10.0) ---
+    fun getDriverCommissionPercent(): Double {
+        val setting = repository.findById(KEY_COMMISSION_PERCENT).orElse(null)
+        return setting?.value?.toDoubleOrNull() ?: 10.0
     }
 
     fun uploadSettingImage(key: String, file: MultipartFile): String {
@@ -37,8 +47,9 @@ class SettingsService(
 
         Files.copy(file.inputStream, filePath, StandardCopyOption.REPLACE_EXISTING)
 
-        // URL (в реальном продакшене тут нужен домен)
-        val fileUrl = "http://localhost:8080/uploads/settings/$fileName"
+        // URL (в реальном продакшене тут нужен домен из application.properties)
+        // Пока оставляем хардкод или relative path, фронт разберется
+        val fileUrl = "/uploads/settings/$fileName"
 
         val setting = repository.findById(key).orElse(AppSetting(key, null))
         setting.value = fileUrl
