@@ -24,6 +24,7 @@ import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
 import kotlin.math.ceil
+import com.taxiapp.server.service.NotificationService
 import kotlin.math.max
 import com.taxiapp.server.dto.tariff.CarTariffDto
 import com.taxiapp.server.service.SettingsService
@@ -43,7 +44,7 @@ class OrderService(
     private val driverActivityService: DriverActivityService,
     private val sectorService: SectorService,
     private val cancellationReasonRepository: CancellationReasonRepository,
-    private val walletTransactionRepository: WalletTransactionRepository, 
+    private val walletTransactionRepository: WalletTransactionRepository,
     private val appSettingRepository: AppSettingRepository
 ) {
 
@@ -657,10 +658,22 @@ class OrderService(
 
     @Transactional
     fun cancelOrder(user: User, orderId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
-        if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Чуже замовлення")
-        if (order.status == OrderStatus.COMPLETED || order.status == OrderStatus.CANCELLED) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Замовлення вже закрите")
+        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+        if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         
+        // <<< NEW: Логика уведомления водителя >>>
+        val assignedDriver = order.driver
+        if (assignedDriver != null && (order.status == OrderStatus.ACCEPTED || order.status == OrderStatus.DRIVER_ARRIVED)) {
+            notificationService.saveAndSend(
+                driver = assignedDriver,
+                title = "Замовлення скасовано",
+                body = "Клієнт скасував замовлення за адресою ${order.fromAddress}",
+                type = "ORDER_CANCEL"
+            )
+            // Тут можно добавить компенсацию водителю, если нужно
+        }
+        // ----------------------------------------
+
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
         broadcastOrderChange(saved, "REMOVE")

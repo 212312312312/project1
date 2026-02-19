@@ -34,6 +34,9 @@ import org.springframework.web.multipart.MultipartHttpServletRequest
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+// <<< НОВЫЕ ИМПОРТЫ >>>
+import com.taxiapp.server.repository.DriverNotificationRepository
+import com.taxiapp.server.dto.driver.DriverNotificationDto
 
 // --- DTO КЛАССЫ ---
 
@@ -76,11 +79,37 @@ class DriverAppController(
     private val dynamicFormService: DynamicFormService,
     private val fileStorageService: FileStorageService,
     private val carRepository: CarRepository,
-    private val settingsService: SettingsService
+    private val settingsService: SettingsService,
+    // <<< ВНЕДРЕНИЕ РЕПОЗИТОРИЯ УВЕДОМЛЕНИЙ >>>
+    private val notificationRepository: DriverNotificationRepository
 ) {
 
     @Autowired
     private lateinit var messagingTemplate: SimpMessagingTemplate
+
+    // =================================================================
+    // 🔔 НОВЫЙ МЕТОД: ПОЛУЧЕНИЕ УВЕДОМЛЕНИЙ
+    // =================================================================
+    @GetMapping("/notifications")
+    fun getNotifications(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<DriverNotificationDto>> {
+        val driver = getDriverFromUser(userDetails)
+        
+        val notifications = notificationRepository.findAllByDriverIdOrderByCreatedAtDesc(driver.id!!)
+        
+        val dtos = notifications.map { n ->
+            DriverNotificationDto(
+                id = n.id,
+                title = n.title,
+                body = n.body,
+                type = n.type,
+                date = n.createdAt.format(DateTimeFormatter.ofPattern("dd.MM HH:mm")),
+                isRead = n.isRead
+            )
+        }
+        
+        return ResponseEntity.ok(dtos)
+    }
+    // =================================================================
 
     @PatchMapping("/profile")
     fun updateProfile(
@@ -123,17 +152,15 @@ class DriverAppController(
         return ResponseEntity.ok().build()
     }
 
-    // --- ОБНОВЛЕННЫЙ МЕТОД ТРАНЗАКЦИЙ ---
     @GetMapping("/transactions")
     fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         
         val transactions = driverService.getDriverTransactions(user)
         
-        // Превращаем сложные сущности БД в простые DTO со строковой датой
         val dtos = transactions.map { tx ->
             WalletTransactionDto(
-                id = tx.id ?: 0L, // ИСПРАВЛЕНИЕ: tx.id (Long?) -> Long
+                id = tx.id ?: 0L,
                 amount = tx.amount,
                 operationType = tx.operationType.name,
                 description = tx.description,
@@ -143,7 +170,6 @@ class DriverAppController(
         
         return ResponseEntity.ok(dtos)
     }
-    // ------------------------------------
 
     @GetMapping("/commission")
     fun getCommissionInfo(): ResponseEntity<Map<String, Any>> {
@@ -162,8 +188,8 @@ class DriverAppController(
         val driver = getDriverFromUser(userDetails)
 
         val sosDto = SosSignalDto(
-            driverId = driver.id, 
-            driverName = driver.fullName,
+            driverId = driver.id!!, 
+            driverName = driver.fullName ?: "Водій",
             phone = driver.userPhone ?: "Не вказано", 
             carNumber = driver.car?.plateNumber ?: "Без авто",
             lat = loc.lat,
@@ -218,14 +244,14 @@ class DriverAppController(
         
         val newToken = jwtUtils.generateToken(
             updatedUser, 
-            updatedUser.id, 
+            updatedUser.id!!, 
             updatedUser.role.name
         )
         
         return ResponseEntity.ok(LoginResponse(
             token = newToken,
             role = updatedUser.role.name,
-            userId = updatedUser.id,
+            userId = updatedUser.id!!,
             phoneNumber = updatedUser.userPhone ?: "",
             fullName = updatedUser.fullName ?: "",
             isNewUser = false

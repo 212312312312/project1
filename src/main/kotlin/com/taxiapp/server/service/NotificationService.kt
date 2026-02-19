@@ -7,9 +7,14 @@ import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Driver
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import com.taxiapp.server.repository.DriverNotificationRepository
+import com.taxiapp.server.model.notification.DriverNotification
 
 @Service
-class NotificationService {
+class NotificationService(
+    // ✅ ИСПРАВЛЕНИЕ: Репозиторий должен быть здесь, в конструкторе!
+    private val notificationRepository: DriverNotificationRepository
+) {
 
     private val logger = LoggerFactory.getLogger(NotificationService::class.java)
 
@@ -73,6 +78,26 @@ class NotificationService {
             logger.info(">>> CONFIRMATION REQUEST sent to driver ${driver.id}")
         } catch (e: Exception) {
             logger.error("FCM Error: ${e.message}")
+        }
+    }
+
+    fun saveAndSend(driver: Driver, title: String, body: String, type: String) {
+        // 1. Сохраняем в БД
+        try {
+            val entity = DriverNotification(
+                driver = driver,
+                title = title,
+                body = body,
+                type = type
+            )
+            notificationRepository.save(entity)
+        } catch (e: Exception) {
+            logger.error("Ошибка сохранения уведомления в БД: ${e.message}")
+        }
+
+        // 2. Отправляем Push (если есть токен)
+        if (!driver.fcmToken.isNullOrEmpty()) {
+            sendNotificationToToken(driver.fcmToken!!, title, body)
         }
     }
 

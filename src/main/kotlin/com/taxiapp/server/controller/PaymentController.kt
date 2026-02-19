@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.util.Base64
+import com.taxiapp.server.service.NotificationService
 
 @RestController
 @RequestMapping("/api/v1/payments")
@@ -25,7 +26,8 @@ class PaymentController(
     private val paymentRepository: PaymentTransactionRepository,
     private val driverRepository: DriverRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
-    private val liqPayService: LiqPayService
+    private val liqPayService: LiqPayService,
+    private val notificationService: NotificationService
 ) {
 
     data class InitPaymentRequest(val amount: Double)
@@ -122,7 +124,6 @@ class PaymentController(
         return ResponseEntity.ok("OK")
     }
 
-    // Общая логика зачисления средств
     private fun processPaymentResult(payment: PaymentTransaction, status: String): ResponseEntity<Map<String, String>> {
         if (status == "success" || status == "sandbox" || status == "wait_accept") {
             payment.status = PaymentStatus.SUCCESS
@@ -140,8 +141,23 @@ class PaymentController(
                 description = "LiqPay: ${String.format("%.2f", payment.amount)} UAH"
             )
             walletTransactionRepository.save(walletTx)
-            
+
             println(">>> PAYMENT SUCCESS: Driver ${driver.id} balance updated (+${payment.amount})")
+
+            // =================================================================
+            // 🔔 НОВЫЙ КОД: Отправка уведомления и сохранение в историю
+            // =================================================================
+            try {
+                notificationService.saveAndSend(
+                    driver = driver,
+                    title = "Баланс поповнено",
+                    body = "Ваш баланс поповнено на ${String.format("%.2f", payment.amount)} UAH",
+                    type = "PAYMENT"
+                )
+            } catch (e: Exception) {
+                println(">>> Ошибка при отправке уведомления о пополнении: ${e.message}")
+            }
+            // =================================================================
 
             return ResponseEntity.ok(mapOf("status" to "SUCCESS", "message" to "Оплата успішна!"))
         } else if (status == "failure" || status == "error" || status == "reversed") {
