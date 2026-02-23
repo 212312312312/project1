@@ -788,7 +788,10 @@ class OrderService(
         order.status = OrderStatus.DRIVER_ARRIVED
         order.arrivedAt = LocalDateTime.now() 
         
-        return TaxiOrderDto(orderRepository.save(order))
+        val savedOrder = orderRepository.save(order)
+        broadcastOrderChange(savedOrder, "UPDATE") // <-- ДОБАВЛЕНО: Мгновенное оповещение
+        
+        return TaxiOrderDto(savedOrder)
     }
 
     @Transactional
@@ -802,7 +805,29 @@ class OrderService(
         }
 
         order.status = OrderStatus.IN_PROGRESS
-        return TaxiOrderDto(orderRepository.save(order))
+        order.startedAt = LocalDateTime.now()
+
+        // --- ЛОГИКА РАСЧЕТА ПЛАТНОГО ОЖИДАНИЯ ---
+        if (order.arrivedAt != null) {
+            val minutesWaited = java.time.temporal.ChronoUnit.MINUTES.between(order.arrivedAt, order.startedAt).toInt()
+            val freeMinutes = order.tariff.freeWaitingMinutes
+            
+            if (minutesWaited > freeMinutes) {
+                val paidMinutes = minutesWaited - freeMinutes
+                val extraCost = paidMinutes * order.tariff.pricePerWaitingMinute
+                
+                order.waitingPrice = extraCost
+                order.price += extraCost // Добавляем к общей стоимости заказа
+                
+                logger.info("Paid waiting applied for Order ${order.id}: $paidMinutes mins. Extra cost: $extraCost")
+            }
+        }
+        // ---------------------------------------
+
+        val savedOrder = orderRepository.save(order)
+        broadcastOrderChange(savedOrder, "UPDATE") // <-- ДОБАВЛЕНО: Рассылка новой цены и статуса
+        
+        return TaxiOrderDto(savedOrder)
     }
 
     @Transactional

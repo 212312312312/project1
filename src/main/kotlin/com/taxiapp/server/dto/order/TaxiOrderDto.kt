@@ -15,6 +15,11 @@ data class TaxiOrderDto(
     val createdAt: LocalDateTime,
     val completedAt: LocalDateTime?,
     val price: Double,
+
+    val startedAt: LocalDateTime? = null,
+    val waitingPrice: Double = 0.0,
+    val freeWaitingMinutes: Int = 3,
+    val pricePerWaitingMinute: Double = 0.0,
     
     val distanceMeters: Int?,
     val durationSeconds: Int?,
@@ -57,6 +62,11 @@ data class TaxiOrderDto(
         createdAt = order.createdAt,
         completedAt = order.completedAt,
         price = order.price,
+
+        startedAt = order.startedAt,
+        waitingPrice = order.waitingPrice,
+        freeWaitingMinutes = order.tariff.freeWaitingMinutes,
+        pricePerWaitingMinute = order.tariff.pricePerWaitingMinute,
         
         distanceMeters = order.distanceMeters,
         durationSeconds = order.durationSeconds,

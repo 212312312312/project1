@@ -31,6 +31,12 @@ class TaxiOrder(
     @Column(name = "arrived_at")
     var arrivedAt: LocalDateTime? = null,
 
+    @Column(name = "started_at")
+    var startedAt: LocalDateTime? = null,
+
+    @Column(name = "waiting_price", columnDefinition = "double precision default 0.0")
+    var waitingPrice: Double = 0.0,
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", nullable = false)
     var client: Client,
