@@ -1,6 +1,8 @@
 package com.taxiapp.server.service
 
 import com.taxiapp.server.dto.driver.HeatmapZoneDto
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.taxiapp.server.dto.order.CreateOrderRequestDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.dto.order.OrderSocketMessage
@@ -204,19 +206,12 @@ class OrderService(
         if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice
 
         // --- Визначення секторів ---
-        val allSectors = sectorRepository.findAll()
         val destSector = if (request.destLat != null && request.destLng != null) {
-            allSectors.find { sector ->
-                val points = sector.points.sortedBy { it.pointOrder }
-                GeometryUtils.isPointInPolygon(request.destLat, request.destLng, points)
-            }
+            sectorRepository.findSectorByCoordinates(request.destLat, request.destLng)
         } else null
 
         val originSector = if (request.originLat != null && request.originLng != null) {
-            allSectors.find { sector ->
-                val points = sector.points.sortedBy { it.pointOrder }
-                GeometryUtils.isPointInPolygon(request.originLat, request.originLng, points)
-            }
+            sectorRepository.findSectorByCoordinates(request.originLat, request.originLng)
         } else null
 
         val initialStatus = if (request.scheduledAt != null) OrderStatus.SCHEDULED else OrderStatus.REQUESTED
@@ -417,17 +412,16 @@ class OrderService(
         }
     }
 
-    @Scheduled(fixedRate = 1000)
+    @Scheduled(fixedRate = 5000) // Увеличили интервал до 5 секунд, чтобы не спамить БД
     @Transactional
     fun checkExpiredOffers() {
         val now = LocalDateTime.now()
-        val expiredOrders = orderRepository.findAllByStatus(OrderStatus.OFFERING)
-            .filter { it.offerExpiresAt != null && it.offerExpiresAt!!.isBefore(now) }
+        // Теперь база данных САМА отдает только просроченные предложения (мгновенно)
+        val expiredOrders = orderRepository.findAllByStatusAndOfferExpiresAtBefore(OrderStatus.OFFERING, now)
 
         for (order in expiredOrders) {
             logger.info("Час пропозиції замовлення ${order.id} вичерпано. Штраф і перехід в Ефір.")
             
-            // Если таймер истек - тоже штрафуем? Обычно да, так как это игнорирование.
             order.offeredDriver?.let { 
                  driverActivityService.updateScore(it, -50, "Пропущено замовлення #${order.id}")
                  order.rejectedDriverIds.add(it.id!!)
@@ -449,7 +443,7 @@ class OrderService(
         val orderDto = TaxiOrderDto(order)
         // Адміни бачать все
         val message = OrderSocketMessage(action, order.id!!, if (action == "ADD") orderDto else null)
-        messagingTemplate.convertAndSend("/topic/admin/orders", message)
+        sendSocketAfterCommit("/topic/admin/orders", message)
 
         // Якщо це заплановане замовлення без водія - воно повинно бути видно
         // Якщо у замовлення вже є водій - його не повинен бачити ніхто, крім цього водія
@@ -490,7 +484,7 @@ class OrderService(
             if (shouldSend) {
                 // Якщо це заплановане і воно "моє" (я його взяв), або воно нічиє
                 val msgAdd = OrderSocketMessage(action, order.id!!, orderDto)
-                messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgAdd)
+                sendSocketAfterCommit("/topic/drivers/${driver.id}/orders", msgAdd)
             }
         }
     }
@@ -1054,6 +1048,18 @@ class OrderService(
         return orderRepository.findAllByStatusIn(activeStatuses)
             .map { TaxiOrderDto(it) }
             .sortedByDescending { it.id }
+    }
+
+    private fun sendSocketAfterCommit(destination: String, message: Any) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() {
+                    messagingTemplate.convertAndSend(destination, message)
+                }
+            })
+        } else {
+            messagingTemplate.convertAndSend(destination, message)
+        }
     }
 
     fun mapToDto(order: TaxiOrder): TaxiOrderDto = TaxiOrderDto(order)

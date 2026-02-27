@@ -1,6 +1,8 @@
 package com.taxiapp.server.service
 
 import com.google.firebase.messaging.FirebaseMessaging
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.Notification
 import com.taxiapp.server.model.order.TaxiOrder
@@ -30,8 +32,9 @@ class NotificationService(
             return
         }
 
-        try {
-            val message = Message.builder()
+        // 1. Собираем сообщение ДО коммита (пока доступны все данные из базы)
+        val message = try {
+            Message.builder()
                 .setToken(token)
                 // ВАЖНО: Тут НЕТ .setNotification(), только data
                 .putData("type", "ORDER_OFFER")
@@ -46,11 +49,15 @@ class NotificationService(
                         .build()
                 )
                 .build()
+        } catch (e: Exception) {
+            logger.error(">>> Помилка формування FCM повідомлення (Driver): ${e.message}")
+            return
+        }
 
+        // 2. Откладываем саму сетевую отправку на момент ПОСЛЕ успешного коммита транзакции
+        sendAfterCommit {
             FirebaseMessaging.getInstance().send(message)
             logger.info(">>> PUSH (Data Only) отправлен водителю ${driver.id}")
-        } catch (e: Exception) {
-            logger.error(">>> Ошибка FCM (Driver): ${e.message}")
         }
     }
 
@@ -124,6 +131,27 @@ class NotificationService(
             logger.info(">>> PUSH (News) отправлен на токен: ${token.take(10)}...")
         } catch (e: Exception) {
             logger.error(">>> Ошибка FCM (News): ${e.message}")
+        }
+    }
+
+    private fun sendAfterCommit(task: () -> Unit) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() {
+                    try {
+                        task()
+                    } catch (e: Exception) {
+                        logger.error(">>> FCM Error in afterCommit: \${e.message}")
+                    }
+                }
+            })
+        } else {
+            // Если транзакции нет, отправляем сразу
+            try {
+                task()
+            } catch (e: Exception) {
+                logger.error(">>> FCM Error: \${e.message}")
+            }
         }
     }
 }
