@@ -33,6 +33,7 @@ import com.taxiapp.server.service.SettingsService
 
 @Service
 class OrderService(
+    private val chatService: ChatService,
     private val notificationService: NotificationService,
     private val orderRepository: TaxiOrderRepository,
     private val tariffRepository: CarTariffRepository,
@@ -664,12 +665,15 @@ class OrderService(
                 body = "Клієнт скасував замовлення за адресою ${order.fromAddress}",
                 type = "ORDER_CANCEL"
             )
-            // Тут можно добавить компенсацию водителю, если нужно
         }
         // ----------------------------------------
 
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
+        
+        // <--- ОЧИСТКА ЧАТА --->
+        chatService.clearChatForOrder(orderId) 
+        
         broadcastOrderChange(saved, "REMOVE")
         return TaxiOrderDto(saved)
     }
@@ -725,6 +729,9 @@ class OrderService(
 
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
+
+        // <--- ОЧИСТКА ЧАТА --->
+        chatService.clearChatForOrder(orderId)
 
         broadcastOrderChange(saved, "REMOVE")
         return TaxiOrderDto(saved)
@@ -925,6 +932,10 @@ class OrderService(
         promoService.updateProgressOnRideCompletion(order.client, order)
         
         val savedOrder = orderRepository.save(order)
+        
+        // <--- ОЧИСТКА ЧАТА --->
+        chatService.clearChatForOrder(orderId)
+
         // Уведомляем диспетчера, что заказ закрыт
         broadcastOrderChange(savedOrder, "UPDATE") 
         
@@ -949,6 +960,10 @@ class OrderService(
                 logger.warn("Scheduled order ${order.id} expired. Cancelling.")
                 order.status = OrderStatus.CANCELLED
                 orderRepository.save(order)
+                
+                // <--- ОЧИСТКА ЧАТА --->
+                chatService.clearChatForOrder(order.id!!)
+                
                 continue
             }
 

@@ -154,4 +154,21 @@ class NotificationService(
             }
         }
     }
+
+    fun sendChatNotification(token: String?, title: String, body: String, orderId: Long) {
+        if (token.isNullOrEmpty()) return
+        try {
+            val message = Message.builder()
+                .setToken(token)
+                .setNotification(Notification.builder().setTitle(title).setBody(body).build())
+                .putData("type", "CHAT_MESSAGE")
+                .putData("orderId", orderId.toString())
+                .build()
+
+            FirebaseMessaging.getInstance().send(message)
+            logger.info(">>> PUSH (Chat) відправлено на токен: ${token.take(10)}...")
+        } catch (e: Exception) {
+            logger.error(">>> Помилка FCM (Chat): ${e.message}")
+        }
+    }
 }
