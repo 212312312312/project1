@@ -151,11 +151,24 @@ class OrderService(
         // --- Валідація часу ---
         if (request.scheduledAt != null) {
             val now = LocalDateTime.now()
-            if (request.scheduledAt.isBefore(now)) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Час подачі не може бути в минулому")
+            
+            // Мінімальний буфер часу для запланованого замовлення.
+            // Оскільки сервер починає пошук водія за 30-35 хвилин до подачі, 
+            // клієнт має створювати таке замовлення мінімум за 40 хвилин.
+            val minValidTime = now.plusMinutes(40)
+
+            if (request.scheduledAt.isBefore(minValidTime)) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, 
+                    "Попереднє замовлення можна зробити мінімум за 40 хвилин до подачі"
+                )
             }
+            
             if (request.scheduledAt.isAfter(now.plusDays(7))) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Не можна бронювати більше ніж на 7 днів наперед")
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, 
+                    "Не можна бронювати більше ніж на 7 днів наперед"
+                )
             }
         }
 

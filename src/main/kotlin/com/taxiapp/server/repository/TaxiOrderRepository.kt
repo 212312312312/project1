@@ -62,6 +62,9 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByStatusAndScheduledAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
 
+    // Підрахунок кількості активних замовлень конкретного клієнта
+    fun countByClientIdAndStatusIn(clientId: Long, statuses: List<OrderStatus>): Int
+    
     @Modifying
     @Transactional
     @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
