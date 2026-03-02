@@ -148,6 +148,24 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
+        // ==========================================
+        // ПЕРЕВІРКА ЛІМІТУ АКТИВНИХ ЗАМОВЛЕНЬ (Максимум 3)
+        // ==========================================
+        val activeStatuses = listOf(
+            OrderStatus.REQUESTED,
+            OrderStatus.OFFERING,
+            OrderStatus.ACCEPTED,
+            OrderStatus.DRIVER_ARRIVED,
+            OrderStatus.IN_PROGRESS,
+            OrderStatus.SCHEDULED
+        )
+        
+        val activeOrdersCount = orderRepository.countActiveOrdersByClient(client.id!!, activeStatuses)
+        if (activeOrdersCount >= 3) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ви не можете мати більше 3 активних замовлень одночасно")
+        }
+        // ==========================================
+
         // --- Валідація часу ---
         if (request.scheduledAt != null) {
             val now = LocalDateTime.now()
@@ -171,6 +189,8 @@ class OrderService(
                 )
             }
         }
+
+    
 
         // --- Розрахунок ціни ---
         var finalPrice = calculateExactTripPrice(

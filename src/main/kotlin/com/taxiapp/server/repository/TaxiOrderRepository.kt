@@ -18,6 +18,12 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByClient(client: Client): List<TaxiOrder>
 
+    @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.client.id = :clientId AND o.status IN :statuses")
+    fun countActiveOrdersByClient(
+        @Param("clientId") clientId: Long, 
+        @Param("statuses") statuses: List<OrderStatus>
+    ): Int
+
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.createdAt DESC")
     fun findActiveOrders(statuses: List<OrderStatus> = listOf(
         OrderStatus.REQUESTED, 
@@ -64,7 +70,7 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     // Підрахунок кількості активних замовлень конкретного клієнта
     fun countByClientIdAndStatusIn(clientId: Long, statuses: List<OrderStatus>): Int
-    
+
     @Modifying
     @Transactional
     @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
