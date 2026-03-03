@@ -155,6 +155,36 @@ class NotificationService(
         }
     }
 
+    // =========================================================================
+    // ДОДАНО: Метод для відправки Data Push клієнту про зміну статусу замовлення
+    // =========================================================================
+    fun sendOrderStatusToClient(token: String?, orderId: Long, status: String, title: String, body: String) {
+        if (token.isNullOrEmpty()) return
+
+        try {
+            val message = Message.builder()
+                .setToken(token)
+                // ВАЖЛИВО: Використовуємо ТІЛЬКИ putData (Data Push), без setNotification!
+                // Це не створить нове сповіщення автоматично, а розбудить MyFirebaseMessagingService
+                .putData("type", "ORDER_STATUS_UPDATE")
+                .putData("orderId", orderId.toString())
+                .putData("status", status)
+                .putData("title", title)
+                .putData("body", body)
+                .setAndroidConfig(
+                    com.google.firebase.messaging.AndroidConfig.builder()
+                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
+                        .build()
+                )
+                .build()
+
+            FirebaseMessaging.getInstance().send(message)
+            logger.info(">>> PUSH (Data Status Update) відправлено клієнту на токен: \${token.take(10)}...")
+        } catch (e: Exception) {
+            logger.error(">>> Помилка FCM (Status Update): \${e.message}")
+        }
+    }
+
     fun sendChatNotification(token: String?, title: String, body: String, orderId: Long) {
         if (token.isNullOrEmpty()) return
         try {

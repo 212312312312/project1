@@ -706,6 +706,15 @@ class OrderService(
 
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
+        broadcastOrderChange(saved, "ADD")
+
+        notificationService.sendOrderStatusToClient(
+            token = saved.client.fcmToken, // Переконайся, що шлях до fcmToken вірний
+            orderId = saved.id!!,
+            status = saved.status.name, // "ACCEPTED"
+            title = "Водія знайдено!",
+            body = "Ваш водій \${driver.firstName} вже прямує до вас."
+        )
         
         // <--- ОЧИСТКА ЧАТА --->
         chatService.clearChatForOrder(orderId) 
@@ -827,6 +836,14 @@ class OrderService(
         
         val savedOrder = orderRepository.save(order)
         broadcastOrderChange(savedOrder, "UPDATE") // <-- ДОБАВЛЕНО: Мгновенное оповещение
+
+        notificationService.sendOrderStatusToClient(
+            token = savedOrder.client.fcmToken,
+            orderId = savedOrder.id!!,
+            status = savedOrder.status.name, // "DRIVER_ARRIVED"
+            title = "Водій на місці",
+            body = "Ваше таксі прибуло, виходьте."
+        )
         
         return TaxiOrderDto(savedOrder)
     }
@@ -863,6 +880,14 @@ class OrderService(
 
         val savedOrder = orderRepository.save(order)
         broadcastOrderChange(savedOrder, "UPDATE") // <-- ДОБАВЛЕНО: Рассылка новой цены и статуса
+
+        notificationService.sendOrderStatusToClient(
+            token = savedOrder.client.fcmToken,
+            orderId = savedOrder.id!!,
+            status = savedOrder.status.name, // "IN_PROGRESS"
+            title = "В дорозі",
+            body = "Поїздка розпочалася. Приємної дороги!"
+        )
         
         return TaxiOrderDto(savedOrder)
     }
