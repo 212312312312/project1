@@ -22,7 +22,7 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     fun countActiveOrdersByClient(
         @Param("clientId") clientId: Long, 
         @Param("statuses") statuses: List<OrderStatus>
-    ): Int
+    ): Int // <--- ТУТ МАЄ БУТИ ПРОСТО Int
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.createdAt DESC")
     fun findActiveOrders(statuses: List<OrderStatus> = listOf(

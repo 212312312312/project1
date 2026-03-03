@@ -475,13 +475,16 @@ class OrderService(
     // =================================================================================
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
         val orderDto = TaxiOrderDto(order)
-        // Адміни бачать все
-        val message = OrderSocketMessage(action, order.id!!, if (action == "ADD") orderDto else null)
+        
+        // 1. Адміни бачать все (ВИПРАВЛЕНО: передаємо orderDto і для "ADD", і для "UPDATE")
+        val message = OrderSocketMessage(action, order.id!!, if (action == "REMOVE") null else orderDto)
         sendSocketAfterCommit("/topic/admin/orders", message)
 
-        // Якщо це заплановане замовлення без водія - воно повинно бути видно
-        // Якщо у замовлення вже є водій - його не повинен бачити ніхто, крім цього водія
+        // 2. КЛІЄНТ (ПАСАЖИР): Відправляємо статус конкретному користувачу (НОВЕ)
+        val clientMessage = OrderSocketMessage(action, order.id!!, if (action == "REMOVE") null else orderDto)
+        sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", clientMessage)
 
+        // 3. Водії 
         val onlineDrivers = driverRepository.findAll().filter { it.isOnline }
 
         for (driver in onlineDrivers) {
