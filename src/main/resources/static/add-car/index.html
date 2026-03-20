@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Додавання авто</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 100%; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        h2 { text-align: center; color: #2c3e50; margin-top: 0; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 14px; color: #555; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
+        input[type="file"] { display: block; width: 100%; padding: 10px; background: #f8f9fa; border: 1px dashed #bbb; border-radius: 8px; }
+        .section-title { font-size: 16px; font-weight: bold; color: #1976d2; margin-top: 20px; margin-bottom: 10px; border-bottom: 2px solid #e0e0e0; padding-bottom: 5px; }
+        button { width: 100%; padding: 15px; background-color: #4CAF50; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 20px; transition: background 0.3s; }
+        button:disabled { background-color: #9e9e9e; }
+        .error { color: #d32f2f; font-size: 14px; text-align: center; display: none; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Заявка на нове авто</h2>
+    
+    <form id="addCarForm">
+        <div class="section-title">Характеристики</div>
+        <div class="form-group"><label>Марка авто</label><input type="text" id="brand" required placeholder="Напр. Toyota"></div>
+        <div class="form-group"><label>Модель авто</label><input type="text" id="model" required placeholder="Напр. Camry"></div>
+        <div class="form-group"><label>Колір</label><input type="text" id="color" required placeholder="Напр. Білий"></div>
+        <div class="form-group"><label>Рік випуску</label><input type="number" id="year" required placeholder="Напр. 2018"></div>
+        <div class="form-group"><label>Держ. номер</label><input type="text" id="plate_number" required placeholder="АА 1234 ВВ"></div>
+        <div class="form-group"><label>VIN код</label><input type="text" id="vin" placeholder="17 символів (необов'язково)"></div>
+
+        <div class="section-title">Документи</div>
+        <div class="form-group"><label>Техпаспорт (Лицева сторона)</label><input type="file" id="tech_passport_front" accept="image/*" required></div>
+        <div class="form-group"><label>Техпаспорт (Зворотна сторона)</label><input type="file" id="tech_passport_back" accept="image/*" required></div>
+        <div class="form-group"><label>Страховий поліс (ОСЦПВ)</label><input type="file" id="insurance_photo" accept="image/*" required></div>
+
+        <div class="section-title">Екстер'єр авто</div>
+        <div class="form-group"><label>Фото авто спереду (з номером)</label><input type="file" id="photo_front" accept="image/*" required></div>
+        <div class="form-group"><label>Фото авто ззаду</label><input type="file" id="photo_back" accept="image/*" required></div>
+        <div class="form-group"><label>Фото авто зліва</label><input type="file" id="photo_left" accept="image/*" required></div>
+        <div class="form-group"><label>Фото авто справа</label><input type="file" id="photo_right" accept="image/*" required></div>
+
+        <div class="section-title">Інтер'єр</div>
+        <div class="form-group"><label>Салон (передні сидіння)</label><input type="file" id="photo_seats_front" accept="image/*" required></div>
+        <div class="form-group"><label>Салон (задні сидіння)</label><input type="file" id="photo_seats_back" accept="image/*" required></div>
+        <div class="form-group"><label>Багажник (пустий і чистий)</label><input type="file" id="photo_trunk" accept="image/*" required></div>
+
+        <div id="errorMsg" class="error">Помилка відправки. Спробуйте ще раз.</div>
+        
+        <button type="submit" id="submitBtn">Відправити заявку</button>
+    </form>
+</div>
+
+<script>
+    // Отримуємо токен з URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+
+    document.getElementById('addCarForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const btn = document.getElementById('submitBtn');
+        const errorMsg = document.getElementById('errorMsg');
+        btn.disabled = true;
+        btn.innerText = 'Завантаження... (це може зайняти хвилину)';
+        errorMsg.style.display = 'none';
+
+        try {
+            // Збираємо текстові дані у JSON
+            const dataObj = {
+                brand: document.getElementById('brand').value,
+                model: document.getElementById('model').value,
+                color: document.getElementById('color').value,
+                year: document.getElementById('year').value,
+                plate_number: document.getElementById('plate_number').value,
+                vin: document.getElementById('vin').value
+            };
+
+            // Збираємо файли
+            const formData = new FormData();
+            formData.append('token', token);
+            formData.append('data', JSON.stringify(dataObj));
+
+            const fileFields = [
+                'tech_passport_front', 'tech_passport_back', 'insurance_photo',
+                'photo_front', 'photo_back', 'photo_left', 'photo_right',
+                'photo_seats_front', 'photo_seats_back', 'photo_trunk'
+            ];
+
+            fileFields.forEach(id => {
+                const fileInput = document.getElementById(id);
+                if (fileInput.files.length > 0) {
+                    formData.append(id, fileInput.files[0]);
+                }
+            });
+
+            // Відправляємо на сервер
+            const response = await fetch('/api/v1/driver/cars/add', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                // Якщо все добре, робимо редірект. 
+                // WebView в Android побачить слово "success" і закриє вікно!
+                window.location.href = '/car-success'; 
+            } else {
+                throw new Error('Помилка сервера');
+            }
+
+        } catch (error) {
+            console.error(error);
+            errorMsg.style.display = 'block';
+            btn.disabled = false;
+            btn.innerText = 'Відправити заявку';
+        }
+    });
+</script>
+
+</body>
+</html>

@@ -28,7 +28,8 @@ data class CarDto(
     val photoLeft: String?,
     val photoRight: String?,
     val photoSeatsFront: String?,
-    val photoSeatsBack: String?
+    val photoSeatsBack: String?,
+    val photoTrunk: String?
 ) {
     constructor(car: Car) : this(
         id = car.id!!,
@@ -51,6 +52,7 @@ data class CarDto(
         photoFront = generateUrl(car.photoFront),
         photoBack = generateUrl(car.photoBack),
         photoLeft = generateUrl(car.photoLeft),
+        photoTrunk = generateUrl(car.photoTrunk),
         photoRight = generateUrl(car.photoRight),
         photoSeatsFront = generateUrl(car.photoSeatsFront),
         photoSeatsBack = generateUrl(car.photoSeatsBack)

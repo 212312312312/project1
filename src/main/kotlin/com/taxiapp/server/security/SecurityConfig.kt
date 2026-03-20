@@ -56,8 +56,11 @@ class SecurityConfig(
                         
                         // --- ВАЖНО: Разрешаем доступ к странице "Фейковой оплаты" без токена ---
                         "/api/v1/payments/mock-gateway/**",
-                        "/api/v1/payments/callback"
+                        "/api/v1/payments/callback",
 
+                        // --- ДОБАВЛЕНО ДЛЯ РАБОТЫ WEBVIEW (ФОРМА АВТО) ---
+                        "/api/v1/driver/forms/**",
+                        "/api/v1/driver/cars/add"
                     ).permitAll()
 
                     // 2. Статические ресурсы (React build, файлы)
@@ -77,7 +80,10 @@ class SecurityConfig(
                         "/*.css",
                         
                         "/images/**",
-                        "/uploads/**"
+                        "/uploads/**",
+
+                        // --- ДОБАВЛЕНО ДЛЯ СТАТИКИ ФОРМЫ АВТО ---
+                        "/add-car/**"
                     ).permitAll()
 
                     // 3. !!! НАСТРОЙКА ДОСТУПА ПО РОЛЯМ !!!

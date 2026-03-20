@@ -16,7 +16,6 @@ import com.taxiapp.server.repository.CarRepository
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.DriverLocationService
 import com.taxiapp.server.service.DriverService
-import com.taxiapp.server.service.DynamicFormService
 import com.taxiapp.server.service.FileStorageService
 import com.taxiapp.server.service.SettingsService
 import com.taxiapp.server.security.JwtUtils
@@ -76,7 +75,6 @@ class DriverAppController(
     private val driverLocationService: DriverLocationService,
     private val driverRepository: DriverRepository,
     private val jwtUtils: JwtUtils,
-    private val dynamicFormService: DynamicFormService,
     private val fileStorageService: FileStorageService,
     private val carRepository: CarRepository,
     private val settingsService: SettingsService,
@@ -282,9 +280,14 @@ class DriverAppController(
         return ResponseEntity.ok().build()
     }
 
-    @GetMapping("/forms/add-car", produces = [MediaType.TEXT_HTML_VALUE])
-    fun getAddCarForm(@RequestParam token: String): String {
-        return dynamicFormService.generateHtmlForm("add_car", "/api/v1/driver/cars/add", token)
+    @GetMapping("/forms/add-car")
+    fun getAddCarForm(@RequestParam token: String): ResponseEntity<Void> {
+        // Укажи здесь правильный путь к твоему собранному React-экрану в папке static
+        val reactFormUrl = "/add-car/index.html?token=$token"
+        
+        return ResponseEntity.status(HttpStatus.FOUND)
+            .header("Location", reactFormUrl)
+            .build()
     }
 
     @PostMapping("/cars/add", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
@@ -292,7 +295,7 @@ class DriverAppController(
         @RequestParam("token") token: String,
         @RequestParam("data") carJson: String,
         request: MultipartHttpServletRequest
-    ): ResponseEntity<Any> {
+    ): ResponseEntity<Map<String, Any>> {
         val driver = validateTokenAndGetDriver(token)
 
         val savedPhotos = mutableMapOf<String, String>()
@@ -312,6 +315,7 @@ class DriverAppController(
         }
         fun photo(key: String): String? = savedPhotos[key]
 
+        // Ключи должны совпадать с теми, что будет отправлять React
         val plate = txt("plate_number", "license_plate", "number", "gos_nomer")
         val make = txt("brand", "make")
         val model = txt("model")
@@ -337,36 +341,21 @@ class DriverAppController(
             photoBack  = photo("photo_back"),
             photoLeft  = photo("photo_left"),
             photoRight = photo("photo_right"),
-            photoSeatsFront = photo("photo_seats_front"),
-            photoSeatsBack  = photo("photo_seats_back"),
-            photoUrl = photo("photo_front"), 
+            photoSeatsFront = photo("photo_seats_front"), // Было salon_front
+            photoSeatsBack  = photo("photo_seats_back"),  // Было salon_back
+            photoTrunk      = photo("photo_trunk"),
+            photoUrl = photo("photo_front"), // Лицевое фото как главное
             status = CarStatus.PENDING 
         )
         
         carRepository.save(newCar)
 
-        return ResponseEntity.ok("""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f0fdf4; }
-                    h1 { color: #16a34a; margin-bottom: 10px; }
-                    p { color: #333; font-size: 18px; text-align: center; }
-                    button { margin-top: 30px; padding: 15px 30px; background: #16a34a; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; }
-                </style>
-            </head>
-            <body>
-                <div style="font-size: 60px;">✅</div>
-                <h1>Заявка прийнята!</h1>
-                <p>Всі документи та фото отримано.</p>
-                <p><b>$make $model</b> відправлено на перевірку.</p>
-                <button onclick="history.back()">Повернутися назад</button>
-            </body>
-            </html>
-        """.trimIndent())
+        // Возвращаем JSON. React-компонент перехватит его и покажет красивый экран успеха.
+        return ResponseEntity.ok(mapOf(
+            "success" to true,
+            "message" to "Заявка прийнята! Всі документи та фото отримано. ${make} ${model} відправлено на перевірку.",
+            "carId" to newCar.id
+        ))
     }
 
     private fun validateTokenAndGetDriver(token: String): Driver {
