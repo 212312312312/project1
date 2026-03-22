@@ -261,6 +261,46 @@ class DriverService(
             }
         }
     }
+
+    // --- ЛОГІКА ВИДАЛЕННЯ АКАУНТА ---
+
+    @Transactional
+    fun requestAccountDeletion(driver: Driver) {
+        driver.deletionRequestedAt = LocalDateTime.now()
+        driver.isOnline = false
+        driver.searchMode = DriverSearchMode.OFFLINE
+        driver.fcmToken = null // Очищаємо токен, щоб не йшли пуші
+        driverRepository.save(driver)
+    }
+
+    @Transactional
+    fun restoreAccount(driver: Driver): DriverDto {
+        driver.deletionRequestedAt = null
+        val saved = driverRepository.save(driver)
+        return DriverDto(saved)
+    }
+
+    // Автоматичне анонімізування через 30 днів (запускається щодня о 03:00 ночі)
+    @Scheduled(cron = "0 0 3 * * *")
+    @Transactional
+    fun processPendingDeletions() {
+        val threshold = LocalDateTime.now().minusDays(30)
+        val driversToDelete = driverRepository.findAllPendingDeletionBefore(threshold)
+        
+        for (driver in driversToDelete) {
+            // Анонімізуємо дані, але залишаємо в базі для фінансової історії
+            driver.userLogin = "deleted_${driver.id}"
+            driver.userPhone = "deleted_${driver.id}"
+            driver.fullName = "Видалений Водій"
+            driver.isBlocked = true
+            driver.latitude = null
+            driver.longitude = null
+            driver.fcmToken = null
+            // Можна також стерти номер авто, документи тощо
+            
+            driverRepository.save(driver)
+        }
+    }
     
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional

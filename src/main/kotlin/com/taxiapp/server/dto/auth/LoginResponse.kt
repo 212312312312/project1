@@ -6,5 +6,6 @@ data class LoginResponse(
     val phoneNumber: String,
     val fullName: String,
     val role: String,
-    val isNewUser: Boolean
+    val isNewUser: Boolean,
+    val isPendingDeletion: Boolean = false
 )

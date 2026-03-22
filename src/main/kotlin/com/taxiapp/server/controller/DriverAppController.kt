@@ -232,6 +232,23 @@ class DriverAppController(
         return ResponseEntity.ok(MessageResponse("Код відправлено на новий номер"))
     }
 
+    @PostMapping("/profile/delete-request")
+    fun requestAccountDeletion(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<MessageResponse> {
+        val driver = getDriverFromUser(userDetails)
+        driverService.requestAccountDeletion(driver)
+        // Також можна викликати logoutFromMap, щоб зняти його з карти
+        driverLocationService.clearLocation(driver.id!!)
+        return ResponseEntity.ok(MessageResponse("Акаунт додано в чергу на видалення"))
+    }
+
+    @PostMapping("/profile/restore")
+    fun restoreAccount(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverDto> {
+        val driver = getDriverFromUser(userDetails)
+        val restoredDriver = driverService.restoreAccount(driver)
+        return ResponseEntity.ok(restoredDriver)
+    }
+
+
     @PostMapping("/profile/change-phone/confirm-new")
     fun confirmNewPhone(
         @AuthenticationPrincipal userDetails: UserDetails,

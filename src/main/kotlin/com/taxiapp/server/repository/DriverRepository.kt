@@ -121,6 +121,14 @@ interface DriverRepository : JpaRepository<Driver, Long> {
         @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?
     ): List<Driver>
 
+    // Для таймера: знайти тих, у кого пройшло 30 днів
+    @Query("SELECT d FROM Driver d WHERE d.deletionRequestedAt IS NOT NULL AND d.deletionRequestedAt < :threshold")
+    fun findAllPendingDeletionBefore(@Param("threshold") threshold: LocalDateTime): List<Driver>
+
+    // Для диспетчерської: отримати всіх, хто в черзі на видалення
+    @Query("SELECT d FROM Driver d WHERE d.deletionRequestedAt IS NOT NULL")
+    fun findAllPendingDeletion(): List<Driver>
+
     // СТАРЫЙ МЕТОД (Возвращен для совместимости, чтобы убрать ошибку на строке 812)
     @Query(value = """
         SELECT d.*, u.* FROM drivers d

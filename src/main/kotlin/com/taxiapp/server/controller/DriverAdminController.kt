@@ -33,6 +33,15 @@ class DriverAdminController(
         return ResponseEntity.ok(drivers)
     }
 
+    // 1.1. СПИСОК "В ЧЕРЗІ НА ВИДАЛЕННЯ"
+    @GetMapping("/pending-deletion")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR', 'DISPATCHER', 'ROLE_DISPATCHER')")
+    fun getDriversPendingDeletion(): ResponseEntity<List<DriverDto>> {
+        val drivers = driverRepository.findAllPendingDeletion().map { DriverDto(it) }
+        return ResponseEntity.ok(drivers)
+    }
+
+
     // CREATE
     @PostMapping(consumes = ["multipart/form-data"])
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
@@ -111,6 +120,8 @@ class DriverAdminController(
     fun tempBlockDriver(@PathVariable id: Long, @RequestBody request: TempBlockRequest): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.blockDriverTemporarily(id, request))
     }
+
+
     
     @PatchMapping("/{id}/block")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")

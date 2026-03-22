@@ -72,7 +72,10 @@ class AuthService(
         
         val userDetails = userDetailsService.loadUserByUsername(normalizedLogin)
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
-        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false)
+        val isPending = user.deletionRequestedAt != null
+        
+        // ВИПРАВЛЕНО: додано isPending
+        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false, isPending)
     }
 
     // --- DRIVER LOGIN SMS (NEW) ---
@@ -112,7 +115,10 @@ class AuthService(
 
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: normalizedPhone)
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
-        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false)
+        val isPending = user.deletionRequestedAt != null
+        
+        // ВИПРАВЛЕНО: додано isPending
+        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false, isPending)
     }
 
     // --- CLIENT LOGIN / REGISTER ---
@@ -142,7 +148,10 @@ class AuthService(
         }
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: normalizedPhone)
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
-        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Клієнт", user.role.name, isNew)
+        val isPending = user.deletionRequestedAt != null
+        
+        // ВИПРАВЛЕНО: додано isPending
+        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Клієнт", user.role.name, isNew, isPending)
     }
 
     // --- DRIVER REGISTRATION FLOW ---
