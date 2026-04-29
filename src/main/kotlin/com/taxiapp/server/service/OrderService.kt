@@ -132,6 +132,8 @@ class OrderService(
                 pricePerWaitingMinute = tariff.pricePerWaitingMinute,
                 isActive = tariff.isActive,
                 imageUrl = tariff.imageUrl,
+                isBeta = tariff.isBeta,               // <--- ДОБАВЛЕНО
+                isUnavailable = tariff.isUnavailable,
                 calculatedPrice = price,
                 description = null
             )

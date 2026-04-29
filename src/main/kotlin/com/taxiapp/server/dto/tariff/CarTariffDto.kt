@@ -12,6 +12,8 @@ data class CarTariffDto(
     val pricePerWaitingMinute: Double,
     val isActive: Boolean,
     val imageUrl: String?,
+    val isBeta: Boolean,
+    val isUnavailable: Boolean,
     
     // --- НОВІ ПОЛЯ ДЛЯ SMART PRICING ---
     // Вони можуть бути null, якщо ми просто переглядаємо список тарифів в адмінці
@@ -26,6 +28,8 @@ data class CarTariffDto(
         pricePerKm = tariff.pricePerKm,
         pricePerKmOutCity = tariff.pricePerKmOutCity,
         freeWaitingMinutes = tariff.freeWaitingMinutes,
+        isBeta = tariff.isBeta,               // Маппинг
+        isUnavailable = tariff.isUnavailable,
         pricePerWaitingMinute = tariff.pricePerWaitingMinute,
         isActive = tariff.isActive,
         imageUrl = tariff.imageUrl,

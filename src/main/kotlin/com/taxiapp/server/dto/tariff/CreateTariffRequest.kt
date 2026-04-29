@@ -31,5 +31,8 @@ data class CreateTariffRequest(
     @field:Min(value = 0, message = "Ціна за хвилину очікування не може бути негативною")
     val pricePerWaitingMinute: Double,
 
+    val isBeta: Boolean = false,
+    val isUnavailable: Boolean = false,
+
     val isActive: Boolean = true
 )

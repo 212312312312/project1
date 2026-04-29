@@ -6,5 +6,7 @@ data class UpdateTariffRequest(
     val pricePerKm: Double?,
     val freeWaitingMinutes: Int?,
     val pricePerWaitingMinute: Double?,
-    val isActive: Boolean?
+    val isActive: Boolean?,
+    val isBeta: Boolean?,
+    val isUnavailable: Boolean?
 )

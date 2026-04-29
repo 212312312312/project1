@@ -1,5 +1,6 @@
 package com.taxiapp.server.controller
 
+import com.taxiapp.server.dto.auth.TokenRefreshRequest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.taxiapp.server.dto.auth.LoginRequest
 import com.taxiapp.server.dto.auth.LoginResponse
@@ -25,6 +26,12 @@ class AuthController(
     @PostMapping("/login")
     fun login(@RequestBody request: LoginRequest): LoginResponse {
         return authService.login(request)
+    }
+
+    // --- ОНОВЛЕННЯ ТОКЕНУ ---
+    @PostMapping("/refresh")
+    fun refreshToken(@Valid @RequestBody request: TokenRefreshRequest): LoginResponse {
+        return authService.refreshToken(request)
     }
 
     // --- ВОДІЙ: Вхід через SMS (НОВЕ) ---

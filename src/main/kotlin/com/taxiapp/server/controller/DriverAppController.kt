@@ -79,7 +79,8 @@ class DriverAppController(
     private val carRepository: CarRepository,
     private val settingsService: SettingsService,
     // <<< ВНЕДРЕНИЕ РЕПОЗИТОРИЯ УВЕДОМЛЕНИЙ >>>
-    private val notificationRepository: DriverNotificationRepository
+    private val notificationRepository: DriverNotificationRepository,
+    private val authService: com.taxiapp.server.service.AuthService
 ) {
 
     @Autowired
@@ -263,13 +264,18 @@ class DriverAppController(
             updatedUser.role.name
         )
         
+        // Создаем новый Refresh-токен при смене номера
+        val newRefreshToken = authService.createRefreshToken(updatedUser.id!!)
+        
         return ResponseEntity.ok(LoginResponse(
             token = newToken,
+            refreshToken = newRefreshToken.token, // <-- Добавили Refresh токен
             role = updatedUser.role.name,
             userId = updatedUser.id!!,
             phoneNumber = updatedUser.userPhone ?: "",
             fullName = updatedUser.fullName ?: "",
-            isNewUser = false
+            isNewUser = false,
+            isPendingDeletion = false
         ))
     }
 

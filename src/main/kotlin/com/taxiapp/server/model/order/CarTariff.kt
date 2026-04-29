@@ -17,6 +17,12 @@ data class CarTariff(
     var basePrice: Double,
 
     @Column(nullable = false)
+    var isBeta: Boolean = false,
+
+    @Column(nullable = false)
+    var isUnavailable: Boolean = false,
+
+    @Column(nullable = false)
     var pricePerKm: Double,
 
     // --- НОВОЕ ПОЛЕ: Цена за городом ---

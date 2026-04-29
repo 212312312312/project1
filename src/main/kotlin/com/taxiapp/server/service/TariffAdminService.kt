@@ -39,6 +39,8 @@ class TariffAdminService(
             freeWaitingMinutes = tariff.freeWaitingMinutes,
             pricePerWaitingMinute = tariff.pricePerWaitingMinute,
             isActive = tariff.isActive,
+            isBeta = tariff.isBeta,               // <--- ДОБАВЛЕНО
+            isUnavailable = tariff.isUnavailable,
             imageUrl = buildImageUrl(tariff.imageUrl)
         )
     }
@@ -67,6 +69,8 @@ class TariffAdminService(
             freeWaitingMinutes = request.freeWaitingMinutes,
             pricePerWaitingMinute = request.pricePerWaitingMinute,
             isActive = request.isActive,
+            isBeta = request.isBeta,               // <--- ДОБАВЛЕНО
+            isUnavailable = request.isUnavailable,
             imageUrl = filename
         )
         val savedTariff = tariffRepository.save(newTariff)
@@ -96,6 +100,8 @@ class TariffAdminService(
         tariff.freeWaitingMinutes = request.freeWaitingMinutes
         tariff.pricePerWaitingMinute = request.pricePerWaitingMinute
         tariff.isActive = request.isActive
+        tariff.isBeta = request.isBeta                 // <--- ДОБАВЛЕНО
+        tariff.isUnavailable = request.isUnavailable
         tariff.imageUrl = newFilename
 
         val updatedTariff = tariffRepository.save(tariff)

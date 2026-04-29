@@ -41,6 +41,11 @@ class JwtUtils {
         return claimsResolver.apply(claims)
     }
 
+    // --- НОВЫЙ МЕТОД ДЛЯ REFRESH TOKEN ---
+    fun generateRefreshToken(): String {
+        return java.util.UUID.randomUUID().toString()
+    }
+
     private fun extractAllClaims(token: String): Claims {
         return Jwts.parserBuilder()
             .setSigningKey(getSignInKey())

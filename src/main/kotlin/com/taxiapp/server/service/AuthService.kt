@@ -33,7 +33,9 @@ class AuthService(
     private val userDetailsService: UserDetailsServiceImpl,
     private val blacklistRepository: BlacklistRepository,
     private val smsService: SmsService,
-    private val fileStorageService: FileStorageService
+    private val fileStorageService: FileStorageService,
+    private val refreshTokenRepository: RefreshTokenRepository,
+    @org.springframework.beans.factory.annotation.Value("\${jwt.refresh-expiration}") private val refreshTokenDurationMs: Long
 ) {
 
     // --- НОРМАЛИЗАЦИЯ НОМЕРА ---
@@ -46,6 +48,7 @@ class AuthService(
         }
     }
 
+    @Transactional
     fun login(request: LoginRequest): LoginResponse {
         val loginCandidate = request.login
         // Если логин похож на телефон (начинается с +380), нормализуем его
@@ -74,8 +77,17 @@ class AuthService(
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
-        // ВИПРАВЛЕНО: додано isPending
-        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false, isPending)
+        val refreshToken = createRefreshToken(user.id)
+        return LoginResponse(
+            token = token, 
+            refreshToken = refreshToken.token, 
+            userId = user.id, 
+            phoneNumber = user.userPhone ?: "", 
+            fullName = user.fullName ?: "Водій", 
+            role = user.role.name, 
+            isNewUser = false, // Тут false, а не isNew
+            isPendingDeletion = isPending
+        )
     }
 
     // --- DRIVER LOGIN SMS (NEW) ---
@@ -117,8 +129,17 @@ class AuthService(
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
-        // ВИПРАВЛЕНО: додано isPending
-        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Водій", user.role.name, false, isPending)
+        val refreshToken = createRefreshToken(user.id)
+        return LoginResponse(
+            token = token, 
+            refreshToken = refreshToken.token, 
+            userId = user.id, 
+            phoneNumber = user.userPhone ?: "", 
+            fullName = user.fullName ?: "Водій", 
+            role = user.role.name, 
+            isNewUser = false, // Тут false, а не isNew
+            isPendingDeletion = isPending
+        )
     }
 
     // --- CLIENT LOGIN / REGISTER ---
@@ -150,8 +171,17 @@ class AuthService(
         val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
-        // ВИПРАВЛЕНО: додано isPending
-        return LoginResponse(token, user.id, user.userPhone ?: "", user.fullName ?: "Клієнт", user.role.name, isNew, isPending)
+        val refreshToken = createRefreshToken(user.id)
+        return LoginResponse(
+            token = token, 
+            refreshToken = refreshToken.token, 
+            userId = user.id, 
+            phoneNumber = user.userPhone ?: "", 
+            fullName = user.fullName ?: "Клієнт", 
+            role = user.role.name, 
+            isNewUser = isNew, // А вот тут ОСТАВЛЯЕМ isNew
+            isPendingDeletion = isPending
+        )
     }
 
     // --- DRIVER REGISTRATION FLOW ---
@@ -213,6 +243,8 @@ class AuthService(
         user.fcmToken = token
         userRepository.save(user)
     }
+
+    
 
     @Transactional
     fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartFile>): MessageResponse {
@@ -292,5 +324,60 @@ class AuthService(
         driverRepository.save(driver)
 
         return MessageResponse("Заявку прийнято. Очікуйте підтвердження.")
+    }
+
+    // ==========================================
+    // === ЛОГИКА REFRESH TOKEN =================
+    // ==========================================
+    
+    @Transactional
+    fun createRefreshToken(userId: Long): com.taxiapp.server.model.auth.RefreshToken {
+        val user = userRepository.findById(userId).orElseThrow { 
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") 
+        }
+        
+        // Удаляем старые сессии и СРАЗУ отправляем команду в БД (чтобы избежать конфликта уникальности)
+        refreshTokenRepository.deleteByUser(user)
+        refreshTokenRepository.flush() // <--- ВОТ ЭТА МАГИЧЕСКАЯ СТРОКА
+
+        val refreshToken = com.taxiapp.server.model.auth.RefreshToken().apply {
+            this.user = user
+            this.token = jwtUtils.generateRefreshToken()
+            this.expiryDate = java.time.Instant.now().plusMillis(refreshTokenDurationMs)
+        }
+        return refreshTokenRepository.save(refreshToken)
+    }
+
+    @Transactional
+    fun refreshToken(request: TokenRefreshRequest): LoginResponse {
+        // 1. Ищем токен в БД
+        val refreshToken = refreshTokenRepository.findByToken(request.refreshToken)
+            .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Недійсний Refresh Token") }
+
+        // 2. Проверяем срок годности
+        if (refreshToken.expiryDate < java.time.Instant.now()) {
+            refreshTokenRepository.delete(refreshToken)
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Refresh Token прострочений. Авторизуйтесь знову.")
+        }
+
+        val user = refreshToken.user
+        if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+
+        // 3. Выдаем новые токены
+        val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.userPhone!!)
+        val newAccessToken = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+        val isPending = user.deletionRequestedAt != null
+        
+        // Выдаем тот же RefreshToken, чтобы человек не "вылетал", пока токен не протухнет окончательно
+        return LoginResponse(
+            token = newAccessToken, 
+            refreshToken = refreshToken.token, 
+            userId = user.id, 
+            phoneNumber = user.userPhone ?: "", 
+            fullName = user.fullName ?: "Користувач", 
+            role = user.role.name, 
+            isNewUser = false, 
+            isPendingDeletion = isPending
+        )
     }
 }
