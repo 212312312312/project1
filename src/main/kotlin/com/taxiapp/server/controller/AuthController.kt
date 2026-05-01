@@ -4,6 +4,7 @@ import com.taxiapp.server.dto.auth.TokenRefreshRequest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.taxiapp.server.dto.auth.LoginRequest
 import com.taxiapp.server.dto.auth.LoginResponse
+import com.taxiapp.server.dto.auth.GoogleAuthRequest
 import com.taxiapp.server.dto.auth.MessageResponse
 import com.taxiapp.server.dto.auth.RegisterDriverRequest
 import com.taxiapp.server.dto.auth.SmsRequestDto
@@ -43,6 +44,15 @@ class AuthController(
     @PostMapping("/driver/login/sms/verify")
     fun verifyDriverLoginSms(@Valid @RequestBody request: SmsVerifyDto): LoginResponse {
         return authService.verifyDriverLoginSms(request)
+    }
+
+    // --- КЛІЄНТ: Прив'язка телефону (після Google) ---
+    @PostMapping("/client/link-phone")
+    fun linkPhone(
+        principal: Principal,
+        @Valid @RequestBody request: SmsVerifyDto
+    ): LoginResponse {
+        return authService.verifySmsAndLinkPhone(request, principal.name)
     }
 
     // --- КЛІЄНТ: SMS Вхід/Реєстрація ---
@@ -123,4 +133,10 @@ class AuthController(
         authService.updateFcmToken(principal.name, token)
         return ResponseEntity.ok().build()
     }
+    
+    @PostMapping("/client/google")
+    fun loginWithGoogle(@Valid @RequestBody request: GoogleAuthRequest): LoginResponse {
+        return authService.verifyGoogleTokenAndLogin(request)
+    }
+    
 }

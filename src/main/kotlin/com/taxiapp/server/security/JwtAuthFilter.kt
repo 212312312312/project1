@@ -26,8 +26,6 @@ class JwtAuthFilter(
         val authHeader: String? = request.getHeader("Authorization")
 
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            // ЛОГ: Нет заголовка
-            // println(">>> JWT FILTER: No Authorization header for ${request.requestURI}")
             filterChain.doFilter(request, response)
             return
         }
@@ -36,22 +34,16 @@ class JwtAuthFilter(
 
         try {
             if (jwtToken.isEmpty()) {
-                println(">>> JWT FILTER: Token is empty")
                 filterChain.doFilter(request, response)
                 return
             }
 
             val username = jwtUtils.extractUsername(jwtToken)
-            // ЛОГ: Юзернейм из токена
-            println(">>> JWT FILTER: Extracted username: $username")
 
             if (username != null && SecurityContextHolder.getContext().authentication == null) {
                 val userDetails: UserDetails = userDetailsService.loadUserByUsername(username)
 
                 if (jwtUtils.validateToken(jwtToken, userDetails)) {
-                    // ЛОГ: Успешная валидация
-                    println(">>> JWT FILTER: Token VALID. Authenticating user: ${userDetails.username}")
-
                     val authToken = UsernamePasswordAuthenticationToken(
                         userDetails,
                         null,
@@ -59,15 +51,22 @@ class JwtAuthFilter(
                     )
                     authToken.details = WebAuthenticationDetailsSource().buildDetails(request)
                     SecurityContextHolder.getContext().authentication = authToken
-                } else {
-                    println(">>> JWT FILTER: Token INVALID for user: $username")
                 }
             }
         } catch (e: ExpiredJwtException) {
+            // --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
             println(">>> JWT FILTER: Token EXPIRED for: ${request.requestURI}")
+            response.status = HttpServletResponse.SC_UNAUTHORIZED // Статус 401
+            response.contentType = "application/json;charset=UTF-8"
+            response.writer.write("""{"error": "TOKEN_EXPIRED", "message": "Access token is expired"}""")
+            return // ПРЕРЫВАЕМ ЦЕПОЧКУ, не пускаем дальше в Spring Security
         } catch (e: Exception) {
+            // --- И ЗДЕСЬ (если токен кривой) ---
             println(">>> JWT FILTER: Error parsing token: ${e.message}")
-            e.printStackTrace()
+            response.status = HttpServletResponse.SC_UNAUTHORIZED // Статус 401
+            response.contentType = "application/json;charset=UTF-8"
+            response.writer.write("""{"error": "INVALID_TOKEN", "message": "Invalid access token"}""")
+            return // ПРЕРЫВАЕМ ЦЕПОЧКУ
         }
 
         filterChain.doFilter(request, response)

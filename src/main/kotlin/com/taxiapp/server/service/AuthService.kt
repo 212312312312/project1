@@ -1,5 +1,9 @@
 package com.taxiapp.server.service
 
+import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken
+import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier
+import com.google.api.client.http.javanet.NetHttpTransport
+import com.google.api.client.json.gson.GsonFactory
 import com.taxiapp.server.dto.auth.*
 import com.taxiapp.server.model.auth.SmsVerificationCode
 import com.taxiapp.server.model.user.Car
@@ -19,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.multipart.MultipartFile
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
+import java.util.Collections
 import java.util.Random
 
 @Service
@@ -35,11 +40,11 @@ class AuthService(
     private val smsService: SmsService,
     private val fileStorageService: FileStorageService,
     private val refreshTokenRepository: RefreshTokenRepository,
-    @org.springframework.beans.factory.annotation.Value("\${jwt.refresh-expiration}") private val refreshTokenDurationMs: Long
+    @org.springframework.beans.factory.annotation.Value("\${jwt.refresh-expiration}") private val refreshTokenDurationMs: Long,
+    @org.springframework.beans.factory.annotation.Value("\${google.client-id}") private val googleClientId: String
 ) {
 
     // --- НОРМАЛИЗАЦИЯ НОМЕРА ---
-    // Приводим +380XXXXXXXXX к 0XXXXXXXXX (формат базы данных)
     private fun normalizePhone(phone: String): String {
         return if (phone.startsWith("+380")) {
             "0" + phone.substring(4)
@@ -51,7 +56,6 @@ class AuthService(
     @Transactional
     fun login(request: LoginRequest): LoginResponse {
         val loginCandidate = request.login
-        // Если логин похож на телефон (начинается с +380), нормализуем его
         val normalizedLogin = if (loginCandidate.startsWith("+380")) normalizePhone(loginCandidate) else loginCandidate
 
         println(">>> LOGIN: Початок входу для $normalizedLogin")
@@ -69,7 +73,6 @@ class AuthService(
         if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
         
         try {
-            // Аутентификация тоже по нормализованному логину, если это телефон
             authenticationManager.authenticate(UsernamePasswordAuthenticationToken(normalizedLogin, request.password))
         } catch (e: Exception) { throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Невірний логін або пароль") }
         
@@ -85,15 +88,73 @@ class AuthService(
             phoneNumber = user.userPhone ?: "", 
             fullName = user.fullName ?: "Водій", 
             role = user.role.name, 
-            isNewUser = false, // Тут false, а не isNew
+            isNewUser = false,
             isPendingDeletion = isPending
         )
     }
 
-    // --- DRIVER LOGIN SMS (NEW) ---
+    // --- GOOGLE LOGIN / REGISTER ---
+    @Transactional
+    fun verifyGoogleTokenAndLogin(request: GoogleAuthRequest): LoginResponse {
+        val verifier = GoogleIdTokenVerifier.Builder(NetHttpTransport(), GsonFactory.getDefaultInstance())
+            .setAudience(Collections.singletonList(googleClientId))
+            .build()
+
+        val idToken: GoogleIdToken? = try {
+            verifier.verify(request.idToken)
+        } catch (e: Exception) {
+            null
+        }
+
+        if (idToken != null) {
+            val payload: GoogleIdToken.Payload = idToken.payload
+
+            val email: String = payload.email
+            val name: String = payload.get("name") as String? ?: "Клієнт"
+            
+            var user = userRepository.findByEmail(email)
+            var isNew = false
+
+            if (user == null) {
+                isNew = true
+                val newClient = Client().apply {
+                    this.email = email
+                    this.userLogin = email
+                    this.fullName = name
+                    this.passwordHash = passwordEncoder.encode("google_login_stub")
+                    this.role = Role.CLIENT
+                    this.isBlocked = false
+                }
+                user = clientRepository.save(newClient)
+            }
+
+            if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+
+            val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.email!!)
+            val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+            val refreshToken = createRefreshToken(user.id)
+            val isPending = user.deletionRequestedAt != null
+
+            return LoginResponse(
+                token = token,
+                refreshToken = refreshToken.token,
+                userId = user.id,
+                phoneNumber = user.userPhone ?: "", 
+                fullName = user.fullName,
+                role = user.role.name,
+                isNewUser = isNew,
+                isPendingDeletion = isPending
+            )
+
+        } else {
+            throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Недійсний Google ID Token")
+        }
+    }
+
+    // --- DRIVER LOGIN SMS ---
     @Transactional
     fun requestDriverLoginSms(request: SmsRequestDto): MessageResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        val normalizedPhone = normalizePhone(request.phoneNumber)
 
         val user = userRepository.findByUserPhone(normalizedPhone).orElseThrow {
             ResponseStatusException(HttpStatus.NOT_FOUND, "Водія з таким номером не знайдено")
@@ -107,10 +168,9 @@ class AuthService(
 
     @Transactional
     fun verifyDriverLoginSms(request: SmsVerifyDto): LoginResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        val normalizedPhone = normalizePhone(request.phoneNumber)
         
         checkDriverSmsCode(normalizedPhone, request.code) 
-        // smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) } // <--- ПОКА ЗАКОММЕНТИРОВАНО ДЛЯ ТЕСТОВ
 
         val user = userRepository.findByUserPhone(normalizedPhone).orElseThrow {
             ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено")
@@ -137,7 +197,7 @@ class AuthService(
             phoneNumber = user.userPhone ?: "", 
             fullName = user.fullName ?: "Водій", 
             role = user.role.name, 
-            isNewUser = false, // Тут false, а не isNew
+            isNewUser = false,
             isPendingDeletion = isPending
         )
     }
@@ -145,14 +205,14 @@ class AuthService(
     // --- CLIENT LOGIN / REGISTER ---
     @Transactional
     fun requestSmsCode(request: SmsRequestDto): MessageResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        val normalizedPhone = normalizePhone(request.phoneNumber)
         sendSmsInternal(normalizedPhone)
         return MessageResponse("Код надіслано")
     }
 
     @Transactional
     fun verifySmsCodeAndLogin(request: SmsVerifyDto): LoginResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        val normalizedPhone = normalizePhone(request.phoneNumber)
         
         checkDriverSmsCode(normalizedPhone, request.code)
         smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
@@ -179,7 +239,7 @@ class AuthService(
             phoneNumber = user.userPhone ?: "", 
             fullName = user.fullName ?: "Клієнт", 
             role = user.role.name, 
-            isNewUser = isNew, // А вот тут ОСТАВЛЯЕМ isNew
+            isNewUser = isNew,
             isPendingDeletion = isPending
         )
     }
@@ -187,7 +247,7 @@ class AuthService(
     // --- DRIVER REGISTRATION FLOW ---
     @Transactional
     fun requestDriverRegistrationSms(request: SmsRequestDto): MessageResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        val normalizedPhone = normalizePhone(request.phoneNumber)
         
         if (userRepository.existsByUserPhone(normalizedPhone)) throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
         sendSmsInternal(normalizedPhone)
@@ -211,16 +271,13 @@ class AuthService(
         
         val code = (100000 + Random().nextInt(900000)).toString()
         
-        // Попытка найти существующую запись
         val existingSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
 
         if (existingSms != null) {
-            // Если запись есть — обновляем её
             existingSms.code = code
             existingSms.expiresAt = LocalDateTime.now().plusMinutes(10)
             smsCodeRepository.save(existingSms)
         } else {
-            // Если записи нет — создаем новую
             val smsEntity = SmsVerificationCode(
                 userPhone = phone, 
                 code = code, 
@@ -233,8 +290,6 @@ class AuthService(
     }
 
     fun updateFcmToken(userLogin: String, token: String) {
-        // При обновлении токена userLogin может прийти как +380..., так и 0...
-        // Но обычно userLogin == userPhone в БД
         val normalizedLogin = if (userLogin.startsWith("+380")) normalizePhone(userLogin) else userLogin
         
         val user = userRepository.findByUserPhone(normalizedLogin).orElseGet { 
@@ -244,11 +299,9 @@ class AuthService(
         userRepository.save(user)
     }
 
-    
-
     @Transactional
     fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartFile>): MessageResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) // <--- НОРМАЛИЗАЦИЯ
+        val normalizedPhone = normalizePhone(request.phoneNumber) 
 
         if (userRepository.existsByUserPhone(normalizedPhone)) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
@@ -257,17 +310,13 @@ class AuthService(
         checkDriverSmsCode(normalizedPhone, request.smsCode)
         smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
 
-        // Зберігаємо файли
         val avatarUrl = files["avatar"]?.let { fileStorageService.storeFile(it) }
         val licenseFrontUrl = files["driverLicenseFront"]?.let { fileStorageService.storeFile(it) }
         val licenseBackUrl = files["driverLicenseBack"]?.let { fileStorageService.storeFile(it) }
-        
         val techFrontUrl = files["techPassportFront"]?.let { fileStorageService.storeFile(it) }
         val techBackUrl = files["techPassportBack"]?.let { fileStorageService.storeFile(it) }
         val insuranceUrl = files["insurance"]?.let { fileStorageService.storeFile(it) }
         val carPhotoUrl = files["carPhoto"]?.let { fileStorageService.storeFile(it) }
-        
-        // Нові фото
         val carFrontUrl = files["carFront"]?.let { fileStorageService.storeFile(it) }
         val carBackUrl = files["carBack"]?.let { fileStorageService.storeFile(it) }
         val carLeftUrl = files["carLeft"]?.let { fileStorageService.storeFile(it) }
@@ -275,27 +324,23 @@ class AuthService(
         val carIntFrontUrl = files["carInteriorFront"]?.let { fileStorageService.storeFile(it) }
         val carIntBackUrl = files["carInteriorBack"]?.let { fileStorageService.storeFile(it) }
 
-        // 1. Створюємо водія
         val driver = Driver().apply {
             fullName = request.fullName
-            userLogin = normalizedPhone // Сохраняем в БД как 0...
-            userPhone = normalizedPhone // Сохраняем в БД как 0...
+            userLogin = normalizedPhone 
+            userPhone = normalizedPhone 
             passwordHash = passwordEncoder.encode(request.password)
             this.email = request.email
             this.rnokpp = request.rnokpp
             this.driverLicense = request.driverLicense
-            
             this.photoUrl = avatarUrl 
             this.driverLicenseFront = licenseFrontUrl
             this.driverLicenseBack = licenseBackUrl
-            
             role = Role.DRIVER
             isBlocked = false
             isOnline = false
             registrationStatus = RegistrationStatus.PENDING
         }
 
-        // 2. Створюємо машину
         val car = Car(
             make = request.make,
             model = request.model,
@@ -308,14 +353,12 @@ class AuthService(
             this.techPassportFront = techFrontUrl
             this.techPassportBack = techBackUrl
             this.insurancePhoto = insuranceUrl 
-            
             this.photoFront = carFrontUrl ?: carPhotoUrl
             this.photoBack = carBackUrl
             this.photoLeft = carLeftUrl
             this.photoRight = carRightUrl
             this.photoSeatsFront = carIntFrontUrl
             this.photoSeatsBack = carIntBackUrl
-            
             this.driver = driver 
         }
 
@@ -326,19 +369,92 @@ class AuthService(
         return MessageResponse("Заявку прийнято. Очікуйте підтвердження.")
     }
 
-    // ==========================================
-    // === ЛОГИКА REFRESH TOKEN =================
-    // ==========================================
-    
+    @Transactional
+    fun verifySmsAndLinkPhone(request: SmsVerifyDto, principalName: String): LoginResponse {
+        val normalizedPhone = normalizePhone(request.phoneNumber)
+        
+        // 1. Перевіряємо СМС код
+        checkDriverSmsCode(normalizedPhone, request.code)
+        smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+        
+        // 2. Знаходимо поточного користувача (тимчасовий Google-акаунт)
+        val currentUser = userRepository.findByUserLogin(principalName).orElseGet {
+            userRepository.findByEmail(principalName) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено")
+        }
+
+        // 3. Перевіряємо, чи є вже акаунт з таким номером телефону
+        val existingUserOptional = userRepository.findByUserPhone(normalizedPhone)
+
+        val finalUser = if (existingUserOptional.isPresent && existingUserOptional.get().id != currentUser.id) {
+            // ==========================================
+            // ЛОГІКА ЗЛИТТЯ (MERGE) АКАУНТІВ
+            // ==========================================
+            val existingUser = existingUserOptional.get()
+
+            // Зберігаємо корисні дані з Google перед видаленням
+            val googleEmail = currentUser.email
+            val googleName = currentUser.fullName
+
+            // 1. Видаляємо Refresh токени тимчасового акаунту
+            refreshTokenRepository.deleteByUser(currentUser)
+            
+            // 2. Змінюємо унікальні поля перед видаленням, щоб уникнути конфліктів у базі
+            currentUser.email = "deleted_${java.util.UUID.randomUUID()}@taxi.com"
+            currentUser.userLogin = "deleted_${java.util.UUID.randomUUID()}"
+            userRepository.saveAndFlush(currentUser)
+            
+            // 3. Видаляємо тимчасовий Google-акаунт з бази
+            userRepository.delete(currentUser)
+            userRepository.flush() // Фіксуємо видалення в БД
+
+            // 4. Оновлюємо старий (основний) акаунт новими даними
+            existingUser.email = googleEmail
+            
+            // Якщо старий акаунт не мав імені (був "Райдер"), беремо ім'я з Google
+            if (existingUser.fullName == "Райдер" || existingUser.fullName == "Клієнт") {
+                existingUser.fullName = googleName
+            }
+            
+            userRepository.save(existingUser)
+            existingUser // Тепер це наш головний акаунт для логіну
+            
+        } else {
+            // ==========================================
+            // ЗВИЧАЙНА ПРИВ'ЯЗКА (номер був вільний)
+            // ==========================================
+            currentUser.userPhone = normalizedPhone
+            if (currentUser.userLogin == currentUser.email) {
+                currentUser.userLogin = normalizedPhone 
+            }
+            userRepository.save(currentUser)
+            currentUser
+        }
+
+        // 4. Генеруємо нові токени для фінального користувача
+        val userDetails = userDetailsService.loadUserByUsername(finalUser.userLogin!!)
+        val token = jwtUtils.generateToken(userDetails, finalUser.id, finalUser.role.name)
+        val refreshToken = createRefreshToken(finalUser.id)
+        
+        return LoginResponse(
+            token = token, 
+            refreshToken = refreshToken.token, 
+            userId = finalUser.id, 
+            phoneNumber = finalUser.userPhone ?: "", 
+            fullName = finalUser.fullName ?: "Клієнт", 
+            role = finalUser.role.name, 
+            isNewUser = false,
+            isPendingDeletion = finalUser.deletionRequestedAt != null
+        )
+    }
+
     @Transactional
     fun createRefreshToken(userId: Long): com.taxiapp.server.model.auth.RefreshToken {
         val user = userRepository.findById(userId).orElseThrow { 
             ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") 
         }
         
-        // Удаляем старые сессии и СРАЗУ отправляем команду в БД (чтобы избежать конфликта уникальности)
         refreshTokenRepository.deleteByUser(user)
-        refreshTokenRepository.flush() // <--- ВОТ ЭТА МАГИЧЕСКАЯ СТРОКА
+        refreshTokenRepository.flush()
 
         val refreshToken = com.taxiapp.server.model.auth.RefreshToken().apply {
             this.user = user
@@ -350,11 +466,9 @@ class AuthService(
 
     @Transactional
     fun refreshToken(request: TokenRefreshRequest): LoginResponse {
-        // 1. Ищем токен в БД
         val refreshToken = refreshTokenRepository.findByToken(request.refreshToken)
             .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Недійсний Refresh Token") }
 
-        // 2. Проверяем срок годности
         if (refreshToken.expiryDate < java.time.Instant.now()) {
             refreshTokenRepository.delete(refreshToken)
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Refresh Token прострочений. Авторизуйтесь знову.")
@@ -363,12 +477,10 @@ class AuthService(
         val user = refreshToken.user
         if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
 
-        // 3. Выдаем новые токены
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.userPhone!!)
         val newAccessToken = jwtUtils.generateToken(userDetails, user.id, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
-        // Выдаем тот же RefreshToken, чтобы человек не "вылетал", пока токен не протухнет окончательно
         return LoginResponse(
             token = newAccessToken, 
             refreshToken = refreshToken.token, 

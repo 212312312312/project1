@@ -1,5 +1,6 @@
 package com.taxiapp.server.security
 
+import jakarta.servlet.http.HttpServletResponse // <-- ДОБАВЛЕН ЭТОТ ИМПОРТ
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.security.authentication.AuthenticationManager
@@ -46,6 +47,17 @@ class SecurityConfig(
             .csrf { it.disable() }
             .cors { it.configurationSource(corsConfigurationSource()) }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            
+            // --- ДОБАВЛЕНО: Глобальный обработчик отсутствия прав ---
+            .exceptionHandling { exceptions ->
+                exceptions.authenticationEntryPoint { request, response, authException ->
+                    response.status = HttpServletResponse.SC_UNAUTHORIZED
+                    response.contentType = "application/json;charset=UTF-8"
+                    response.writer.write("""{"error": "UNAUTHORIZED", "message": "Authentication is required"}""")
+                }
+            }
+            // ---------------------------------------------------------
+            
             .authorizeHttpRequests { auth ->
                 auth
                     // 1. Публичные API (доступны всем)
@@ -53,64 +65,34 @@ class SecurityConfig(
                         "/api/v1/auth/**",
                         "/api/v1/public/**",
                         "/ws-taxi/**",
-                        
-                        // --- ВАЖНО: Разрешаем доступ к странице "Фейковой оплаты" без токена ---
                         "/api/v1/payments/mock-gateway/**",
                         "/api/v1/payments/callback",
-
-                        // --- ДОБАВЛЕНО ДЛЯ РАБОТЫ WEBVIEW (ФОРМА АВТО) ---
                         "/api/v1/driver/forms/**",
                         "/api/v1/driver/cars/add"
                     ).permitAll()
 
                     // 2. Статические ресурсы (React build, файлы)
                     .requestMatchers(
-                        "/",
-                        "/index.html",
-                        "/driver-register",
-                        "/login",
-                        "/dashboard/**",
-                        "/assets/**",
-                        "/favicon.ico",
-                        "/*.png",
-                        "/*.jpg",
-                        "/*.svg",
-                        "/*.json",
-                        "/*.js",
-                        "/*.css",
-                        
-                        "/images/**",
-                        "/uploads/**",
-
-                        // --- ДОБАВЛЕНО ДЛЯ СТАТИКИ ФОРМЫ АВТО ---
-                        "/add-car/**"
+                        "/", "/index.html", "/driver-register", "/login", "/dashboard/**", 
+                        "/assets/**", "/favicon.ico", "/*.png", "/*.jpg", "/*.svg", 
+                        "/*.json", "/*.js", "/*.css", "/images/**", "/uploads/**", "/add-car/**"
                     ).permitAll()
 
-                    // 3. !!! НАСТРОЙКА ДОСТУПА ПО РОЛЯМ !!!
-                    
-                    // --- НОВАЯ СЕКЦИЯ: ПЛАТЕЖИ ---
-                    // Инициировать и проверять оплату могут Водители и Админы
+                    // 3. Доступ по ролям
                     .requestMatchers("/api/v1/payments/**").hasAnyAuthority(
-                        "ROLE_DRIVER", "DRIVER",
-                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
+                        "ROLE_DRIVER", "DRIVER", "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
                     )
-                    // -----------------------------
-
                     .requestMatchers("/api/v1/admin/**").hasAnyAuthority(
-                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR", 
-                        "ROLE_DISPATCHER", "DISPATCHER",
-                        "ROLE_ADMIN", "ADMIN"
+                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR", "ROLE_DISPATCHER", "DISPATCHER", "ROLE_ADMIN", "ADMIN"
                     )
                     .requestMatchers("/api/v1/driver/**").hasAnyAuthority(
-                        "ROLE_DRIVER", "DRIVER",
-                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
+                        "ROLE_DRIVER", "DRIVER", "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
                     )
                     .requestMatchers("/api/v1/client/**").hasAnyAuthority(
-                        "ROLE_CLIENT", "CLIENT",
-                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
+                        "ROLE_CLIENT", "CLIENT", "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
                     )
 
-                    // 4. Все остальные запросы требуют любой авторизации
+                    // 4. Все остальные
                     .anyRequest().authenticated()
             }
             .authenticationProvider(authenticationProvider())

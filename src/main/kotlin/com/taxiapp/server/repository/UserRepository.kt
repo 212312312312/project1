@@ -15,4 +15,6 @@ interface UserRepository : JpaRepository<User, Long> {
     // --- НОВИЙ МЕТОД ---
     // Знайти всіх користувачів з роллю DISPATCHER
     fun findAllByRole(role: Role): List<User>
+    fun findByEmail(email: String): User? // Или Optional<User>, как у тебя принято
 }
+
