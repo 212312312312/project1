@@ -16,17 +16,14 @@ class TaxiOrder(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
 
-    // ... (всі попередні поля залишаються без змін) ...
     @Column(name = "scheduled_at")
     var scheduledAt: LocalDateTime? = null,
 
-    // --- НОВІ ПОЛЯ ДЛЯ ПОПЕРЕДНІХ ЗАМОВЛЕНЬ ---
     @Column(name = "is_driver_confirmed")
     var isDriverConfirmed: Boolean? = false,
 
     @Column(name = "confirmation_requested_at")
-    var confirmationRequestedAt: LocalDateTime? = null, // Коли ми відправили запит (за 30 хв)
-    // ------------------------------------------
+    var confirmationRequestedAt: LocalDateTime? = null, 
 
     @Column(name = "arrived_at")
     var arrivedAt: LocalDateTime? = null,
@@ -39,7 +36,7 @@ class TaxiOrder(
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", nullable = false)
-    var client: Client,
+    var client: Client, // <-- ИСПРАВЛЕНО: убрали знаки вопроса и = null
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "driver_id")
@@ -147,8 +144,7 @@ class TaxiOrder(
         joinColumns = [JoinColumn(name = "order_id")],
         inverseJoinColumns = [JoinColumn(name = "service_id")]
     )
-    val selectedServices: MutableList<TaxiServiceEntity> = mutableListOf(),
-
+    val selectedServices: MutableList<TaxiServiceEntity> = mutableListOf()
 ) {
     @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
     var stops: MutableList<OrderStop> = mutableListOf()

@@ -9,9 +9,9 @@ data class ClientDto(
     val isBlocked: Boolean
 ) {
     constructor(client: Client) : this(
-        id = client.id,
-        phoneNumber = client.userPhone!!, // ИЗМЕНЕНО
-        fullName = client.fullName,
+        id = client.id ?: 0L, // На всякий случай защищаем и ID
+        phoneNumber = client.userPhone ?: "Не вказано", // <-- ИСПРАВЛЕНО: убрали !!, добавили ?:
+        fullName = client.fullName ?: "Невідомий користувач", // Защищаем имя
         isBlocked = client.isBlocked
     )
 }
