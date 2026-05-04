@@ -20,4 +20,12 @@ class Client : User() {
     @Column(nullable = false, columnDefinition = "integer default 0")
     var ratingCount: Int = 0
     // ------------------
+
+    // --- ПРИВЯЗКА КАРТЫ ---
+    @Column(name = "card_token", length = 255)
+    var cardToken: String? = null
+
+    @Column(name = "card_mask", length = 20)
+    var cardMask: String? = null
+    // ----------------------
 }

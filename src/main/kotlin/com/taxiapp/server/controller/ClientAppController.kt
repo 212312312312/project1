@@ -156,4 +156,22 @@ class ClientAppController(
         }
         return ResponseEntity.ok(services)
     }
+
+    @GetMapping("/profile")
+    fun getClientProfile(principal: Principal): ResponseEntity<com.taxiapp.server.dto.client.ClientDto> {
+        val userLogin = principal.name
+        
+        var user = userRepository.findByUserLogin(userLogin).orElse(null)
+        if (user == null) {
+            user = userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") }
+        }
+        
+        if (user !is Client) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Користувач не є клієнтом")
+        }
+
+        // Передаем нашего user (который точно Client) в DTO
+        return ResponseEntity.ok(com.taxiapp.server.dto.client.ClientDto(user))
+    }
 }

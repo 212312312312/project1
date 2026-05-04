@@ -48,7 +48,8 @@ class OrderService(
     private val sectorService: SectorService,
     private val cancellationReasonRepository: CancellationReasonRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
-    private val appSettingRepository: AppSettingRepository
+    private val appSettingRepository: AppSettingRepository,
+    private val liqPayService: LiqPayService
 ) {
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
@@ -921,12 +922,61 @@ class OrderService(
         return TaxiOrderDto(saved)
     }
 
-    @Transactional
+    // ИСПРАВЛЕНИЕ: noRollbackFor не дает Спрингу откатить изменение на CASH при ошибке
+    @Transactional(noRollbackFor = [ResponseStatusException::class])
     fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         val order = orderRepository.findById(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         
         if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
+        // =======================================================
+        // 💳 ФИНАНСОВЫЙ БЛОК: СПИСАНИЕ С КАРТЫ КЛИЕНТА
+        // =======================================================
+        if (order.paymentMethod == "CARD") {
+            val token = order.client.cardToken
+            
+            if (token.isNullOrEmpty()) {
+                // Токена нет (например, удалил карту). Переключаем на наличные.
+                order.paymentMethod = "CASH"
+                orderRepository.save(order)
+                broadcastOrderChange(order, "UPDATE")
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "У клієнта не прив'язана карта. Спосіб оплати змінено на ГОТІВКУ.")
+            }
+
+            val paymentOrderId = "ride_${order.id}_${System.currentTimeMillis()}"
+            
+            // Пытаемся списать деньги
+            val isSuccess = liqPayService.payWithToken(
+                orderId = paymentOrderId,
+                amount = order.price,
+                cardToken = token,
+                description = "Оплата поїздки #${order.id}"
+            )
+
+            if (!isSuccess) {
+                // ОШИБКА ОПЛАТЫ! Меняем метод на CASH и сохраняем
+                order.paymentMethod = "CASH"
+                orderRepository.save(order)
+                broadcastOrderChange(order, "UPDATE")
+
+                // Уведомляем клиента
+                notificationService.sendOrderStatusToClient(
+                    token = order.client.fcmToken,
+                    orderId = order.id!!,
+                    status = order.status.name,
+                    title = "Помилка оплати карткою",
+                    body = "Не вдалося списати кошти. Будь ласка, розрахуйтесь готівкою."
+                )
+
+                // Прерываем завершение заказа, чтобы водитель увидел ошибку и взял наличку!
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка оплати карткою. Спосіб змінено на ГОТІВКУ. Візьміть гроші та завершіть ще раз.")
+            }
+            
+            // Если код дошел сюда — списание с карты прошло успешно!
+            logger.info(">>> SUCCESS: Card charged for order ${order.id}")
+        }
+        // =======================================================
 
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
@@ -936,41 +986,45 @@ class OrderService(
         driverActivityService.processOrderCompletion(driver, order)
 
         // =======================================================
-        // 💰 ФИНАНСОВЫЙ БЛОК: РАСЧЕТ И СПИСАНИЕ КОМИССИИ
+        // 💰 ФИНАНСОВЫЙ БЛОК: РАСЧЕТ И СПИСАНИЕ КОМИССИИ ВОДИТЕЛЯ
         // =======================================================
-        
-        // 1. Получаем актуальный процент комиссии через сервис (вместо ручного поиска в репо)
-        // (Предполагается, что ты добавил settingsService в конструктор)
-        // Если еще не добавил settingsService в конструктор, используй старый способ:
         val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
         val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0 // Дефолт 10%
         
-        // 2. Считаем сумму комиссии
-        // Комиссия берется от полной стоимости поездки
         val commissionAmount = order.price * (commissionPercent / 100.0)
 
-        // 3. Списываем с баланса водителя
+        // Списываем комиссию системы с баланса водителя
         driver.balance -= commissionAmount
 
-        // 4. Записываем комиссию в заказ
+        // ЕСЛИ ОПЛАТА БЫЛА КАРТОЙ - Зачисляем стоимость поездки на баланс водителя
+        if (order.paymentMethod == "CARD") {
+            driver.balance += order.price
+            
+            val rideTransaction = com.taxiapp.server.model.finance.WalletTransaction(
+                driver = driver,
+                amount = order.price, // Зачисляем деньги
+                operationType = com.taxiapp.server.model.enums.TransactionType.DEPOSIT,
+                orderId = order.id,
+                description = "Безготівкова оплата замовлення #${order.id}"
+            )
+            walletTransactionRepository.save(rideTransaction)
+        }
+
         order.commissionAmount = commissionAmount
 
-        // 5. Сохраняем историю транзакции
-        // Важно: TransactionType.COMMISSION должен существовать в enum
+        // Транзакция комиссии
         val transaction = com.taxiapp.server.model.finance.WalletTransaction(
             driver = driver,
-            amount = -commissionAmount, // Списание — отрицательное число
+            amount = -commissionAmount, // Списание
             operationType = com.taxiapp.server.model.enums.TransactionType.COMMISSION,
             orderId = order.id,
             description = "Комісія ${String.format("%.1f", commissionPercent)}% за замовлення #${order.id}"
         )
         walletTransactionRepository.save(transaction)
-        
         // =======================================================
 
-        driverRepository.save(driver) // Сохраняем обновленный баланс водителя
+        driverRepository.save(driver) 
 
-        // Отключаем Авто-фильтры после успешного завершения (если так задумано)
         val filters = filterRepository.findAllByDriverId(driver.id!!)
         for (f in filters) {
             if (f.isActive && f.isAuto) {
@@ -982,7 +1036,6 @@ class OrderService(
             }
         }
 
-        // Обработка промокодов и программ лояльности
         if (order.appliedDiscount > 0.0) {
             if (order.isPromoCodeUsed) {
                 val activePromoUsage = promoCodeService.findActiveUsage(order.client)
@@ -995,11 +1048,8 @@ class OrderService(
         promoService.updateProgressOnRideCompletion(order.client, order)
         
         val savedOrder = orderRepository.save(order)
-        
-        // <--- ОЧИСТКА ЧАТА --->
         chatService.clearChatForOrder(orderId)
 
-        // Уведомляем диспетчера, что заказ закрыт
         broadcastOrderChange(savedOrder, "UPDATE") 
         
         return TaxiOrderDto(savedOrder)

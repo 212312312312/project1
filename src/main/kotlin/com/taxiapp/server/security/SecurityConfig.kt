@@ -80,7 +80,7 @@ class SecurityConfig(
 
                     // 3. Доступ по ролям
                     .requestMatchers("/api/v1/payments/**").hasAnyAuthority(
-                        "ROLE_DRIVER", "DRIVER", "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
+                        "ROLE_DRIVER", "DRIVER", "ROLE_ADMINISTRATOR", "ADMINISTRATOR", "ROLE_CLIENT", "CLIENT"
                     )
                     .requestMatchers("/api/v1/admin/**").hasAnyAuthority(
                         "ROLE_ADMINISTRATOR", "ADMINISTRATOR", "ROLE_DISPATCHER", "DISPATCHER", "ROLE_ADMIN", "ADMIN"

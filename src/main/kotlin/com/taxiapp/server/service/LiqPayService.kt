@@ -6,6 +6,9 @@ import com.taxiapp.server.model.finance.WalletTransaction
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.WalletTransactionRepository
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpEntity
+import org.springframework.http.HttpHeaders
+import org.springframework.http.MediaType
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -131,6 +134,83 @@ class LiqPayService(
         }
 
         return "OK"
+    }
+
+    // --- СПИСАНИЕ С ПРИВЯЗАННОЙ КАРТЫ (S2S) ---
+    fun payWithToken(orderId: String, amount: Double, cardToken: String, description: String): Boolean {
+        logger.info(">>> STARTING S2S LIQPAY TOKEN PAYMENT: Order $orderId, Amount: $amount")
+        
+        val params = mapOf(
+            "action" to "paytoken", // Специальный экшен для списания по токену
+            "amount" to amount,
+            "currency" to "UAH",
+            "description" to description,
+            "order_id" to orderId,
+            "version" to "3",
+            "public_key" to publicKey,
+            "card_token" to cardToken // Тот самый токен из базы
+        )
+
+        val json = objectMapper.writeValueAsString(params)
+        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+        val signature = createSignature(data)
+
+        val url = "https://www.liqpay.ua/api/request"
+        val requestBody = "data=$data&signature=$signature"
+
+        return try {
+            val headers = HttpHeaders()
+            headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
+            val entity = HttpEntity(requestBody, headers)
+
+            // Делаем синхронный запрос к LiqPay
+            val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
+            val responseBody = responseEntity.body
+
+            if (responseBody != null) {
+                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+                val status = responseMap["status"]?.toString()
+                val errCode = responseMap["err_code"]?.toString()
+                val errDesc = responseMap["err_description"]?.toString()
+                
+                logger.info(">>> S2S LIQPAY RESPONSE: status=$status, err_code=$errCode, err_description=$errDesc")
+                
+                // Списание успешно, если статус success или wait_accept
+                status == "success" || status == "wait_accept"
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            logger.error(">>> Error during paytoken API call", e)
+            false
+        }
+    }
+
+    // Генерация ссылки для ПРИВЯЗКИ КАРТЫ
+    fun generateBindCardUrl(clientId: Long): String {
+        val callbackUrl = "$serverUrl/api/v1/payments/callback"
+        // Генерируем специальный ID, по которому поймем, что это привязка
+        val orderId = "bind_card_${clientId}_${System.currentTimeMillis()}"
+        logger.info(">>> GENERATING LIQPAY BIND CARD LINK. Callback URL: $callbackUrl")
+
+        val params = mapOf(
+            "action" to "auth", // "auth" означает холдирование (проверка карты без списания)
+            "amount" to 1.0, // Минимальная сумма для проверки
+            "currency" to "UAH",
+            "description" to "Прив'язка картки для клієнта ID $clientId",
+            "order_id" to orderId,
+            "version" to "3",
+            "public_key" to publicKey,
+            "language" to "uk",
+            "server_url" to callbackUrl,
+            "result_url" to "$serverUrl/payment-success.html"
+        )
+
+        val json = objectMapper.writeValueAsString(params)
+        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+        val signature = createSignature(data)
+
+        return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
     }
 
     // Проверка статуса (Server-to-Server)
