@@ -68,7 +68,8 @@ class SecurityConfig(
                         "/api/v1/payments/mock-gateway/**",
                         "/api/v1/payments/callback",
                         "/api/v1/driver/forms/**",
-                        "/api/v1/driver/cars/add"
+                        "/api/v1/driver/cars/add",
+                        "/error"
                     ).permitAll()
 
                     // 2. Статические ресурсы (React build, файлы)

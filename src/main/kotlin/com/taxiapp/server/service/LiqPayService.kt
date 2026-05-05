@@ -136,55 +136,62 @@ class LiqPayService(
         return "OK"
     }
 
-    // --- СПИСАНИЕ С ПРИВЯЗАННОЙ КАРТЫ (S2S) ---
     fun payWithToken(orderId: String, amount: Double, cardToken: String, description: String): Boolean {
-        logger.info(">>> STARTING S2S LIQPAY TOKEN PAYMENT: Order $orderId, Amount: $amount")
-        
-        val params = mapOf(
-            "action" to "paytoken", // Специальный экшен для списания по токену
-            "amount" to amount,
-            "currency" to "UAH",
-            "description" to description,
-            "order_id" to orderId,
-            "version" to "3",
-            "public_key" to publicKey,
-            "card_token" to cardToken // Тот самый токен из базы
-        )
+    logger.info(">>> STARTING REAL S2S LIQPAY TOKEN PAYMENT: Order $orderId, Amount: $amount")
+    
+    // Формируем параметры для реального запроса к LiqPay
+    val params = mapOf(
+        "action" to "paytoken",
+        "amount" to amount,
+        "currency" to "UAH",
+        "description" to description,
+        "order_id" to orderId,
+        "version" to "3",
+        "public_key" to publicKey,
+        "card_token" to cardToken 
+    )
 
-        val json = objectMapper.writeValueAsString(params)
-        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
-        val signature = createSignature(data)
+    // Преобразуем в JSON и кодируем в Base64 (требование LiqPay)
+    val json = objectMapper.writeValueAsString(params)
+    val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+    
+    // Генерируем подпись
+    val signature = createSignature(data)
 
-        val url = "https://www.liqpay.ua/api/request"
-        val requestBody = "data=$data&signature=$signature"
+    val url = "https://www.liqpay.ua/api/request"
+    val requestBody = "data=$data&signature=$signature"
 
-        return try {
-            val headers = HttpHeaders()
-            headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
-            val entity = HttpEntity(requestBody, headers)
+    return try {
+        val headers = HttpHeaders()
+        headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
+        val entity = HttpEntity(requestBody, headers)
 
-            // Делаем синхронный запрос к LiqPay
-            val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
-            val responseBody = responseEntity.body
+        // Делаем реальный POST-запрос
+        val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
+        val responseBody = responseEntity.body
 
-            if (responseBody != null) {
-                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
-                val status = responseMap["status"]?.toString()
-                val errCode = responseMap["err_code"]?.toString()
-                val errDesc = responseMap["err_description"]?.toString()
-                
-                logger.info(">>> S2S LIQPAY RESPONSE: status=$status, err_code=$errCode, err_description=$errDesc")
-                
-                // Списание успешно, если статус success или wait_accept
-                status == "success" || status == "wait_accept"
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            logger.error(">>> Error during paytoken API call", e)
+        if (responseBody != null) {
+            val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+            val status = responseMap["status"]?.toString()
+            val errCode = responseMap["err_code"]?.toString()
+            val errDesc = responseMap["err_description"]?.toString()
+            
+            logger.info(">>> S2S LIQPAY REAL RESPONSE: status=$status, err_code=$errCode, err_description=$errDesc")
+            
+            // В Sandbox режиме (или при реальном успехе) LiqPay может вернуть разные статусы.
+            // Для S2S запроса успешными считаются 'success' или 'sandbox'.
+            // Если транзакция требует подтверждения 3DSecure (что редкость для автоплатежей по токену, но бывает), 
+            // вернется 'wait_accept' или '3ds_verify' (в нашем простом флоу мы считаем это успехом и ждем коллбека).
+            status == "success" || status == "sandbox" || status == "wait_accept"
+        } else {
+            logger.error(">>> S2S LIQPAY ERROR: Empty response body")
             false
         }
+    } catch (e: Exception) {
+        logger.error(">>> Error during real paytoken API call", e)
+        false
     }
+}
 
     // Генерация ссылки для ПРИВЯЗКИ КАРТЫ
     fun generateBindCardUrl(clientId: Long): String {

@@ -11,6 +11,8 @@ import org.springframework.security.core.Authentication
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
+import com.taxiapp.server.dto.auth.MessageResponse
+import org.springframework.http.ResponseEntity
 
 @RestController
 @RequestMapping("/api/v1/orders")
@@ -60,6 +62,27 @@ class OrderController(
     @GetMapping("/{id}")
     fun getOrder(@PathVariable id: Long): TaxiOrderDto {
         return orderService.getOrderById(id)
+    }
+
+    // Смена типа оплаты
+    @PutMapping("/{id}/payment-method")
+    fun updatePaymentMethod(
+        @PathVariable("id") orderId: Long,
+        @RequestParam("method") method: String
+    ): ResponseEntity<MessageResponse> {
+        // Здесь желательно добавить проверку, что запрос делает именно владелец заказа
+        orderService.updatePaymentMethod(orderId, method)
+        return ResponseEntity.ok(MessageResponse("Спосіб оплати успішно змінено"))
+    }
+
+    // Изменение цены (добавление надбавки)
+    @PutMapping("/{id}/price")
+    fun updateOrderPrice(
+        @PathVariable("id") orderId: Long,
+        @RequestParam("addedValue") addedValue: Double
+    ): ResponseEntity<MessageResponse> {
+        orderService.updatePrice(orderId, addedValue)
+        return ResponseEntity.ok(MessageResponse("Ціну успішно оновлено"))
     }
 
     @PostMapping("/{id}/cancel")

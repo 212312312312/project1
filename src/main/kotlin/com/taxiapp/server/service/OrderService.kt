@@ -1163,6 +1163,35 @@ class OrderService(
         }
     }
 
+    @Transactional
+    fun updatePaymentMethod(orderId: Long, method: String) {
+        val order = orderRepository.findById(orderId) 
+            .orElseThrow { RuntimeException("Замовлення не знайдено") }
+
+        // Обновляем метод оплаты
+        order.paymentMethod = method
+        val savedOrder = orderRepository.save(order)
+
+        // Используем твой готовый метод broadcastOrderChange, 
+        // который уже умеет отправлять нужные сокеты диспетчерам, клиенту и водителям!
+        broadcastOrderChange(savedOrder, "UPDATE")
+    }
+
+    @Transactional
+    fun updatePrice(orderId: Long, addedValue: Double) {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { RuntimeException("Замовлення не знайдено") }
+
+        // Отнимаем старую надбавку и прибавляем новую
+        val basePriceWithoutExtra = order.price - order.addedValue
+        order.addedValue = addedValue
+        order.price = basePriceWithoutExtra + addedValue 
+        
+        val savedOrder = orderRepository.save(order)
+
+        // Аналогично, используем твой броадкаст!
+        broadcastOrderChange(savedOrder, "UPDATE")
+    }
 
     fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
         val activeStatuses = listOf(
