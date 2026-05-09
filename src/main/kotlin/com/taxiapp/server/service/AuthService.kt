@@ -466,16 +466,23 @@ class AuthService(
 
     @Transactional
     fun refreshToken(request: TokenRefreshRequest): LoginResponse {
-        val refreshToken = refreshTokenRepository.findByToken(request.refreshToken)
+        val oldRefreshToken = refreshTokenRepository.findByToken(request.refreshToken)
             .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Недійсний Refresh Token") }
 
-        if (refreshToken.expiryDate < java.time.Instant.now()) {
-            refreshTokenRepository.delete(refreshToken)
+        if (oldRefreshToken.expiryDate < java.time.Instant.now()) {
+            refreshTokenRepository.delete(oldRefreshToken)
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Refresh Token прострочений. Авторизуйтесь знову.")
         }
 
-        val user = refreshToken.user
+        val user = oldRefreshToken.user
         if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+
+        // ==========================================
+        // ИЗМЕНЕНИЕ: REFRESH TOKEN ROTATION
+        // Генерируем новый Refresh Token (твой метод createRefreshToken 
+        // уже написан так, что сам удаляет старые токены из БД)
+        val newRefreshToken = createRefreshToken(user.id)
+        // ==========================================
 
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.userPhone!!)
         val newAccessToken = jwtUtils.generateToken(userDetails, user.id, user.role.name)
@@ -483,7 +490,7 @@ class AuthService(
         
         return LoginResponse(
             token = newAccessToken, 
-            refreshToken = refreshToken.token, 
+            refreshToken = newRefreshToken.token, // <-- Отдаем НОВЫЙ рефреш вместо старого
             userId = user.id, 
             phoneNumber = user.userPhone ?: "", 
             fullName = user.fullName ?: "Користувач", 

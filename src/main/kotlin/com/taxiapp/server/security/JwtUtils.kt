@@ -5,6 +5,7 @@ import io.jsonwebtoken.Jwts
 import io.jsonwebtoken.SignatureAlgorithm
 import io.jsonwebtoken.io.Decoders
 import io.jsonwebtoken.security.Keys
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.stereotype.Component
 import java.security.Key
@@ -12,14 +13,13 @@ import java.util.*
 import java.util.function.Function
 
 @Component
-class JwtUtils {
-
-    // Ключ повинен бути 256-біт (32 байти). 
-    // Якщо зміниш цей ключ - старі токени перестануть працювати!
-    private val SECRET_KEY_STRING = "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970"
+class JwtUtils(
+    // --- ИЗМЕНЕНИЕ: Берем ключ из application.properties ---
+    @Value("\${jwt.secret}") private val secretKeyString: String
+) {
 
     private fun getSignInKey(): Key {
-        val keyBytes = Decoders.BASE64.decode(SECRET_KEY_STRING)
+        val keyBytes = Decoders.BASE64.decode(secretKeyString) // Используем переменную из конструктора
         return Keys.hmacShaKeyFor(keyBytes)
     }
 
