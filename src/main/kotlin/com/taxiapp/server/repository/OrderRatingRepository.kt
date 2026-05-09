@@ -18,4 +18,8 @@ interface OrderRatingRepository : JpaRepository<OrderRating, Long> {
 
     // Для админки: найти все оценки
     fun findAllByOrderByCreatedAtDesc(): List<OrderRating>
+
+    // --- НОВЫЙ МЕТОД ---
+    // Найти все оценки, где данный пользователь выступает в роли оцениваемого (targetUser)
+    fun findAllByTargetUserId(targetUserId: Long): List<OrderRating>
 }

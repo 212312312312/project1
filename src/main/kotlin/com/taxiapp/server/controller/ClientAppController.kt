@@ -9,7 +9,8 @@ import com.taxiapp.server.repository.ClientRepository
 import com.taxiapp.server.repository.SmsVerificationCodeRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.repository.UserRepository
-import com.taxiapp.server.repository.RefreshTokenRepository // <-- ИСПРАВЛЕНО: добавлен импорт
+import com.taxiapp.server.repository.RefreshTokenRepository 
+import com.taxiapp.server.repository.OrderRatingRepository // <-- ИМПОРТ ДОБАВЛЕН
 import com.taxiapp.server.service.OrderService
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
@@ -33,7 +34,8 @@ class ClientAppController(
     private val clientPromoProgressRepository: ClientPromoProgressRepository,
     private val smsCodeRepository: SmsVerificationCodeRepository,
     private val refreshTokenRepository: RefreshTokenRepository,
-    private val taxiServiceRepository: TaxiServiceRepository
+    private val taxiServiceRepository: TaxiServiceRepository,
+    private val orderRatingRepository: OrderRatingRepository // <-- ИНЖЕКЦИЯ ДОБАВЛЕНА
 ) {
     
     // СТВОРЕННЯ ЗАМОВЛЕННЯ
@@ -111,11 +113,15 @@ class ClientAppController(
             smsCodeRepository.delete(it) 
         }
 
-        // 5. Удаляем токены.
+        // 5. Удаляем токены
         val userTokens = refreshTokenRepository.findAll().filter { it.user.id == user.id }
         refreshTokenRepository.deleteAll(userTokens)
 
-        // 6. Удаляем самого пользователя
+        // 6. УДАЛЯЕМ ОЦЕНКИ (РЕЙТИНГ) - ИСПРАВЛЕНИЕ ОШИБКИ
+        val ratings = orderRatingRepository.findAllByTargetUserId(user.id)
+        orderRatingRepository.deleteAll(ratings)
+
+        // 7. Удаляем самого пользователя
         userRepository.delete(user)
         
         return ResponseEntity.ok(MessageResponse("Акаунт успішно видалено"))

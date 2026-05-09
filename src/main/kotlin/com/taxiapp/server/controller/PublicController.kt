@@ -2,7 +2,9 @@ package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.order.CalculatePriceRequest
 import com.taxiapp.server.dto.tariff.CarTariffDto
+import com.taxiapp.server.dto.sector.SectorDto // <-- ДОБАВЛЕН ИМПОРТ
 import com.taxiapp.server.service.OrderService
+import com.taxiapp.server.service.SectorService // <-- ДОБАВЛЕН ИМПОРТ
 import com.taxiapp.server.service.SettingsService
 import com.taxiapp.server.service.TariffAdminService
 import org.springframework.http.ResponseEntity
@@ -13,13 +15,21 @@ import org.springframework.web.bind.annotation.*
 class PublicController(
     private val tariffAdminService: TariffAdminService,
     private val orderService: OrderService,
-    private val settingsService: SettingsService
+    private val settingsService: SettingsService,
+    private val sectorService: SectorService // <-- ДОБАВЛЕН СЕРВИС
 ) {
 
     @GetMapping("/tariffs")
     fun getActiveTariffs(): ResponseEntity<List<CarTariffDto>> {
         return ResponseEntity.ok(tariffAdminService.getAllTariffs())
     }
+
+    // --- ДОБАВЛЕН НОВЫЙ ЭНДПОИНТ ДЛЯ СЕКТОРОВ ---
+    @GetMapping("/sectors")
+    fun getSectors(): ResponseEntity<List<SectorDto>> {
+        return ResponseEntity.ok(sectorService.getAllSectors())
+    }
+    // ---------------------------------------------
 
     @PostMapping("/calculate-price")
     fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CarTariffDto> {
