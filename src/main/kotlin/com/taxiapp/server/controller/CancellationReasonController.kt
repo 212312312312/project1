@@ -14,18 +14,21 @@ class CancellationReasonController(
 
     // 1. Для Водителя и Диспетчера: Получить список активных причин
     @GetMapping("/cancellation-reasons")
-    fun getActiveReasons(): ResponseEntity<List<CancellationReason>> {
-        return ResponseEntity.ok(repository.findAllByIsActiveTrue())
+    fun getActiveReasons(@RequestParam(required = false) target: String?): ResponseEntity<List<CancellationReason>> {
+        val reasons = if (target != null) {
+            repository.findAllByIsActiveTrueAndTarget(target.uppercase())
+        } else {
+            repository.findAllByIsActiveTrue()
+        }
+        return ResponseEntity.ok(reasons)
     }
 
-    // 2. Для Диспетчера (Админа): Создать новую причину
     @PostMapping("/admin/cancellation-reasons")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR', 'DISPATCHER', 'ROLE_DISPATCHER')")
     fun createReason(@RequestBody reason: CancellationReason): ResponseEntity<CancellationReason> {
         return ResponseEntity.ok(repository.save(reason))
     }
 
-    // 3. Для Диспетчера (Админа): Удалить причину
     @DeleteMapping("/admin/cancellation-reasons/{id}")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR', 'DISPATCHER', 'ROLE_DISPATCHER')")
     fun deleteReason(@PathVariable id: Long): ResponseEntity<Void> {

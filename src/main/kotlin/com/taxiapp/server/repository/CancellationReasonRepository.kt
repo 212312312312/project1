@@ -7,4 +7,7 @@ import org.springframework.stereotype.Repository
 @Repository
 interface CancellationReasonRepository : JpaRepository<CancellationReason, Long> {
     fun findAllByIsActiveTrue(): List<CancellationReason>
+    
+    // НОВИЙ МЕТОД
+    fun findAllByIsActiveTrueAndTarget(target: String): List<CancellationReason>
 }

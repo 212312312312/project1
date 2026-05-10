@@ -88,12 +88,14 @@ class OrderController(
     @PostMapping("/{id}/cancel")
     fun cancelOrder(
         authentication: Authentication,
-        @PathVariable id: Long
+        @PathVariable id: Long,
+        @RequestParam(required = false) reasonText: String? // ДОБАВЛЕНО: принимаем причину как параметр запроса
     ): TaxiOrderDto {
         val phone = authentication.name
         val user = userRepository.findByUserLogin(phone).orElse(null)
             ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED)
             
-        return orderService.cancelOrder(user, id)
+        // Передаем reasonText в сервис (мы его там уже подготовили на предыдущем шаге)
+        return orderService.cancelOrder(user, id, reasonText)
     }
 }

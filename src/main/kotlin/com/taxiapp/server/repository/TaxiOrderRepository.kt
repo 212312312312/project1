@@ -76,6 +76,17 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
     fun clearSectorReference(@Param("sectorId") sectorId: Long)
 
+    @Query("""
+        SELECT o.cancellationReason AS reason, COUNT(o.id) AS count 
+        FROM TaxiOrder o 
+        WHERE o.status = 'CANCELLED' AND o.cancellationReason IS NOT NULL 
+        GROUP BY o.cancellationReason 
+        ORDER BY count DESC
+    """)
+    fun getCancellationStats(): List<CancellationStatProjection>
+    
+
+
     @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'ARRIVED', 'IN_PROGRESS')")
     fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>
 
@@ -90,4 +101,9 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         @Param("start") start: LocalDateTime, 
         @Param("end") end: LocalDateTime
     ): List<TaxiOrder>
+}
+
+interface CancellationStatProjection {
+    val reason: String
+    val count: Long
 }

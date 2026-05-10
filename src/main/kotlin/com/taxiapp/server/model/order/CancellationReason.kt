@@ -10,11 +10,15 @@ data class CancellationReason(
     val id: Long? = null,
 
     @Column(nullable = false)
-    val reasonText: String, // Текст: "Клієнт не вийшов", "Зламалась машина"
+    val reasonText: String, 
 
     @Column(nullable = false)
-    val penaltyScore: Int = 0, // Штраф: 0 или 50 и т.д.
+    val penaltyScore: Int = 0, 
 
     @Column(nullable = false)
-    val isActive: Boolean = true // Чтобы можно было скрывать старые причины
+    val isActive: Boolean = true,
+
+    // НОВЕ ПОЛЕ: Вказує, для кого ця причина ("CLIENT" або "DRIVER")
+    @Column(nullable = false)
+    var target: String = "DRIVER"
 )

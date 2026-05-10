@@ -2,6 +2,7 @@ package com.taxiapp.server.controller
 
 import com.taxiapp.server.model.enums.TransactionType
 import com.taxiapp.server.repository.WalletTransactionRepository
+import com.taxiapp.server.repository.TaxiOrderRepository // <-- ДОДАНО ІМПОРТ
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.http.ResponseEntity
@@ -14,7 +15,8 @@ import org.springframework.web.bind.annotation.RestController
 @RestController
 @RequestMapping("/api/v1/admin/stats")
 class AdminStatsController(
-    private val walletTransactionRepository: WalletTransactionRepository
+    private val walletTransactionRepository: WalletTransactionRepository,
+    private val taxiOrderRepository: TaxiOrderRepository
 ) {
 
     @GetMapping("/company-balance")
@@ -59,5 +61,19 @@ class AdminStatsController(
             "totalElements" to pageResult.totalElements,
             "currentPage" to pageResult.number
         ))
+    }
+
+    // НОВИЙ МЕТОД: Статистика скасувань
+    @GetMapping("/cancellations")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
+    fun getCancellationStats(): ResponseEntity<List<Map<String, Any>>> {
+        // ОЧИЩЕНО ВІД ЗАЙВИХ КОМЕНТАРІВ І ПОМИЛКОВИХ РЯДКІВ
+        val statsList = taxiOrderRepository.getCancellationStats().map { stat ->
+            mapOf(
+                "reason" to stat.reason,
+                "count" to stat.count
+            )
+        }
+        return ResponseEntity.ok(statsList)
     }
 }

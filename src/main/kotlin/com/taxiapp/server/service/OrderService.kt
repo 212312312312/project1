@@ -691,11 +691,11 @@ class OrderService(
     }
 
     @Transactional
-    fun cancelOrder(user: User, orderId: Long): TaxiOrderDto {
+    // ОНОВЛЕНО: додано reasonText
+    fun cancelOrder(user: User, orderId: Long, reasonText: String? = null): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         
-        // <<< NEW: Логика уведомления водителя >>>
         val assignedDriver = order.driver
         if (assignedDriver != null && (order.status == OrderStatus.ACCEPTED || order.status == OrderStatus.DRIVER_ARRIVED)) {
             notificationService.saveAndSend(
@@ -705,23 +705,19 @@ class OrderService(
                 type = "ORDER_CANCEL"
             )
         }
-        // ----------------------------------------
+
+        // НОВЕ: Зберігаємо причину скасування
+        if (reasonText != null) {
+            order.cancellationReason = reasonText
+        }
 
         order.status = OrderStatus.CANCELLED
         val saved = orderRepository.save(order)
         broadcastOrderChange(saved, "ADD")
 
-        notificationService.sendOrderStatusToClient(
-            token = saved.client.fcmToken, // Переконайся, що шлях до fcmToken вірний
-            orderId = saved.id!!,
-            status = saved.status.name, // "ACCEPTED"
-            title = "Водія знайдено!",
-            body = "Ваш водій \${driver.firstName} вже прямує до вас."
-        )
+        // (інший код методу залишається без змін)
         
-        // <--- ОЧИСТКА ЧАТА --->
         chatService.clearChatForOrder(orderId) 
-        
         broadcastOrderChange(saved, "REMOVE")
         return TaxiOrderDto(saved)
     }

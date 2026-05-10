@@ -130,13 +130,15 @@ class ClientAppController(
     @PostMapping("/orders/{id}/cancel")
     fun cancelOrder(
         @PathVariable id: Long,
+        @RequestParam(required = false) reasonText: String?, // НОВЕ
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
         val userLogin = principal.name
         var user = userRepository.findByUserLogin(userLogin).orElse(null)
         if (user == null) user = userRepository.findByUserPhone(userLogin).orElseThrow()
 
-        val orderDto = orderService.cancelOrder(user, id)
+        // Передаємо reasonText в сервіс
+        val orderDto = orderService.cancelOrder(user, id, reasonText)
         return ResponseEntity.ok(orderDto)
     }
 
