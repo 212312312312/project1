@@ -65,35 +65,50 @@ class OrderService(
         val tariff = tariffRepository.findById(tariffId)
             .orElseThrow { RuntimeException("Tariff not found") }
 
+        logger.info("[PRICE_CALC] === НАЧАЛО РАСЧЕТА ЦЕНЫ ЗАКАЗА ===")
+        logger.info("[PRICE_CALC] ШАГ 1: Тариф ID=${tariff.id} (${tariff.name}) | BasePrice=${tariff.basePrice} | PerKmCity=${tariff.pricePerKm} | PerKmOutCity=${tariff.pricePerKmOutCity} | AddedValue=$addedValue")
+
         var servicesCost = 0.0
         if (!serviceIds.isNullOrEmpty()) {
             val services = taxiServiceRepository.findAllById(serviceIds)
             servicesCost = services.sumOf { it.price }
+            logger.info("[PRICE_CALC] ШАГ 2: Выбраны доп. услуги (${services.size} шт.) на сумму: $servicesCost")
+        } else {
+            logger.info("[PRICE_CALC] ШАГ 2: Доп. услуги не выбраны (Сумма: 0.0)")
         }
 
         if (polyline.isNullOrEmpty() || totalDistanceMeters == 0) {
-            return tariff.basePrice + servicesCost + addedValue
+            val totalNoDist = tariff.basePrice + servicesCost + addedValue
+            logger.info("[PRICE_CALC] ШАГ 3: Полилайн пуст ИЛИ дистанция 0. Возвращаем (База+Услуги+Надбавка) = $totalNoDist")
+            logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ===")
+            return totalNoDist
         }
 
+        logger.info("[PRICE_CALC] ШАГ 3: Запрос разбивки дистанции у GeometryUtils. Передано Google TotalMeters: $totalDistanceMeters")
         val citySectors = sectorRepository.findAll().filter { it.isCity }
         val (metersCity, metersOutCity) = GeometryUtils.calculateRouteSplit(polyline, citySectors)
 
+        // Если разбивка вернула нули (ошибка полилайна), берем общую дистанцию от гугла как городскую
         val finalMetersCity = if (metersCity == 0.0 && metersOutCity == 0.0) totalDistanceMeters.toDouble() else metersCity
         val finalMetersOutCity = if (metersCity == 0.0 && metersOutCity == 0.0) 0.0 else metersOutCity
 
         val totalKmCity = finalMetersCity / 1000.0
         val totalKmOutCity = finalMetersOutCity / 1000.0
+        logger.info("[PRICE_CALC] Результат разбивки (КМ): Город = $totalKmCity км | Межгород = $totalKmOutCity км")
 
-        val INCLUDED_KM = 3.0
+        val INCLUDED_KM = 3.0 // Твои 3 бесплатных километра
         var remainingIncluded = INCLUDED_KM
+        logger.info("[PRICE_CALC] ШАГ 4: Расчет бесплатных километров. Изначально доступно: $INCLUDED_KM км")
 
         var billableKmCity = 0.0
         if (totalKmCity > remainingIncluded) {
             billableKmCity = totalKmCity - remainingIncluded
+            logger.info("[PRICE_CALC] -> Списано $remainingIncluded бесплатных км на ГОРОД. Платные городские: $billableKmCity км")
             remainingIncluded = 0.0
         } else {
             remainingIncluded -= totalKmCity
             billableKmCity = 0.0
+            logger.info("[PRICE_CALC] -> Городской путь ($totalKmCity км) полностью покрыт бесплатными. Остаток бесплатных: $remainingIncluded км")
         }
 
         var billableKmOutCity = 0.0
@@ -101,21 +116,32 @@ class OrderService(
             if (remainingIncluded > 0) {
                 if (totalKmOutCity > remainingIncluded) {
                     billableKmOutCity = totalKmOutCity - remainingIncluded
+                    logger.info("[PRICE_CALC] -> Списано $remainingIncluded остаточных бесплатных км на МЕЖГОРОД. Платные межгород: $billableKmOutCity км")
                     remainingIncluded = 0.0
                 } else {
                     billableKmOutCity = 0.0
+                    logger.info("[PRICE_CALC] -> Межгородской путь ($totalKmOutCity км) полностью покрыт остатком бесплатных км.")
                 }
             } else {
                 billableKmOutCity = totalKmOutCity
+                logger.info("[PRICE_CALC] -> Бесплатных км не осталось. Платные межгород: $billableKmOutCity км")
             }
         }
 
-        val routePrice = (billableKmCity * tariff.pricePerKm) +
-                         (billableKmOutCity * tariff.pricePerKmOutCity)
+        logger.info("[PRICE_CALC] ШАГ 5: Итого платная дистанция -> Город: $billableKmCity км | Межгород: $billableKmOutCity км")
+
+        val routePrice = (billableKmCity * tariff.pricePerKm) + (billableKmOutCity * tariff.pricePerKmOutCity)
+        logger.info("[PRICE_CALC] Формула дистанции: ($billableKmCity * ${tariff.pricePerKm}) + ($billableKmOutCity * ${tariff.pricePerKmOutCity}) = $routePrice")
 
         var finalPrice = tariff.basePrice + routePrice + servicesCost + addedValue
-        finalPrice = ceil(finalPrice)
+        logger.info("[PRICE_CALC] ШАГ 6: Сборка суммы: ${tariff.basePrice} (База) + $routePrice (КМ) + $servicesCost (Услуги) + $addedValue (Надбавка) = $finalPrice")
+
+        finalPrice = ceil(finalPrice) // Округление вверх до целого числа
         val result = max(finalPrice, tariff.basePrice)
+        
+        logger.info("[PRICE_CALC] ШАГ 7: После округления (ceil) = $finalPrice. Проверка на минимум (${tariff.basePrice}) = ИТОГОВАЯ ЦЕНА: $result")
+        logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ЗАКАЗА ===")
+        
         return result
     }
 

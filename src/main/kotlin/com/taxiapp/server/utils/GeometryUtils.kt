@@ -77,19 +77,19 @@ object GeometryUtils {
         return poly
     }
 
-    // --- НОВЕ: Розрахунок дистанції з ЛОГУВАННЯМ ---
+    // --- ОНОВЛЕНО: Розрахунок дистанції з ДЕТАЛЬНИМ ЛОГУВАННЯМ ---
     fun calculateRouteSplit(
         polyline: String, 
         citySectors: List<Sector>
     ): Pair<Double, Double> {
         val points = decodePolyline(polyline)
-        if (points.isEmpty()) return Pair(0.0, 0.0)
+        if (points.isEmpty()) {
+            logger.info("[PRICE_CALC_GEO] Полилайн пуст, возвращаем (0.0, 0.0)")
+            return Pair(0.0, 0.0)
+        }
 
         var distanceCity = 0.0
         var distanceOutCity = 0.0
-        
-        // Для налагодження: виводимо лише першу точку, щоб не спамити
-        var debugLogged = false
 
         for (i in 0 until points.size - 1) {
             val start = points[i]
@@ -103,15 +103,18 @@ object GeometryUtils {
             }
 
             if (foundSector != null) {
-                if (!debugLogged) {
-                    logger.info("📍 Route Point matched City Sector: ${foundSector.name} (id=${foundSector.id})")
-                    debugLogged = true
-                }
                 distanceCity += segmentDist
             } else {
                 distanceOutCity += segmentDist
             }
         }
+
+        logger.info("[PRICE_CALC_GEO] === РАЗБИВКА ПОЛИЛАЙНА ===")
+        logger.info("[PRICE_CALC_GEO] Точек в маршруте: ${points.size}")
+        logger.info("[PRICE_CALC_GEO] Дистанция внутри полигонов города (метры): $distanceCity")
+        logger.info("[PRICE_CALC_GEO] Дистанция за полигонами города (метры): $distanceOutCity")
+        logger.info("[PRICE_CALC_GEO] Суммарная дистанция по точкам: ${distanceCity + distanceOutCity}")
+        logger.info("[PRICE_CALC_GEO] ===============================")
 
         return Pair(distanceCity, distanceOutCity)
     }
