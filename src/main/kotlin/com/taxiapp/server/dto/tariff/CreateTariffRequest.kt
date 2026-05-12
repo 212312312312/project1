@@ -28,6 +28,10 @@ data class CreateTariffRequest(
     val freeWaitingMinutes: Int,
 
     @field:NotNull
+    @field:Min(value = 0, message = "Ціна за додаткову точку не може бути негативною")
+    val extraWaypointPrice: Double,
+
+    @field:NotNull
     @field:Min(value = 0, message = "Ціна за хвилину очікування не може бути негативною")
     val pricePerWaitingMinute: Double,
 

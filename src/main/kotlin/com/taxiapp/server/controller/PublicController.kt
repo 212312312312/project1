@@ -33,7 +33,12 @@ class PublicController(
 
     @PostMapping("/calculate-price")
     fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CarTariffDto> {
-        return orderService.calculatePricesForRoute(request.googleRoutePolyline, request.distanceMeters)
+        // --- ОБНОВЛЕНО: Передаем request.waypointsCount в сервис ---
+        return orderService.calculatePricesForRoute(
+            request.googleRoutePolyline, 
+            request.distanceMeters, 
+            request.waypointsCount
+        )
     }
 
     @GetMapping("/settings/car-icon")

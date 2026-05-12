@@ -36,6 +36,7 @@ class TariffAdminService(
             basePrice = tariff.basePrice,
             pricePerKm = tariff.pricePerKm,
             pricePerKmOutCity = tariff.pricePerKmOutCity,
+            extraWaypointPrice = tariff.extraWaypointPrice,
             freeWaitingMinutes = tariff.freeWaitingMinutes,
             pricePerWaitingMinute = tariff.pricePerWaitingMinute,
             isActive = tariff.isActive,
@@ -68,6 +69,7 @@ class TariffAdminService(
             pricePerKmOutCity = request.pricePerKmOutCity,
             freeWaitingMinutes = request.freeWaitingMinutes,
             pricePerWaitingMinute = request.pricePerWaitingMinute,
+            extraWaypointPrice = request.extraWaypointPrice,
             isActive = request.isActive,
             isBeta = request.isBeta,               // <--- ДОБАВЛЕНО
             isUnavailable = request.isUnavailable,
@@ -96,7 +98,8 @@ class TariffAdminService(
         tariff.name = request.name
         tariff.basePrice = request.basePrice
         tariff.pricePerKm = request.pricePerKm
-        tariff.pricePerKmOutCity = request.pricePerKmOutCity 
+        tariff.pricePerKmOutCity = request.pricePerKmOutCity
+        tariff.extraWaypointPrice = request.extraWaypointPrice
         tariff.freeWaitingMinutes = request.freeWaitingMinutes
         tariff.pricePerWaitingMinute = request.pricePerWaitingMinute
         tariff.isActive = request.isActive

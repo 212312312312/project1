@@ -60,14 +60,17 @@ class OrderService(
         totalDistanceMeters: Int,
         serviceIds: List<Long>?,
         addedValue: Double,
+        waypointsCount: Int = 0, // <--- НОВЫЙ ПАРАМЕТР: количество промежуточных точек
         isDebug: Boolean = false
     ): Double {
         val tariff = tariffRepository.findById(tariffId)
             .orElseThrow { RuntimeException("Tariff not found") }
 
         logger.info("[PRICE_CALC] === НАЧАЛО РАСЧЕТА ЦЕНЫ ЗАКАЗА ===")
-        logger.info("[PRICE_CALC] ШАГ 1: Тариф ID=${tariff.id} (${tariff.name}) | BasePrice=${tariff.basePrice} | PerKmCity=${tariff.pricePerKm} | PerKmOutCity=${tariff.pricePerKmOutCity} | AddedValue=$addedValue")
+        // В лог теперь добавляем инфу о цене за точку
+        logger.info("[PRICE_CALC] ШАГ 1: Тариф ID=${tariff.id} (${tariff.name}) | BasePrice=${tariff.basePrice} | WaypointPrice=${tariff.extraWaypointPrice} | AddedValue=$addedValue")
 
+        // 1. Считаем стоимость услуг
         var servicesCost = 0.0
         if (!serviceIds.isNullOrEmpty()) {
             val services = taxiServiceRepository.findAllById(serviceIds)
@@ -77,89 +80,98 @@ class OrderService(
             logger.info("[PRICE_CALC] ШАГ 2: Доп. услуги не выбраны (Сумма: 0.0)")
         }
 
+        // --- НОВОЕ: Считаем стоимость промежуточных точек ---
+        val waypointsCost = waypointsCount * tariff.extraWaypointPrice
+        logger.info("[PRICE_CALC] ШАГ 2.1: Промежуточные точки ($waypointsCount шт.) на сумму: $waypointsCost")
+
+        // 2. Если маршрута нет (ручной ввод цены или ошибка), считаем базу + услуги + точки + надбавка
         if (polyline.isNullOrEmpty() || totalDistanceMeters == 0) {
-            val totalNoDist = tariff.basePrice + servicesCost + addedValue
-            logger.info("[PRICE_CALC] ШАГ 3: Полилайн пуст ИЛИ дистанция 0. Возвращаем (База+Услуги+Надбавка) = $totalNoDist")
+            val totalNoDist = tariff.basePrice + servicesCost + addedValue + waypointsCost
+            logger.info("[PRICE_CALC] ШАГ 3: Полилайн пуст. Возвращаем (База+Услуги+Точки+Надбавка) = $totalNoDist")
             logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ===")
             return totalNoDist
         }
 
-        logger.info("[PRICE_CALC] ШАГ 3: Запрос разбивки дистанции у GeometryUtils. Передано Google TotalMeters: $totalDistanceMeters")
+        // 3. Расчет по километражу (город/межгород)
+        logger.info("[PRICE_CALC] ШАГ 3: Запрос разбивки дистанции у GeometryUtils. Передано: $totalDistanceMeters м.")
         val citySectors = sectorRepository.findAll().filter { it.isCity }
         val (metersCity, metersOutCity) = GeometryUtils.calculateRouteSplit(polyline, citySectors)
 
-        // Если разбивка вернула нули (ошибка полилайна), берем общую дистанцию от гугла как городскую
         val finalMetersCity = if (metersCity == 0.0 && metersOutCity == 0.0) totalDistanceMeters.toDouble() else metersCity
         val finalMetersOutCity = if (metersCity == 0.0 && metersOutCity == 0.0) 0.0 else metersOutCity
 
         val totalKmCity = finalMetersCity / 1000.0
         val totalKmOutCity = finalMetersOutCity / 1000.0
-        logger.info("[PRICE_CALC] Результат разбивки (КМ): Город = $totalKmCity км | Межгород = $totalKmOutCity км")
 
-        val INCLUDED_KM = 3.0 // Твои 3 бесплатных километра
+        // 4. Бесплатные километры (твоя логика про 3 км)
+        val INCLUDED_KM = 3.0 
         var remainingIncluded = INCLUDED_KM
-        logger.info("[PRICE_CALC] ШАГ 4: Расчет бесплатных километров. Изначально доступно: $INCLUDED_KM км")
-
         var billableKmCity = 0.0
         if (totalKmCity > remainingIncluded) {
             billableKmCity = totalKmCity - remainingIncluded
-            logger.info("[PRICE_CALC] -> Списано $remainingIncluded бесплатных км на ГОРОД. Платные городские: $billableKmCity км")
             remainingIncluded = 0.0
         } else {
             remainingIncluded -= totalKmCity
             billableKmCity = 0.0
-            logger.info("[PRICE_CALC] -> Городской путь ($totalKmCity км) полностью покрыт бесплатными. Остаток бесплатных: $remainingIncluded км")
         }
 
         var billableKmOutCity = 0.0
         if (totalKmOutCity > 0) {
             if (remainingIncluded > 0) {
-                if (totalKmOutCity > remainingIncluded) {
-                    billableKmOutCity = totalKmOutCity - remainingIncluded
-                    logger.info("[PRICE_CALC] -> Списано $remainingIncluded остаточных бесплатных км на МЕЖГОРОД. Платные межгород: $billableKmOutCity км")
-                    remainingIncluded = 0.0
-                } else {
-                    billableKmOutCity = 0.0
-                    logger.info("[PRICE_CALC] -> Межгородской путь ($totalKmOutCity км) полностью покрыт остатком бесплатных км.")
-                }
+                billableKmOutCity = if (totalKmOutCity > remainingIncluded) totalKmOutCity - remainingIncluded else 0.0
             } else {
                 billableKmOutCity = totalKmOutCity
-                logger.info("[PRICE_CALC] -> Бесплатных км не осталось. Платные межгород: $billableKmOutCity км")
             }
         }
 
-        logger.info("[PRICE_CALC] ШАГ 5: Итого платная дистанция -> Город: $billableKmCity км | Межгород: $billableKmOutCity км")
-
+        // 5. Итоговая сборка цены
         val routePrice = (billableKmCity * tariff.pricePerKm) + (billableKmOutCity * tariff.pricePerKmOutCity)
-        logger.info("[PRICE_CALC] Формула дистанции: ($billableKmCity * ${tariff.pricePerKm}) + ($billableKmOutCity * ${tariff.pricePerKmOutCity}) = $routePrice")
+        
+        // К сумме теперь добавляем waypointsCost
+        var finalPrice = tariff.basePrice + routePrice + servicesCost + addedValue + waypointsCost
+        
+        logger.info("[PRICE_CALC] Сборка: База(${tariff.basePrice}) + КМ($routePrice) + Услуги($servicesCost) + Точки($waypointsCost) + Надбавка($addedValue) = $finalPrice")
 
-        var finalPrice = tariff.basePrice + routePrice + servicesCost + addedValue
-        logger.info("[PRICE_CALC] ШАГ 6: Сборка суммы: ${tariff.basePrice} (База) + $routePrice (КМ) + $servicesCost (Услуги) + $addedValue (Надбавка) = $finalPrice")
-
-        finalPrice = ceil(finalPrice) // Округление вверх до целого числа
+        finalPrice = ceil(finalPrice)
         val result = max(finalPrice, tariff.basePrice)
         
-        logger.info("[PRICE_CALC] ШАГ 7: После округления (ceil) = $finalPrice. Проверка на минимум (${tariff.basePrice}) = ИТОГОВАЯ ЦЕНА: $result")
-        logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ЗАКАЗА ===")
+        logger.info("[PRICE_CALC] ИТОГО: $result")
+        logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ===")
         
         return result
     }
 
-    fun calculatePricesForRoute(polyline: String, totalMeters: Int): List<CarTariffDto> {
+    fun calculatePricesForRoute(polyline: String, totalMeters: Int, waypointsCount: Int = 0): List<CarTariffDto> {
         val tariffs = tariffRepository.findAll().filter { it.isActive }
         return tariffs.map { tariff ->
-            val price = calculateExactTripPrice(tariff.id, polyline, totalMeters, emptyList(), 0.0, false)
+            
+            // --- ОБНОВЛЕНО: Передаем waypointsCount в функцию расчета цены ---
+            val price = calculateExactTripPrice(
+                tariffId = tariff.id, 
+                polyline = polyline, 
+                totalDistanceMeters = totalMeters, 
+                serviceIds = emptyList(), 
+                addedValue = 0.0, 
+                waypointsCount = waypointsCount, // <--- НОВЫЙ ПАРАМЕТР
+                isDebug = false
+            )
+            
             CarTariffDto(
                 id = tariff.id,
                 name = tariff.name,
                 basePrice = tariff.basePrice,
                 pricePerKm = tariff.pricePerKm,
                 pricePerKmOutCity = tariff.pricePerKmOutCity,
+                
+                // --- ОБНОВЛЕНО: Добавляем цену за точку в ответ клиенту ---
+                extraWaypointPrice = tariff.extraWaypointPrice, 
+                // -----------------------------------------------------------
+                
                 freeWaitingMinutes = tariff.freeWaitingMinutes,
                 pricePerWaitingMinute = tariff.pricePerWaitingMinute,
                 isActive = tariff.isActive,
                 imageUrl = tariff.imageUrl,
-                isBeta = tariff.isBeta,               // <--- ДОБАВЛЕНО
+                isBeta = tariff.isBeta,               
                 isUnavailable = tariff.isUnavailable,
                 calculatedPrice = price,
                 description = null
@@ -219,7 +231,7 @@ class OrderService(
             }
         }
 
-    
+        val waypointsCount = request.waypoints?.size ?: 0    
 
         // --- Розрахунок ціни ---
         var finalPrice = calculateExactTripPrice(
@@ -228,6 +240,7 @@ class OrderService(
             totalDistanceMeters = request.distanceMeters ?: 0,
             serviceIds = request.serviceIds,
             addedValue = request.addedValue ?: 0.0,
+            waypointsCount = waypointsCount,
             isDebug = true
         )
 

@@ -22,6 +22,9 @@ data class CarTariff(
     @Column(nullable = false)
     var isUnavailable: Boolean = false,
 
+    @Column(nullable = false, columnDefinition = "double precision default 0.0")
+    var extraWaypointPrice: Double = 0.0,
+
     @Column(nullable = false)
     var pricePerKm: Double,
 

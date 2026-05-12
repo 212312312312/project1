@@ -10,6 +10,7 @@ data class CarTariffDto(
     val pricePerKmOutCity: Double,
     val freeWaitingMinutes: Int,
     val pricePerWaitingMinute: Double,
+    val extraWaypointPrice: Double,
     val isActive: Boolean,
     val imageUrl: String?,
     val isBeta: Boolean,
@@ -28,6 +29,7 @@ data class CarTariffDto(
         pricePerKm = tariff.pricePerKm,
         pricePerKmOutCity = tariff.pricePerKmOutCity,
         freeWaitingMinutes = tariff.freeWaitingMinutes,
+        extraWaypointPrice = tariff.extraWaypointPrice,
         isBeta = tariff.isBeta,               // Маппинг
         isUnavailable = tariff.isUnavailable,
         pricePerWaitingMinute = tariff.pricePerWaitingMinute,
