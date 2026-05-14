@@ -56,17 +56,19 @@ class JwtAuthFilter(
         } catch (e: ExpiredJwtException) {
             // --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
             println(">>> JWT FILTER: Token EXPIRED for: ${request.requestURI}")
-            response.status = HttpServletResponse.SC_UNAUTHORIZED // Статус 401
+            response.status = HttpServletResponse.SC_UNAUTHORIZED 
+            response.setHeader("WWW-Authenticate", "Bearer") // <--- ДОБАВИТЬ ЭТУ СТРОКУ
             response.contentType = "application/json;charset=UTF-8"
             response.writer.write("""{"error": "TOKEN_EXPIRED", "message": "Access token is expired"}""")
-            return // ПРЕРЫВАЕМ ЦЕПОЧКУ, не пускаем дальше в Spring Security
+            return 
         } catch (e: Exception) {
-            // --- И ЗДЕСЬ (если токен кривой) ---
+            // --- И ЗДЕСЬ ---
             println(">>> JWT FILTER: Error parsing token: ${e.message}")
-            response.status = HttpServletResponse.SC_UNAUTHORIZED // Статус 401
+            response.status = HttpServletResponse.SC_UNAUTHORIZED 
+            response.setHeader("WWW-Authenticate", "Bearer") // <--- ДОБАВИТЬ ЭТУ СТРОКУ
             response.contentType = "application/json;charset=UTF-8"
             response.writer.write("""{"error": "INVALID_TOKEN", "message": "Invalid access token"}""")
-            return // ПРЕРЫВАЕМ ЦЕПОЧКУ
+            return 
         }
 
         filterChain.doFilter(request, response)

@@ -52,6 +52,7 @@ class SecurityConfig(
             .exceptionHandling { exceptions ->
                 exceptions.authenticationEntryPoint { request, response, authException ->
                     response.status = HttpServletResponse.SC_UNAUTHORIZED
+                    response.setHeader("WWW-Authenticate", "Bearer") // <--- ДОБАВИТЬ ЭТУ СТРОКУ
                     response.contentType = "application/json;charset=UTF-8"
                     response.writer.write("""{"error": "UNAUTHORIZED", "message": "Authentication is required"}""")
                 }
