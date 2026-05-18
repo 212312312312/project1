@@ -11,8 +11,8 @@ class RefreshToken {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0
 
-    // Связь с таблицей пользователей
-    @OneToOne
+    // === ИЗМЕНЕНИЕ ЗДЕСЬ: Заменили @OneToOne на @ManyToOne ===
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", referencedColumnName = "id")
     lateinit var user: User
 

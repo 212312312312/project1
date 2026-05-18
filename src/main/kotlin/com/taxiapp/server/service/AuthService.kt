@@ -453,8 +453,8 @@ class AuthService(
             ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") 
         }
         
-        refreshTokenRepository.deleteByUser(user)
-        refreshTokenRepository.flush()
+        // --- ИЗМЕНЕНИЕ: Удалена строка refreshTokenRepository.deleteByUser(user) ---
+        // Теперь мы не разлогиниваем другие устройства пользователя при новом входе.
 
         val refreshToken = com.taxiapp.server.model.auth.RefreshToken().apply {
             this.user = user
@@ -478,9 +478,12 @@ class AuthService(
         if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
 
         // ==========================================
-        // ИЗМЕНЕНИЕ: REFRESH TOKEN ROTATION
-        // Генерируем новый Refresh Token (твой метод createRefreshToken 
-        // уже написан так, что сам удаляет старые токены из БД)
+        // ИЗМЕНЕНИЕ: ИДЕАЛЬНАЯ РОТАЦИЯ (Rotation)
+        // 1. Удаляем ИСПОЛЬЗОВАННЫЙ рефреш токен (исключает перехват и повторное использование)
+        refreshTokenRepository.delete(oldRefreshToken)
+        refreshTokenRepository.flush()
+        
+        // 2. Генерируем новый (старые сессии на других устройствах остаются живы)
         val newRefreshToken = createRefreshToken(user.id)
         // ==========================================
 
@@ -490,7 +493,7 @@ class AuthService(
         
         return LoginResponse(
             token = newAccessToken, 
-            refreshToken = newRefreshToken.token, // <-- Отдаем НОВЫЙ рефреш вместо старого
+            refreshToken = newRefreshToken.token, // Отдаем новый рефреш
             userId = user.id, 
             phoneNumber = user.userPhone ?: "", 
             fullName = user.fullName ?: "Користувач", 

@@ -14,12 +14,12 @@ import java.util.function.Function
 
 @Component
 class JwtUtils(
-    // --- ИЗМЕНЕНИЕ: Берем ключ из application.properties ---
-    @Value("\${jwt.secret}") private val secretKeyString: String
+    @Value("\${jwt.secret}") private val secretKeyString: String,
+    @Value("\${jwt.expiration}") private val jwtExpirationMs: Long // <-- ДОБАВЛЕНО
 ) {
 
     private fun getSignInKey(): Key {
-        val keyBytes = Decoders.BASE64.decode(secretKeyString) // Используем переменную из конструктора
+        val keyBytes = Decoders.BASE64.decode(secretKeyString)
         return Keys.hmacShaKeyFor(keyBytes)
     }
 
@@ -27,21 +27,16 @@ class JwtUtils(
         return extractClaim(token, Claims::getSubject)
     }
 
-    // --- ДОДАНО ЦЕЙ МЕТОД ---
-    // Потрібен для отримання ID водія в DriverAppController
     fun extractUserId(token: String): Long {
         val claims = extractAllClaims(token)
-        // JWT бібліотека може повертати числа як Integer, тому надійно приводимо до Long
         return (claims["userId"] as Number).toLong()
     }
-    // ------------------------
 
     fun <T> extractClaim(token: String, claimsResolver: Function<Claims, T>): T {
         val claims = extractAllClaims(token)
         return claimsResolver.apply(claims)
     }
 
-    // --- НОВЫЙ МЕТОД ДЛЯ REFRESH TOKEN ---
     fun generateRefreshToken(): String {
         return java.util.UUID.randomUUID().toString()
     }
@@ -66,7 +61,8 @@ class JwtUtils(
             .setClaims(claims)
             .setSubject(subject)
             .setIssuedAt(Date(System.currentTimeMillis()))
-            .setExpiration(Date(System.currentTimeMillis() + 1000 * 60 * 60 * 24)) // 24 години
+            // --- ИЗМЕНЕНИЕ: Используем короткое время жизни ---
+            .setExpiration(Date(System.currentTimeMillis() + jwtExpirationMs)) 
             .signWith(getSignInKey(), SignatureAlgorithm.HS256)
             .compact()
     }
