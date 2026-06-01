@@ -20,6 +20,27 @@ interface DriverRepository : JpaRepository<Driver, Long> {
     // 2. Знайти всіх з конкретним статусом (для списку "Заявки")
     fun findAllByRegistrationStatus(status: RegistrationStatus): List<Driver>
 
+    @Query(value = """
+        SELECT d.*, u.* FROM drivers d
+        JOIN users u ON d.id = u.id
+        WHERE d.is_online = true 
+          AND u.is_blocked = false 
+          AND d.search_mode != 'OFFLINE'
+          AND d.latitude IS NOT NULL 
+          AND d.longitude IS NOT NULL
+        ORDER BY (
+            6371 * acos(least(1.0, greatest(-1.0, 
+                cos(radians(:lat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:lng)) + 
+                sin(radians(:lat)) * sin(radians(d.latitude))
+            )))
+        ) ASC
+        LIMIT 5
+    """, nativeQuery = true)
+    fun findTop5NearestAvailableDrivers(
+        @Param("lat") lat: Double, 
+        @Param("lng") lng: Double
+    ): List<Driver>
+
     @Query("""
         SELECT d FROM Driver d 
         WHERE d.latitude IS NOT NULL 

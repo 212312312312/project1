@@ -345,79 +345,87 @@ class OrderService(
             return TaxiOrderDto(savedScheduled)
         }
 
+        // 1. СНАЧАЛА сохраняем заказ в базу данных, чтобы получить сгенерированный ID!
+        var savedOrder = orderRepository.save(newOrder)
+
+        // --- Збереження запланованого замовлення ---
+        if (initialStatus == OrderStatus.SCHEDULED) {
+            logger.info("Order scheduled for ${savedOrder.scheduledAt}")
+            broadcastOrderChange(savedOrder, "ADD")
+            return TaxiOrderDto(savedOrder)
+        }
+
         // =====================================================================
         // 🚀 ЛОГІКА РОЗПОДІЛУ (WATERFALL): Ланцюг -> Авто/Цикл -> Ефір
         // =====================================================================
         
-        val rejectedIds = if (newOrder.rejectedDriverIds.isNotEmpty()) newOrder.rejectedDriverIds.toList() else null
+        // Оставляем только это объявление, привязанное к сохраненному savedOrder
+        val rejectedIds = if (savedOrder.rejectedDriverIds.isNotEmpty()) savedOrder.rejectedDriverIds.toList() else null
 
-        // 1. ЛАНЦЮГ (Chain) - тут оставляем "геометрический" поиск, так как это очень близко
+        // 1. ЛАНЦЮГ (Chain)
         val chainDriver = driverRepository.findBestChainDriver(
-            pickupLat = newOrder.originLat!!,
-            pickupLng = newOrder.originLng!!,
+            pickupLat = savedOrder.originLat!!,
+            pickupLng = savedOrder.originLng!!,
             rejectedDriverIds = rejectedIds
         ).orElse(null)
 
         if (chainDriver != null) {
-            // Теперь дистанция считается от точки ВЫСАДКИ (destLat) текущего заказа водителя
-            // до точки ПОДАЧИ (originLat) нового заказа.
-            // И используется личный радиус водителя.
             logger.info(">>> CHAIN driver found: ${chainDriver.id}")
-            assignOrderToDriver(newOrder, chainDriver)
+            assignOrderToDriver(savedOrder, chainDriver) // Теперь id точно не null!
+            savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
         } else {
             // 2. AUTO/CYCLE - УМНЫЙ ПОИСК
-            // Сначала ищем по Авто-фильтрам (эксклюзив)
-            val autoDriver = findDriverByAutoFilter(newOrder)
+            val autoDriver = findDriverByAutoFilter(savedOrder)
 
             if (autoDriver != null) {
                 logger.info(">>> FILTER driver selected: ${autoDriver.id}")
-                assignOrderToDriver(newOrder, autoDriver)
+                assignOrderToDriver(savedOrder, autoDriver) // Теперь id точно не null!
+                savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
             } else {
-                // 3. ETHER / BEST CANDIDATE (Эфир или поиск лучшего)
-                
-                // Получаем ТОП-5 ближайших по прямой
+                // 3. ETHER / BEST CANDIDATE (Ефір або пошук найкращого)
                 val candidates = driverRepository.findBestDriversCandidates(
-                    newOrder.originLat!!,
-                    newOrder.originLng!!,
+                    savedOrder.originLat!!,
+                    savedOrder.originLng!!,
                     destSector?.id,
                     rejectedIds
                 )
 
                 if (candidates.isNotEmpty()) {
-                    // Выбираем того, кто доедет быстрее всего (реальные дороги)
-                    val bestDriver = selectFastestDriver(candidates, newOrder.originLat!!, newOrder.originLng!!)
-                    
+                    val bestDriver = selectFastestDriver(candidates, savedOrder.originLat!!, savedOrder.originLng!!)
                     logger.info(">>> SMART Selection: Winner ${bestDriver.id} from ${candidates.size} candidates.")
-                    assignOrderToDriver(newOrder, bestDriver)
+                    assignOrderToDriver(savedOrder, bestDriver) // Теперь id точно не null!
+                    savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
                 } else {
                     logger.info(">>> No drivers found. Sending to Ether.")
-                    newOrder.status = OrderStatus.REQUESTED
+                    savedOrder.status = OrderStatus.REQUESTED
+                    savedOrder = orderRepository.save(savedOrder)
+                    
+                    // Так как никто не взялся и заказ ушел в общий эфир, пушим "ADD" для свободных водителей
+                    broadcastOrderChange(savedOrder, "ADD")
                 }
             }
-        }
-
-        val savedOrder = orderRepository.save(newOrder)
-        if (savedOrder.status == OrderStatus.REQUESTED) {
-            broadcastOrderChange(savedOrder, "ADD")
         }
 
         return TaxiOrderDto(savedOrder)
     }
 
     private fun assignOrderToDriver(order: TaxiOrder, driver: Driver) {
-        val dist = calculateDistanceKm(
-            driver.latitude ?: 0.0,
-            driver.longitude ?: 0.0,
-            order.originLat!!,
-            order.originLng!!
-        )
-        logger.info(">>> Assigning order ${order.id} to driver ${driver.id} (Distance: ${String.format("%.2f", dist)} km)")
+    val dist = calculateDistanceKm(
+        driver.latitude ?: 0.0,
+        driver.longitude ?: 0.0,
+        order.originLat!!,
+        order.originLng!!
+    )
+    logger.info(">>> Assigning order ${order.id} to driver ${driver.id} (Distance: ${String.format("%.2f", dist)} km)")
 
-        order.status = OrderStatus.OFFERING
-        order.offeredDriver = driver
-        order.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
-        notificationService.sendOrderOffer(driver, order)
-    }
+    order.status = OrderStatus.OFFERING
+    order.offeredDriver = driver
+    order.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
+    notificationService.sendOrderOffer(driver, order)
+    
+    // Оповещаем клиента через сокет, что заказ перешел в статус OFFERING (подбор водителя)
+    broadcastOrderChange(order, "UPDATE")
+}
 
     private fun selectFastestDriver(drivers: List<Driver>, targetLat: Double, targetLng: Double): Driver {
         // Простая эвристика: выбираем того, кто ближе, но с учетом "коэффициента извилистости"
@@ -516,14 +524,15 @@ class OrderService(
     // 🧠 ИСПРАВЛЕННЫЙ broadcastOrderChange
     // =================================================================================
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
+        val orderId = order.id ?: throw IllegalStateException("Cannot broadcast order change without a valid Order ID. Save the order first!")
         val orderDto = TaxiOrderDto(order)
         
-        // 1. Адміни бачать все (ВИПРАВЛЕНО: передаємо orderDto і для "ADD", і для "UPDATE")
-        val message = OrderSocketMessage(action, order.id!!, if (action == "REMOVE") null else orderDto)
+        // 1. Адміни бачать все
+        val message = OrderSocketMessage(action, orderId, if (action == "REMOVE") null else orderDto)
         sendSocketAfterCommit("/topic/admin/orders", message)
 
-        // 2. КЛІЄНТ (ПАСАЖИР): Відправляємо статус конкретному користувачу (НОВЕ)
-        val clientMessage = OrderSocketMessage(action, order.id!!, if (action == "REMOVE") null else orderDto)
+        // 2. КЛІЄНТ (ПАСАЖИР)
+        val clientMessage = OrderSocketMessage(action, orderId, if (action == "REMOVE") null else orderDto)
         sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", clientMessage)
 
         // 3. Водії 
@@ -1015,6 +1024,16 @@ class OrderService(
 
         order.status = OrderStatus.COMPLETED
         order.completedAt = LocalDateTime.now()
+
+        if (order.startedAt != null) {
+            val realDurationSeconds = java.time.Duration.between(order.startedAt, order.completedAt).toSeconds().toInt()
+            
+            // Если поездка завершилась аномально быстро (например, для тестов за 0 секунд), 
+            // ставим минимум 1 секунду, чтобы не было деления на ноль в других блоках статистики
+            order.durationSeconds = if (realDurationSeconds > 0) realDurationSeconds else 1
+            
+            logger.info("[STATS_FIX] Реальное время поездки #${order.id}: ${order.durationSeconds} сек. (Вместо теории Google)")
+        }
 
         // 1. Оновлюємо статистику поїздок
         driver.completedRides += 1

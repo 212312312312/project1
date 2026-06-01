@@ -56,6 +56,25 @@ class DriverLocationService(
         driverRepository.save(driver)
     }
 
+    // НОВЫЙ МЕТОД: Получение 5 ближайших водителей (для сокетов клиента)
+    fun getTop5NearestDrivers(lat: Double, lng: Double): List<DriverLocationDto> {
+        val drivers = driverRepository.findTop5NearestAvailableDrivers(lat, lng)
+        
+        return drivers.map { driver ->
+            DriverLocationDto(
+                driverId = driver.id!!,
+                fullName = driver.fullName ?: "Водій",
+                lat = driver.latitude!!,
+                lng = driver.longitude!!,
+                bearing = driver.bearing ?: 0f,
+                status = driver.searchMode.name,
+                isOnline = driver.isOnline,
+                carModel = driver.car?.model ?: "Не вказано",
+                carColor = driver.car?.color ?: ""
+            )
+        }
+    }
+
     fun getOnlineDriversForMap(): List<DriverLocationDto> {
         // ИСПРАВЛЕНО: Убрали фильтр "&& it.searchMode != OFFLINE".
         // Теперь показываем всех, у кого есть координаты.
