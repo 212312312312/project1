@@ -43,7 +43,7 @@ data class CarDto(
         status = car.status.name,
         rejectionReason = car.rejectionReason,
         
-        photoUrl = generateUrl(car.photoUrl),
+        photoUrl = generateUrl(if (!car.photoUrl.isNullOrBlank()) car.photoUrl else car.photoRight),
         
         techPassportFront = generateUrl(car.techPassportFront),
         techPassportBack = generateUrl(car.techPassportBack),

@@ -24,21 +24,15 @@ class MvcConfig : WebMvcConfigurer {
      * Настраиваем раздачу файлов.
      */
     override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
-        // Получаем абсолютный путь к папке uploads в корне проекта
-        val uploadPath = Paths.get(System.getProperty("user.dir"), "uploads")
-        val uploadUri = uploadPath.toUri().toString()
-
-        // 1. Раздаем картинки водителей и авто по пути /images/...
-        // Ссылка: http://localhost:8080/images/car_123.jpg
+        // ИСПРАВЛЕНО: Используем чистый относительный префикс "file: папка/" с закрывающим слэшем
+        // Это гарантирует работу и на Windows, и на Linux без багов путей
         registry.addResourceHandler("/images/**")
-            .addResourceLocations(uploadUri)
+            .addResourceLocations("file:uploads/")
 
-        // 2. Раздаем файлы по пути /uploads/... (для совместимости)
-        // Ссылка: http://localhost:8080/uploads/settings/pic.png
         registry.addResourceHandler("/uploads/**")
-            .addResourceLocations(uploadUri)
+            .addResourceLocations("file:uploads/")
             
-        // 3. Раздаем статику React (если фронт встроен в jar)
+        // Раздаем статику React (если фронт встроен в jar)
         registry.addResourceHandler("/**")
             .addResourceLocations("classpath:/static/")
     }

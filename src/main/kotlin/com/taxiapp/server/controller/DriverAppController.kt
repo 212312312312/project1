@@ -8,6 +8,7 @@ import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.dto.driver.UpdateDriverStatusRequest
 import com.taxiapp.server.dto.driver.UpdateLocationRequest
+import com.taxiapp.server.dto.driver.CarDto // ИСПРАВЛЕНО: Добавлен импорт для CarDto
 import com.taxiapp.server.model.enums.CarStatus
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
@@ -33,7 +34,6 @@ import org.springframework.web.multipart.MultipartHttpServletRequest
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-// <<< НОВЫЕ ИМПОРТЫ >>>
 import com.taxiapp.server.repository.DriverNotificationRepository
 import com.taxiapp.server.dto.driver.DriverNotificationDto
 
@@ -59,7 +59,6 @@ data class CodeVerifyRequest(
     val code: String
 )
 
-// --- DTO ДЛЯ ТРАНЗАКЦИЙ ---
 data class WalletTransactionDto(
     val id: Long,
     val amount: Double,
@@ -78,7 +77,6 @@ class DriverAppController(
     private val fileStorageService: FileStorageService,
     private val carRepository: CarRepository,
     private val settingsService: SettingsService,
-    // <<< ВНЕДРЕНИЕ РЕПОЗИТОРИЯ УВЕДОМЛЕНИЙ >>>
     private val notificationRepository: DriverNotificationRepository,
     private val authService: com.taxiapp.server.service.AuthService
 ) {
@@ -86,15 +84,10 @@ class DriverAppController(
     @Autowired
     private lateinit var messagingTemplate: SimpMessagingTemplate
 
-    // =================================================================
-    // 🔔 НОВЫЙ МЕТОД: ПОЛУЧЕНИЕ УВЕДОМЛЕНИЙ
-    // =================================================================
     @GetMapping("/notifications")
     fun getNotifications(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<DriverNotificationDto>> {
         val driver = getDriverFromUser(userDetails)
-        
         val notifications = notificationRepository.findAllByDriverIdOrderByCreatedAtDesc(driver.id!!)
-        
         val dtos = notifications.map { n ->
             DriverNotificationDto(
                 id = n.id,
@@ -105,10 +98,8 @@ class DriverAppController(
                 isRead = n.isRead
             )
         }
-        
         return ResponseEntity.ok(dtos)
     }
-    // =================================================================
 
     @PatchMapping("/profile")
     fun updateProfile(
@@ -126,11 +117,9 @@ class DriverAppController(
         @Valid @RequestBody request: UpdateDriverStatusRequest
     ): ResponseEntity<DriverDto> {
         val driver = getDriverFromUser(userDetails)
-
         if (!driver.isAccountNonLocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблокований")
         }
-
         val driverDto = driverService.updateDriverStatus(driver, request)
         return ResponseEntity.ok(driverDto)
     }
@@ -154,9 +143,7 @@ class DriverAppController(
     @GetMapping("/transactions")
     fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-        
         val transactions = driverService.getDriverTransactions(user)
-        
         val dtos = transactions.map { tx ->
             WalletTransactionDto(
                 id = tx.id ?: 0L,
@@ -166,7 +153,6 @@ class DriverAppController(
                 createdAt = tx.createdAt.toString() 
             )
         }
-        
         return ResponseEntity.ok(dtos)
     }
 
@@ -185,7 +171,6 @@ class DriverAppController(
         @AuthenticationPrincipal userDetails: UserDetails
     ): ResponseEntity<String> {
         val driver = getDriverFromUser(userDetails)
-
         val sosDto = SosSignalDto(
             driverId = driver.id!!, 
             driverName = driver.fullName ?: "Водій",
@@ -195,7 +180,6 @@ class DriverAppController(
             lng = loc.lng,
             timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
         )
-
         messagingTemplate.convertAndSend("/topic/admin/sos", sosDto)
         return ResponseEntity.ok("SOS Sent")
     }
@@ -205,8 +189,6 @@ class DriverAppController(
         val driver = getDriverFromUser(userDetails)
         return ResponseEntity.ok(DriverDto(driver))
     }
-
-    // --- СМЕНА НОМЕРА ---
 
     @PostMapping("/profile/change-phone/request-current")
     fun requestCodeForCurrentPhone(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<MessageResponse> {
@@ -226,9 +208,7 @@ class DriverAppController(
     }
 
     @PostMapping("/profile/change-phone/request-new")
-    fun requestCodeForNewPhone(
-        @RequestBody request: SmsRequestDto
-    ): ResponseEntity<MessageResponse> {
+    fun requestCodeForNewPhone(@RequestBody request: SmsRequestDto): ResponseEntity<MessageResponse> {
         driverService.sendVerificationCodeToNewPhone(request.phoneNumber)
         return ResponseEntity.ok(MessageResponse("Код відправлено на новий номер"))
     }
@@ -237,7 +217,6 @@ class DriverAppController(
     fun requestAccountDeletion(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<MessageResponse> {
         val driver = getDriverFromUser(userDetails)
         driverService.requestAccountDeletion(driver)
-        // Також можна викликати logoutFromMap, щоб зняти його з карти
         driverLocationService.clearLocation(driver.id!!)
         return ResponseEntity.ok(MessageResponse("Акаунт додано в чергу на видалення"))
     }
@@ -249,7 +228,6 @@ class DriverAppController(
         return ResponseEntity.ok(restoredDriver)
     }
 
-
     @PostMapping("/profile/change-phone/confirm-new")
     fun confirmNewPhone(
         @AuthenticationPrincipal userDetails: UserDetails,
@@ -257,19 +235,12 @@ class DriverAppController(
     ): ResponseEntity<LoginResponse> {
         val driver = getDriverFromUser(userDetails)
         val updatedUser = driverService.changePhone(driver, request.newPhone, request.code, request.changeToken)
-        
-        val newToken = jwtUtils.generateToken(
-            updatedUser, 
-            updatedUser.id!!, 
-            updatedUser.role.name
-        )
-        
-        // Создаем новый Refresh-токен при смене номера
+        val newToken = jwtUtils.generateToken(updatedUser, updatedUser.id!!, updatedUser.role.name)
         val newRefreshToken = authService.createRefreshToken(updatedUser.id!!)
         
         return ResponseEntity.ok(LoginResponse(
             token = newToken,
-            refreshToken = newRefreshToken.token, // <-- Добавили Refresh токен
+            refreshToken = newRefreshToken.token,
             role = updatedUser.role.name,
             userId = updatedUser.id!!,
             phoneNumber = updatedUser.userPhone ?: "",
@@ -305,9 +276,7 @@ class DriverAppController(
 
     @GetMapping("/forms/add-car")
     fun getAddCarForm(@RequestParam token: String): ResponseEntity<Void> {
-        // Укажи здесь правильный путь к твоему собранному React-экрану в папке static
         val reactFormUrl = "/add-car/index.html?token=$token"
-        
         return ResponseEntity.status(HttpStatus.FOUND)
             .header("Location", reactFormUrl)
             .build()
@@ -320,7 +289,6 @@ class DriverAppController(
         request: MultipartHttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
         val driver = validateTokenAndGetDriver(token)
-
         val savedPhotos = mutableMapOf<String, String>()
         request.fileMap.forEach { (key, file) ->
             if (!file.isEmpty) {
@@ -329,7 +297,6 @@ class DriverAppController(
         }
 
         val node = ObjectMapper().readTree(carJson)
-        
         fun txt(vararg keys: String): String {
             for (k in keys) {
                 if (node.has(k)) return node.get(k).asText()
@@ -338,16 +305,12 @@ class DriverAppController(
         }
         fun photo(key: String): String? = savedPhotos[key]
 
-        // Ключи должны совпадать с теми, что будет отправлять React
         val plate = txt("plate_number", "license_plate", "number", "gos_nomer")
         val make = txt("brand", "make")
         val model = txt("model")
         val color = txt("color")
         val vin = if (node.has("vin")) node.get("vin").asText() else "NO_VIN"
-        
-        val year = try {
-            if (node.has("year")) node.get("year").asInt() else 2020
-        } catch (e: Exception) { 2020 }
+        val year = try { if (node.has("year")) node.get("year").asInt() else 2020 } catch (e: Exception) { 2020 }
 
         val newCar = Car(
             driver = driver,
@@ -364,16 +327,15 @@ class DriverAppController(
             photoBack  = photo("photo_back"),
             photoLeft  = photo("photo_left"),
             photoRight = photo("photo_right"),
-            photoSeatsFront = photo("photo_seats_front"), // Было salon_front
-            photoSeatsBack  = photo("photo_seats_back"),  // Было salon_back
+            photoSeatsFront = photo("photo_seats_front"), 
+            photoSeatsBack  = photo("photo_seats_back"),  
             photoTrunk      = photo("photo_trunk"),
-            photoUrl = photo("photo_front"), // Лицевое фото как главное
+            photoUrl = photo("photo_right"), // ИСПРАВЛЕНО: Правое фото записывается как главное для корректного отображения на экране
             status = CarStatus.PENDING 
         )
         
         carRepository.save(newCar)
 
-        // Возвращаем JSON. React-компонент перехватит его и покажет красивый экран успеха.
         return ResponseEntity.ok(mapOf(
             "success" to true,
             "message" to "Заявка прийнята! Всі документи та фото отримано. ${make} ${model} відправлено на перевірку.",
@@ -392,10 +354,13 @@ class DriverAppController(
     }
 
     @GetMapping("/cars")
-    fun getMyCars(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<Car>> {
+    fun getMyCars(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<CarDto>> {
         val driver = getDriverFromUser(userDetails)
         val cars = carRepository.findAllByDriver(driver)
-        return ResponseEntity.ok(cars)
+        
+        // ИСПРАВЛЕНО: Преобразуем список Car в список CarDto, чтобы сгенерировались полные веб-ссылки на изображения
+        val dtos = cars.map { CarDto(it) }
+        return ResponseEntity.ok(dtos)
     }
 
     @PostMapping("/cars/{carId}/select")
