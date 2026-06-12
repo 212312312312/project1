@@ -33,4 +33,11 @@ class WalletTransaction(
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
     var createdAt: LocalDateTime = LocalDateTime.now()
-)
+) {
+    @Column(nullable = false, columnDefinition = "double precision default 0.0")
+    var balanceAfter: Double = 0.0 // Остаток на кошельке после проведения операции
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, columnDefinition = "varchar(20) default 'COMPLETED'")
+    var status: com.taxiapp.server.model.enums.TransactionStatus = com.taxiapp.server.model.enums.TransactionStatus.COMPLETED
+}

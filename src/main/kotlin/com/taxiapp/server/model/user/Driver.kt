@@ -71,6 +71,12 @@ class Driver : User() {
     @Column(nullable = false, columnDefinition = "double precision default 0.0")
     var balance: Double = 0.0
 
+    @Column(nullable = false, columnDefinition = "double precision default 0.0")
+    var payoutBalance: Double = 0.0 // Баланс личных средств (выплат)
+
+    @OneToMany(mappedBy = "driver", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    var bankCards: MutableList<com.taxiapp.server.model.user.DriverCard> = mutableListOf()
+
     var tempBlockExpiresAt: LocalDateTime? = null
 
     @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false)

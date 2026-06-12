@@ -496,7 +496,7 @@ class OrderService(
         }
     }
 
-    @Scheduled(fixedRate = 5000) // Увеличили интервал до 5 секунд, чтобы не спамить БД
+    @Scheduled(fixedRate = 10000) // Проверка каждые 10 секунд вместо 5
     @Transactional
     fun checkExpiredOffers() {
         val now = LocalDateTime.now()
@@ -521,58 +521,33 @@ class OrderService(
     }
     
     // =================================================================================
-    // 🧠 ИСПРАВЛЕННЫЙ broadcastOrderChange
+    // 🧠 ОПТИМИЗИРОВАННЫЙ broadcastOrderChange ДЛЯ ЧИСТЫХ СОКЕТОВ
     // =================================================================================
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
         val orderId = order.id ?: throw IllegalStateException("Cannot broadcast order change without a valid Order ID. Save the order first!")
         val orderDto = TaxiOrderDto(order)
         
-        // 1. Адміни бачать все
         val message = OrderSocketMessage(action, orderId, if (action == "REMOVE") null else orderDto)
+
+        // 1. Диспетчерская (Админы) видят всё
         sendSocketAfterCommit("/topic/admin/orders", message)
 
-        // 2. КЛІЄНТ (ПАСАЖИР)
-        val clientMessage = OrderSocketMessage(action, orderId, if (action == "REMOVE") null else orderDto)
-        sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", clientMessage)
+        // 2. КЛИЕНТ (Пассажир) получает обновление своего заказа
+        sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", message)
 
-        // 3. Водії 
-        val onlineDrivers = driverRepository.findAll().filter { it.isOnline }
-
-        for (driver in onlineDrivers) {
-            if (driver.activityScore <= 0) continue
-
-            // --- ВИПРАВЛЕННЯ 1: ЛОГІКА ВИДИМОСТІ ---
+        // 3. ВОДИТЕЛИ (Архитектура без циклов и перегрузки БД)
+        if (order.status == OrderStatus.REQUESTED) {
+            // Если заказ в общем эфире — пушим его в единый топик для всех свободных водителей
+            sendSocketAfterCommit("/topic/drivers/ether", message)
+        } else {
+            // Если заказ перестает быть REQUESTED (его приняли, отменили диспетчером или скрыли)
+            // отправляем команду REMOVE в общий эфир водителей, чтобы он мгновенно пропал с экранов остальных
+            sendSocketAfterCommit("/topic/drivers/ether", OrderSocketMessage("REMOVE", orderId, null))
             
-            // Якщо ми видаляємо замовлення взагалі
-            if (action == "REMOVE") {
-                val msgRemove = OrderSocketMessage("REMOVE", order.id!!, null)
-                messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgRemove)
-                continue
-            }
-
-            // Якщо у замовлення Є водій, і це НЕ поточний водій -> надсилаємо REMOVE (хованки)
-            if (order.driver != null && order.driver!!.id != driver.id) {
-                val msgRemove = OrderSocketMessage("REMOVE", order.id!!, null)
-                messagingTemplate.convertAndSend("/topic/drivers/${driver.id}/orders", msgRemove)
-                continue
-            }
-            // ---------------------------------------
-
-            val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
-                .filter { it.isActive }
-            
-            val shouldSend = if (activeFilters.isEmpty()) {
-                true 
-            } else {
-                activeFilters.any { filter -> 
-                    filter.isEther && matchesFilter(order, filter, driver) 
-                }
-            }
-
-            if (shouldSend) {
-                // Якщо це заплановане і воно "моє" (я його взяв), або воно нічиє
-                val msgAdd = OrderSocketMessage(action, order.id!!, orderDto)
-                sendSocketAfterCommit("/topic/drivers/${driver.id}/orders", msgAdd)
+            // Отправляем точечное сокет-сообщение только тому водителю, кому он назначен или предложен
+            val targetDriver = order.driver ?: order.offeredDriver
+            targetDriver?.id?.let { driverId ->
+                sendSocketAfterCommit("/topic/drivers/$driverId/orders", message)
             }
         }
     }
@@ -854,7 +829,6 @@ class OrderService(
         order.driver = driver
         order.offeredDriver = null
         
-        // ГЛАВНОЕ ИЗМЕНЕНИЕ:
         // Если это запланированный заказ -> статус НЕ меняем (остается SCHEDULED)
         // Если это обычный заказ -> ставим ACCEPTED
         if (order.status != OrderStatus.SCHEDULED) {
@@ -867,6 +841,21 @@ class OrderService(
         
         val saved = orderRepository.save(order)
         broadcastOrderChange(saved, "ADD") // Обновляем диспетчера и водителя
+
+        // --- ДОБАВЛЕНО: Отправка Push-уведомления клиенту при принятии заказа водителем ---
+        // --- ИСПРАВЛЕНО: Безопасный текст пуша без обращения к несуществующим полям ---
+        if (saved.status == OrderStatus.ACCEPTED) {
+            notificationService.sendOrderStatusToClient(
+                token = saved.client.fcmToken,
+                orderId = saved.id!!,
+                status = saved.status.name, // "ACCEPTED"
+                title = "Водій знайден",
+                body = "Водій прийняв ваше замовлення та прямує до вас."
+            )
+        }
+        // ---------------------------------------------------------------------------------
+        // ---------------------------------------------------------------------------------
+
         return TaxiOrderDto(saved)
     }
 

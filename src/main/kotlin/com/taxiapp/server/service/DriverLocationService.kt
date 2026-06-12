@@ -54,6 +54,7 @@ class DriverLocationService(
         driver.searchMode = DriverSearchMode.OFFLINE
         driver.isOnline = false // На всякий случай дублируем
         driverRepository.save(driver)
+        messagingTemplate.convertAndSend("/topic/admin/drivers/locations", DriverLocationDto(driver))
     }
 
     // НОВЫЙ МЕТОД: Получение 5 ближайших водителей (для сокетов клиента)

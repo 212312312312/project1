@@ -41,7 +41,8 @@ data class DriverDto(
     val photoUrl: String?,    
     val activityScore: Int,
     val registrationStatus: String,
-    val balance: Double
+    val balance: Double,
+    val payoutBalance: Double
 ) {
     constructor(driver: Driver) : this(
         id = driver.id!!,
@@ -80,7 +81,8 @@ data class DriverDto(
         
         activityScore = driver.activityScore,
         registrationStatus = driver.registrationStatus.name,
-        balance = driver.balance
+        balance = driver.balance,
+        payoutBalance = driver.payoutBalance
     )
 
     companion object {

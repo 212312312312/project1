@@ -220,6 +220,32 @@ class LiqPayService(
         return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
     }
 
+    fun generateDriverBindCardUrl(driverId: Long): String {
+        val callbackUrl = "$serverUrl/api/v1/payments/callback"
+        // Префикс bind_driver_card для однозначной идентификации в коллбэке
+        val orderId = "bind_driver_card_${driverId}_${System.currentTimeMillis()}"
+        logger.info(">>> GENERATING LIQPAY DRIVER BIND CARD LINK. Callback URL: $callbackUrl")
+
+        val params = mapOf(
+            "action" to "auth", // Блокировка 1 грн для верификации и выпуска токена
+            "amount" to 1.0,
+            "currency" to "UAH",
+            "description" to "Прив'язка картки для виплат водія ID $driverId",
+            "order_id" to orderId,
+            "version" to "3",
+            "public_key" to publicKey,
+            "language" to "uk",
+            "server_url" to callbackUrl,
+            "result_url" to "$serverUrl/payment-success.html"
+        )
+
+        val json = objectMapper.writeValueAsString(params)
+        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+        val signature = createSignature(data)
+
+        return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
+    }
+
     // Проверка статуса (Server-to-Server)
     fun getStatus(orderId: String): String {
         val params = mapOf(

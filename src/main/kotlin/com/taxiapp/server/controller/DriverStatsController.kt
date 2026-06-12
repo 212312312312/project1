@@ -1,5 +1,6 @@
 package com.taxiapp.server.controller
 
+import com.taxiapp.server.dto.driver.ChartPointDto
 import com.taxiapp.server.dto.driver.DriverStatsDto
 import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.security.JwtUtils
@@ -50,6 +51,9 @@ class DriverStatsController(
         
         val COMMISSION_RATE = 0.12 
 
+        // Временная хэш-карта для группировки чистого дохода по календарным дням
+        val dailyCleanIncomeMap = mutableMapOf<LocalDate, Double>()
+
         for (o in orders) {
             val orderSum = o.price + o.addedValue
             totalDirty += orderSum
@@ -62,6 +66,16 @@ class DriverStatsController(
 
             totalDistMeters += (o.distanceMeters ?: 0)
             totalDurationSec += (o.durationSeconds ?: 0)
+
+            // Вычисляем чистый доход за этот конкретный заказ (сумма минус 12% комиссии)
+            val orderCommission = orderSum * COMMISSION_RATE
+            val orderClean = orderSum - orderCommission
+
+            // Определяем день: берем дату завершения заказа, либо дату создания, если заказ завершен некорректно
+            val orderDate = o.completedAt?.toLocalDate() ?: o.createdAt.toLocalDate()
+
+            // Плюсуем чистый доход к соответствующему дню в карте
+            dailyCleanIncomeMap[orderDate] = dailyCleanIncomeMap.getOrDefault(orderDate, 0.0) + orderClean
         }
 
         val totalCommission = totalDirty * COMMISSION_RATE
@@ -70,6 +84,16 @@ class DriverStatsController(
         val totalKm = totalDistMeters / 1000.0
         val totalHours = totalDurationSec / 3600.0
         val avgPrice = if (totalKm > 0) totalClean / totalKm else 0.0
+
+        // Преобразуем хэш-карту в хронологически отсортированный список DTO для отправки на клиент
+        val chartPointsList = dailyCleanIncomeMap.entries
+            .sortedBy { it.key } // Сортируем даты от старых к новым
+            .map { 
+                ChartPointDto(
+                    date = it.key.toString(), // Конвертирует в стандартный формат "yyyy-MM-dd"
+                    income = it.value
+                ) 
+            }
 
         return ResponseEntity.ok(
             DriverStatsDto(
@@ -81,7 +105,8 @@ class DriverStatsController(
                 ordersCount = orders.size,
                 totalDistanceKm = totalKm,
                 avgPricePerKm = avgPrice,
-                totalHours = totalHours
+                totalHours = totalHours,
+                chartPoints = chartPointsList // Передаем честные точки на фронтенд
             )
         )
     }

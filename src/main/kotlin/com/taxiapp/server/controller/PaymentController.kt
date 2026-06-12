@@ -30,7 +30,8 @@ class PaymentController(
     private val clientRepository: ClientRepository, // <-- ВНЕДРЯЕМ РЕПОЗИТОРИЙ КЛИЕНТА
     private val walletTransactionRepository: WalletTransactionRepository,
     private val liqPayService: LiqPayService,
-    private val notificationService: NotificationService
+    private val notificationService: NotificationService,
+    private val driverService: com.taxiapp.server.service.DriverService
 ) {
 
     data class InitPaymentRequest(val amount: Double)
@@ -134,11 +135,34 @@ class PaymentController(
         // РАЗДЕЛЯЕМ ЛОГИКУ ПО ПРЕФИКСУ ЗАКАЗА
         return when {
             orderReference.startsWith("bind_card_") -> handleBindCardCallback(orderReference, status, jsonNode)
+            orderReference.startsWith("bind_driver_card_") -> handleBindDriverCardCallback(orderReference, status, jsonNode) // ДОБАВЛЕНО
             orderReference.startsWith("taxi_topup_") -> handleTopUpCallback(orderReference, status)
             else -> ResponseEntity.ok("Unknown order type")
         }
     }
 
+    // ДОБАВЛЕНО: Логика обработки вебхука успешной привязки карты водителя
+    private fun handleBindDriverCardCallback(orderReference: String, status: String, jsonNode: JsonNode): ResponseEntity<String> {
+        println(">>> LIQPAY DRIVER CARD BIND WEBHOOK: Status = $status")
+
+        if (status in listOf("success", "sandbox", "wait_accept", "auth")) {
+            val driverIdStr = orderReference.split("_").getOrNull(3) ?: return ResponseEntity.badRequest().body("Invalid format")
+            val driverId = driverIdStr.toLongOrNull() ?: return ResponseEntity.badRequest().body("Invalid driver ID")
+
+            // Извлекаем маску и токен карты из параметров ответа LiqPay
+            val cardMask = jsonNode.path("sender_card_mask2").asText(null) ?: jsonNode.path("sender_card_mask").asText(null)
+            val cardToken = jsonNode.path("sender_card_token").asText(null) ?: jsonNode.path("card_token").asText(null) ?: jsonNode.path("token").asText(null)
+
+            if (!cardMask.isNullOrEmpty()) {
+                val finalToken = cardToken ?: "sandbox_driver_token_${jsonNode.path("payment_id").asText()}"
+                
+                // Передаем данные в DriverService для записи в БД
+                driverService.completeDriverCardBinding(driverId, finalToken, cardMask)
+                println(">>> DRIVER CARD BOUND SUCCESSFULLY. Driver: $driverId, Mask: $cardMask")
+            }
+        }
+        return ResponseEntity.ok("OK")
+    }
     // ЛОГИКА 1: Сохранение токена карты клиента
 // ЛОГИКА 1: Сохранение токена карты клиента
     private fun handleBindCardCallback(orderReference: String, status: String, jsonNode: JsonNode): ResponseEntity<String> {

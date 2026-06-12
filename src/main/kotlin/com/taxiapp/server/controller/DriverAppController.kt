@@ -21,6 +21,7 @@ import com.taxiapp.server.service.FileStorageService
 import com.taxiapp.server.service.SettingsService
 import com.taxiapp.server.security.JwtUtils
 import jakarta.servlet.http.HttpServletRequest
+import com.taxiapp.server.service.LiqPayService
 import jakarta.validation.Valid
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.HttpStatus
@@ -64,7 +65,22 @@ data class WalletTransactionDto(
     val amount: Double,
     val operationType: String,
     val description: String?,
-    val createdAt: String
+    val createdAt: String,
+    val balanceAfter: Double, // ДОБАВЛЕНО: Остаток баланса после операции
+    val orderId: Long?        // ДОБАВЛЕНО: ID заказа для клика и перехода в детали
+)
+
+// ДТО для карт выплат водителя
+data class DriverCardDto(
+    val id: Long,
+    val cardNumber: String,
+    val cardHolder: String?,
+    val isMain: Boolean
+)
+
+data class AddCardRequest(
+    val cardNumber: String,
+    val cardHolder: String?
 )
 
 @RestController
@@ -78,7 +94,8 @@ class DriverAppController(
     private val carRepository: CarRepository,
     private val settingsService: SettingsService,
     private val notificationRepository: DriverNotificationRepository,
-    private val authService: com.taxiapp.server.service.AuthService
+    private val authService: com.taxiapp.server.service.AuthService,
+    private val liqPayService: LiqPayService
 ) {
 
     @Autowired
@@ -150,10 +167,64 @@ class DriverAppController(
                 amount = tx.amount,
                 operationType = tx.operationType.name,
                 description = tx.description,
-                createdAt = tx.createdAt.toString() 
+                createdAt = tx.createdAt.toString(),
+                balanceAfter = tx.balanceAfter,
+                orderId = tx.orderId
             )
         }
         return ResponseEntity.ok(dtos)
+    }
+
+    // Эндпоинт для экрана "Ваші кошти" (Незавершенные операции)
+    @GetMapping("/transactions/pending")
+    fun getPendingTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        val transactions = driverService.getPendingDriverTransactions(user)
+        val dtos = transactions.map { tx ->
+            WalletTransactionDto(
+                id = tx.id ?: 0L,
+                amount = tx.amount,
+                operationType = tx.operationType.name,
+                description = tx.description,
+                createdAt = tx.createdAt.toString(),
+                balanceAfter = tx.balanceAfter,
+                orderId = tx.orderId
+            )
+        }
+        return ResponseEntity.ok(dtos)
+    }
+
+    // --- ЭНДПОИНТЫ КАРТ ВЫПЛАТ ---
+    @GetMapping("/cards")
+    fun getCards(@AuthenticationPrincipal user: User): ResponseEntity<List<DriverCardDto>> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        val cards = driverService.getDriverCards(user.id!!)
+        val dtos = cards.map { DriverCardDto(it.id!!, it.cardNumber, it.cardHolder, it.isMain) }
+        return ResponseEntity.ok(dtos)
+    }
+
+    // Заменяем на эндпоинт инициализации привязки через LiqPay
+    @PostMapping("/cards/init")
+    fun initAddCard(@AuthenticationPrincipal user: User): ResponseEntity<Map<String, String>> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        
+        // Генерируем безопасную веб-ссылку на форму LiqPay для нашего WebView
+        val url = liqPayService.generateDriverBindCardUrl(user.id!!)
+        return ResponseEntity.ok(mapOf("url" to url))
+    }
+
+    @DeleteMapping("/cards/{cardId}")
+    fun deleteCard(@AuthenticationPrincipal user: User, @PathVariable cardId: Long): ResponseEntity<MessageResponse> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        driverService.deleteDriverCard(user.id!!, cardId)
+        return ResponseEntity.ok(MessageResponse("Картку видалено успішно"))
+    }
+
+    @PostMapping("/cards/{cardId}/select")
+    fun selectMainCard(@AuthenticationPrincipal user: User, @PathVariable cardId: Long): ResponseEntity<MessageResponse> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        driverService.selectMainCard(user.id!!, cardId)
+        return ResponseEntity.ok(MessageResponse("Основну картку змінено"))
     }
 
     @GetMapping("/commission")

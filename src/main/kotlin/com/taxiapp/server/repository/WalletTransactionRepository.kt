@@ -17,6 +17,8 @@ interface WalletTransactionRepository : JpaRepository<WalletTransaction, Long> {
     // --- ИСПРАВЛЕНИЕ ОШИБКИ ---
     // Явно объявляем метод с пагинацией, чтобы DriverService мог его вызвать
     fun findAllByDriverIdOrderByCreatedAtDesc(driverId: Long, pageable: Pageable): Page<WalletTransaction>
+
+    fun findAllByDriverIdAndStatusOrderByCreatedAtDesc(driverId: Long, status: com.taxiapp.server.model.enums.TransactionStatus, pageable: Pageable): Page<WalletTransaction>
     
     // Подсчет общей суммы для Админки (Финансы)
     @Query("SELECT SUM(ABS(w.amount)) FROM WalletTransaction w WHERE w.operationType = :type")

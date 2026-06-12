@@ -35,7 +35,8 @@ class DriverService(
     private val messagingTemplate: SimpMessagingTemplate,
     private val smsService: SmsService,
     private val walletTransactionRepository: WalletTransactionRepository,
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val driverCardRepository: com.taxiapp.server.repository.DriverCardRepository // ДОБАВЛЕНО
 ) {
     // Временное хранилище для кодов подтверждения (Номер -> Код)
     private val verificationCodes = ConcurrentHashMap<String, String>()
@@ -74,7 +75,66 @@ class DriverService(
 
     fun getDriverTransactions(driver: Driver): List<WalletTransaction> {
         val pageable = PageRequest.of(0, 50, Sort.by("createdAt").descending())
-        return walletTransactionRepository.findAllByDriverIdOrderByCreatedAtDesc(driver.id!!, pageable).content
+        val transactions = walletTransactionRepository.findAllByDriverIdOrderByCreatedAtDesc(driver.id!!, pageable).content
+        // Записываем правильный баланс в зависимости от типа операции для старых данных
+        transactions.forEach { if (it.balanceAfter == 0.0) { it.balanceAfter = driver.balance } }
+        return transactions
+    }
+
+    // Получение незавершенных транзакций (Для экрана "Ваші кошти")
+    fun getPendingDriverTransactions(driver: Driver): List<WalletTransaction> {
+        val pageable = PageRequest.of(0, 50, Sort.by("createdAt").descending())
+        return walletTransactionRepository.findAllByDriverIdAndStatusOrderByCreatedAtDesc(
+            driver.id!!, 
+            com.taxiapp.server.model.enums.TransactionStatus.PENDING, 
+            pageable
+        ).content
+    }
+
+    // --- ЛОГИКА УПРАВЛЕНИЯ КАРТАМИ ВОДИТЕЛЯ ---
+    @Transactional(readOnly = true)
+    fun getDriverCards(driverId: Long): List<com.taxiapp.server.model.user.DriverCard> {
+        return driverCardRepository.findAllByDriverId(driverId)
+    }
+
+    @Transactional
+    fun completeDriverCardBinding(driverId: Long, cardToken: String, cardMask: String) {
+        val driver = driverRepository.findById(driverId).orElseThrow { RuntimeException("Водій не знайдений") }
+        val cards = driverCardRepository.findAllByDriverId(driverId)
+        
+        val newCard = com.taxiapp.server.model.user.DriverCard(
+            driver = driver,
+            cardNumber = cardMask,
+            cardToken = cardToken,
+            cardHolder = "Картка Водія",
+            isMain = cards.isEmpty() // Если первая карта — делаем основной
+        )
+        driverCardRepository.save(newCard)
+    }
+
+    @Transactional
+    fun deleteDriverCard(driverId: Long, cardId: Long) {
+        val card = driverCardRepository.findById(cardId).orElseThrow { RuntimeException("Картку не знайдено") }
+        if (card.driver.id != driverId) throw RuntimeException("Помилка безпеки")
+        
+        driverCardRepository.delete(card)
+        
+        if (card.isMain) {
+            val remaining = driverCardRepository.findAllByDriverId(driverId)
+            if (remaining.isNotEmpty()) {
+                remaining.first().isMain = true
+                driverCardRepository.save(remaining.first())
+            }
+        }
+    }
+
+    @Transactional
+    fun selectMainCard(driverId: Long, cardId: Long) {
+        val cards = driverCardRepository.findAllByDriverId(driverId)
+        cards.forEach { card ->
+            card.isMain = (card.id == cardId)
+        }
+        driverCardRepository.saveAll(cards)
     }
 
     // --- ОБНОВЛЕНИЕ СТАТУСА (ОНЛАЙН/ОФФЛАЙН) ---
