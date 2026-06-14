@@ -12,9 +12,14 @@ import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
 import java.util.Optional
+import java.util.UUID // <-- ДОБАВИЛИ ИМПОРТ
 
 @Repository
 interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
+
+    // --- МЕТОД ДЛЯ НАХОЖДЕНИЯ ЗАКАЗА ПО ПУБЛИЧНОМУ UUID ---
+    fun findByUuid(uuid: UUID): Optional<TaxiOrder>
+    // -----------------------------------------------------
 
     fun findAllByClient(client: Client): List<TaxiOrder>
 
@@ -22,7 +27,7 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     fun countActiveOrdersByClient(
         @Param("clientId") clientId: Long, 
         @Param("statuses") statuses: List<OrderStatus>
-    ): Int // <--- ТУТ МАЄ БУТИ ПРОСТО Int
+    ): Int
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.createdAt DESC")
     fun findActiveOrders(statuses: List<OrderStatus> = listOf(
@@ -35,11 +40,8 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'SCHEDULED' AND o.driver IS NULL ORDER BY o.scheduledAt ASC")
     fun findAllScheduledOrders(): List<TaxiOrder>
 
-    // --- НОВИЙ МЕТОД ДЛЯ ЕФІРУ ---
-    // Вибирає REQUESTED або SCHEDULED, але тільки ті, де немає водія
     @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'REQUESTED' OR (o.status = 'SCHEDULED' AND o.driver IS NULL)")
     fun findAllAvailableForEther(): List<TaxiOrder>
-    // ----------------------------
 
     fun findByDriverAndStatusIn(driver: Driver, statuses: List<OrderStatus>): TaxiOrder?
 
@@ -68,7 +70,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByStatusAndScheduledAtBefore(status: OrderStatus, time: LocalDateTime): List<TaxiOrder>
 
-    // Підрахунок кількості активних замовлень конкретного клієнта
     fun countByClientIdAndStatusIn(clientId: Long, statuses: List<OrderStatus>): Int
 
     @Modifying
@@ -84,8 +85,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         ORDER BY count DESC
     """)
     fun getCancellationStats(): List<CancellationStatProjection>
-    
-
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'ARRIVED', 'IN_PROGRESS')")
     fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>

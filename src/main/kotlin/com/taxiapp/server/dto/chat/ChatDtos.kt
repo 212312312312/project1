@@ -4,7 +4,7 @@ import java.time.LocalDateTime
 
 data class ChatMessageDto(
     val id: Long?,
-    val orderId: Long,
+    val orderId: String, // <-- ИЗМЕНИЛИ С Long НА String
     val senderRole: String,
     val senderId: Long,
     val content: String,

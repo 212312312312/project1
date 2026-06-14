@@ -8,6 +8,7 @@ import com.taxiapp.server.model.services.TaxiServiceEntity
 import jakarta.persistence.*
 import org.hibernate.annotations.CreationTimestamp
 import java.time.LocalDateTime
+import java.util.UUID // <-- ДОБАВИЛИ ИМПОРТ
 
 @Entity
 @Table(name = "taxi_orders")
@@ -15,6 +16,11 @@ class TaxiOrder(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long? = null,
+
+    // --- НОВОЕ ПОЛЕ ДЛЯ ПУБЛИЧНОГО API ---
+    @Column(name = "uuid", unique = true, nullable = false, updatable = false)
+    val uuid: UUID = UUID.randomUUID(),
+    // -------------------------------------
 
     @Column(name = "scheduled_at")
     var scheduledAt: LocalDateTime? = null,
@@ -36,7 +42,7 @@ class TaxiOrder(
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", nullable = false)
-    var client: Client, // <-- ИСПРАВЛЕНО: убрали знаки вопроса и = null
+    var client: Client, 
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "driver_id")

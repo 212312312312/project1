@@ -6,7 +6,7 @@ import com.taxiapp.server.model.order.TaxiOrder
 import java.time.LocalDateTime
 
 data class TaxiOrderDto(
-    val id: Long,
+    val id: String,
     val client: OrderClientDto,
     val driver: OrderDriverDto?,
     val status: OrderStatus,
@@ -47,13 +47,13 @@ data class TaxiOrderDto(
 
     val fromSector: String? = null,
     val toSector: String? = null,
+    val isDriverConfirmed: Boolean,
 
-    // --- НОВЕ ПОЛЕ ---
-    // Передаємо статус підтвердження на клієнт (Web/Android)
-    val isDriverConfirmed: Boolean
+    // --- ПРИНИМАЕМ ПАРАМЕТР В ПЕРВИЧНЫЙ КОНСТРУКТОР ДЛЯ ПОДДЕРЖКИ .copy() ---
+    val activityBonus: Int
 ) {
     constructor(order: TaxiOrder) : this(
-        id = order.id ?: 0L,
+        id = order.uuid.toString(),
         client = OrderClientDto(order.client),
         driver = order.driver?.let { OrderDriverDto(it) },
         status = order.status,
@@ -134,9 +134,9 @@ data class TaxiOrderDto(
 
         toSector = order.destinationSector?.name,
         fromSector = order.originSector?.name,
+        isDriverConfirmed = order.isDriverConfirmed ?: false,
 
-        // --- Ініціалізація нового поля ---
-        // Якщо в базі null -> вважаємо false
-        isDriverConfirmed = order.isDriverConfirmed ?: false
+        // По умолчанию для всех остальных вызовов (эфир, активные) отдаем 0, чтобы не грузить сервер
+        activityBonus = 0
     )
 }

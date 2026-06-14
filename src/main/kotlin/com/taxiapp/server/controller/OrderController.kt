@@ -18,8 +18,15 @@ import org.springframework.http.ResponseEntity
 @RequestMapping("/api/v1/orders")
 class OrderController(
     private val orderService: OrderService,
-    private val userRepository: UserRepository // <-- ДОДАНО: Щоб знайти користувача
+    private val userRepository: UserRepository,
+    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository// <-- ДОДАНО: Щоб знайти користувача
 ) {
+
+    private fun getInternalId(uuid: java.util.UUID): Long {
+        return taxiOrderRepository.findByUuid(uuid)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+            .id ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не має внутрішнього ID")
+    }
 
     @PostMapping
     fun createOrder(
@@ -59,43 +66,45 @@ class OrderController(
         return orderService.getClientHistory(user)
     }
 
-    @GetMapping("/{id}")
-    fun getOrder(@PathVariable id: Long): TaxiOrderDto {
-        return orderService.getOrderById(id)
+   @GetMapping("/{id}")
+    fun getOrder(@PathVariable id: java.util.UUID): TaxiOrderDto { // <-- ТИП java.util.UUID
+        val internalId = getInternalId(id)
+        return orderService.getOrderById(internalId)
     }
 
     // Смена типа оплаты
     @PutMapping("/{id}/payment-method")
     fun updatePaymentMethod(
-        @PathVariable("id") orderId: Long,
+        @PathVariable("id") orderUuid: java.util.UUID, // <-- ТИП java.util.UUID
         @RequestParam("method") method: String
     ): ResponseEntity<MessageResponse> {
-        // Здесь желательно добавить проверку, что запрос делает именно владелец заказа
-        orderService.updatePaymentMethod(orderId, method)
+        val internalId = getInternalId(orderUuid)
+        orderService.updatePaymentMethod(internalId, method)
         return ResponseEntity.ok(MessageResponse("Спосіб оплати успішно змінено"))
     }
 
     // Изменение цены (добавление надбавки)
     @PutMapping("/{id}/price")
     fun updateOrderPrice(
-        @PathVariable("id") orderId: Long,
+        @PathVariable("id") orderUuid: java.util.UUID, // <-- ТИП java.util.UUID
         @RequestParam("addedValue") addedValue: Double
     ): ResponseEntity<MessageResponse> {
-        orderService.updatePrice(orderId, addedValue)
+        val internalId = getInternalId(orderUuid)
+        orderService.updatePrice(internalId, addedValue)
         return ResponseEntity.ok(MessageResponse("Ціну успішно оновлено"))
     }
 
     @PostMapping("/{id}/cancel")
     fun cancelOrder(
         authentication: Authentication,
-        @PathVariable id: Long,
-        @RequestParam(required = false) reasonText: String? // ДОБАВЛЕНО: принимаем причину как параметр запроса
+        @PathVariable id: java.util.UUID, // <-- ТИП java.util.UUID
+        @RequestParam(required = false) reasonText: String? 
     ): TaxiOrderDto {
         val phone = authentication.name
         val user = userRepository.findByUserLogin(phone).orElse(null)
             ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED)
             
-        // Передаем reasonText в сервис (мы его там уже подготовили на предыдущем шаге)
-        return orderService.cancelOrder(user, id, reasonText)
+        val internalId = getInternalId(id)
+        return orderService.cancelOrder(user, internalId, reasonText)
     }
 }

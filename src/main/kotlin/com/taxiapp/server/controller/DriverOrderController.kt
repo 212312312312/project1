@@ -15,65 +15,77 @@ import java.security.Principal
 @RequestMapping("/api/v1/driver/orders")
 class DriverOrderController(
     private val orderService: OrderService,
-    private val driverRepository: DriverRepository 
+    private val driverRepository: DriverRepository,
+    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository // <-- ДОБАВИЛИ РЕПОЗИТОРИЙ
 ) {
 
+    // Вспомогательный метод для получения внутреннего Long ID
+    private fun getInternalId(uuid: java.util.UUID): Long {
+        return taxiOrderRepository.findByUuid(uuid)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+            .id ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не має внутрішнього ID")
+    }
+
     @PostMapping("/{id}/accept")
-    fun acceptOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun acceptOrder(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.acceptOrder(driver, id)
+        val internalId = getInternalId(id)
+        val order = orderService.acceptOrder(driver, internalId)
         return ResponseEntity.ok(order)
     }
 
-    // --- ДОДАНО: Метод для відхилення (Пропустити) ---
     @PostMapping("/{id}/reject")
-    fun rejectOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<Void> {
+    fun rejectOrder(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<Void> {
         val driver = getDriverFromPrincipal(principal)
-        orderService.rejectOffer(driver, id)
+        val internalId = getInternalId(id)
+        orderService.rejectOffer(driver, internalId)
         return ResponseEntity.ok().build()
     }
-    // -------------------------------------------------
 
     @PostMapping("/{id}/arrive")
-    fun driverArrived(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun driverArrived(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.driverArrived(driver, id)
+        val internalId = getInternalId(id)
+        val order = orderService.driverArrived(driver, internalId)
         return ResponseEntity.ok(order)
     }
 
     @PostMapping("/{id}/start")
-    fun startTrip(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun startTrip(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.startTrip(driver, id)
+        val internalId = getInternalId(id)
+        val order = orderService.startTrip(driver, internalId)
         return ResponseEntity.ok(order)
     }
 
     @PostMapping("/{id}/complete")
-    fun completeOrder(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun completeOrder(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.completeOrder(driver, id)
+        val internalId = getInternalId(id)
+        val order = orderService.completeOrder(driver, internalId)
         return ResponseEntity.ok(order)
     }
 
     @PostMapping("/{id}/confirm")
     fun confirmScheduledOrder(
-        @PathVariable id: Long,
+        @PathVariable id: java.util.UUID,
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.confirmScheduledOrder(driver, id)
+        val internalId = getInternalId(id)
+        val order = orderService.confirmScheduledOrder(driver, internalId)
         return ResponseEntity.ok(order)
     }
 
     @PostMapping("/{id}/cancel")
     fun cancelOrder(
-        @PathVariable id: Long, 
-        @RequestParam(required = false) reasonId: Long?, // <-- Новий параметр
+        @PathVariable id: java.util.UUID, 
+        @RequestParam(required = false) reasonId: Long?, 
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        // Передаем reasonId в сервис
-        val order = orderService.driverCancelOrder(driver, id, reasonId)
+        val internalId = getInternalId(id)
+        val order = orderService.driverCancelOrder(driver, internalId, reasonId)
         return ResponseEntity.ok(order)
     }
 

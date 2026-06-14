@@ -49,7 +49,9 @@ class OrderService(
     private val cancellationReasonRepository: CancellationReasonRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
     private val appSettingRepository: AppSettingRepository,
-    private val liqPayService: LiqPayService
+    private val liqPayService: LiqPayService,
+    private val activityHistoryRepository: DriverActivityHistoryRepository
+
 ) {
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
@@ -524,10 +526,10 @@ class OrderService(
     // 🧠 ОПТИМИЗИРОВАННЫЙ broadcastOrderChange ДЛЯ ЧИСТЫХ СОКЕТОВ
     // =================================================================================
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
-        val orderId = order.id ?: throw IllegalStateException("Cannot broadcast order change without a valid Order ID. Save the order first!")
+        val orderUuidStr = order.uuid.toString() // <-- ДОБАВИЛИ СТРОКОВЫЙ UUID ДЛЯ СОКЕТОВ
         val orderDto = TaxiOrderDto(order)
         
-        val message = OrderSocketMessage(action, orderId, if (action == "REMOVE") null else orderDto)
+        val message = OrderSocketMessage(action, orderUuidStr, if (action == "REMOVE") null else orderDto)
 
         // 1. Диспетчерская (Админы) видят всё
         sendSocketAfterCommit("/topic/admin/orders", message)
@@ -542,7 +544,7 @@ class OrderService(
         } else {
             // Если заказ перестает быть REQUESTED (его приняли, отменили диспетчером или скрыли)
             // отправляем команду REMOVE в общий эфир водителей, чтобы он мгновенно пропал с экранов остальных
-            sendSocketAfterCommit("/topic/drivers/ether", OrderSocketMessage("REMOVE", orderId, null))
+            sendSocketAfterCommit("/topic/drivers/ether", OrderSocketMessage("REMOVE", orderUuidStr, null))
             
             // Отправляем точечное сокет-сообщение только тому водителю, кому он назначен или предложен
             val targetDriver = order.driver ?: order.offeredDriver
@@ -698,10 +700,26 @@ class OrderService(
     }
 
     fun findHistoryByDriver(driver: Driver): List<TaxiOrderDto> {
-        return orderRepository.findAllByDriverId(driver.id!!)
+        // 1. Извлекаем чистый список выполненных/отмененных заказов водителя
+        val orders = orderRepository.findAllByDriverId(driver.id!!)
             .filter { it.status == OrderStatus.COMPLETED || it.status == OrderStatus.CANCELLED }
             .sortedByDescending { it.id }
-            .map { TaxiOrderDto(it) }
+
+        if (orders.isEmpty()) return emptyList()
+
+        // 2. Собираем пачку ID заказов, у которых id не null
+        val orderIds = orders.mapNotNull { it.id }
+
+        // 3. СТРЕЕМИТЕЛЬНЫЙ ХИТ: Делаем ОДИН запрос к логам и превращаем результат в ассоциативную Map [orderId -> Лог]
+        val activityMap = activityHistoryRepository.findAllByDriverIdAndOrderIdIn(driver.id!!, orderIds)
+            .filter { it.orderId != null }
+            .associateBy { it.orderId!! }
+
+        // 4. Безопасно сопоставляем данные в памяти сервера со скоростью O(1)
+        return orders.map { order ->
+            val realPointsChange = activityMap[order.id]?.pointsChange ?: 0
+            TaxiOrderDto(order).copy(activityBonus = realPointsChange)
+        }
     }
 
     fun getOrderById(id: Long): TaxiOrderDto {

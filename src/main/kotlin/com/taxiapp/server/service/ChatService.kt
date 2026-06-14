@@ -18,7 +18,7 @@ class ChatService(
 
     fun getOrderMessages(orderId: Long): List<ChatMessageDto> {
         return chatMessageRepository.findByOrderIdOrderByCreatedAtAsc(orderId).map {
-            ChatMessageDto(it.id, it.order.id!!, it.senderRole, it.senderId, it.content, it.createdAt)
+            ChatMessageDto(it.id, it.order.uuid.toString(), it.senderRole, it.senderId, it.content, it.createdAt)
         }
     }
     
@@ -46,7 +46,7 @@ class ChatService(
 
         val dto = ChatMessageDto(
             id = message.id,
-            orderId = order.id!!,
+            orderId = order.uuid.toString(),
             senderRole = message.senderRole,
             senderId = message.senderId,
             content = message.content,
