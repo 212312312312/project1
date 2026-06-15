@@ -350,6 +350,31 @@ class OrderService(
         // 1. СНАЧАЛА сохраняем заказ в базу данных, чтобы получить сгенерированный ID!
         var savedOrder = orderRepository.save(newOrder)
 
+        if (savedOrder.paymentMethod == "CARD") {
+            val token = client.cardToken
+            if (token.isNullOrEmpty()) {
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "У вас немає прив'язаної картки для оплати")
+            }
+            // Формируем уникальный неизменяемый ID платежа для этого заказа в LiqPay
+            val paymentOrderId = "ride_${savedOrder.id}"
+            
+            val isHoldSuccess = liqPayService.holdWithToken(
+                orderId = paymentOrderId,
+                amount = finalPrice,
+                cardToken = token,
+                description = "Резервування коштів за поїздку UNIT #${savedOrder.id}"
+            )
+            
+            if (!isHoldSuccess) {
+                // Если денег нет или банк отклонил — выбиваем ошибку СРАЗУ, поиск водителя не начнется
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Недостатньо коштів на картці або помилка банку")
+            }
+            
+            // Фиксируем сумму холда в БД
+            savedOrder.authorizedAmount = finalPrice
+            savedOrder = orderRepository.save(savedOrder)
+        }
+
         // --- Збереження запланованого замовлення ---
         if (initialStatus == OrderStatus.SCHEDULED) {
             logger.info("Order scheduled for ${savedOrder.scheduledAt}")
@@ -736,6 +761,46 @@ class OrderService(
     fun cancelOrder(user: User, orderId: Long, reasonText: String? = null): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
+        // --- ЛОГИКА РАЗМОРОЗКИ ИЛИ СНЯТИЯ МИНИМАЛКИ ПРИ ОТМЕНЕ КЛИЕНТОМ ---
+        if (order.paymentMethod == "CARD" && order.authorizedAmount > 0.0) {
+            val paymentOrderId = "ride_${order.id}"
+            val acceptedTime = order.acceptedAt
+            val now = LocalDateTime.now()
+
+            // Если водителя еще нет ИЛИ с момента принятия заказа прошло меньше 3-х минут
+            if (acceptedTime == null || java.time.temporal.ChronoUnit.MINUTES.between(acceptedTime, now) < 3) {
+                logger.info("Клиент отменил вовремя или машина не найдена. Полный возврат холда.")
+                liqPayService.voidFunds(paymentOrderId)
+            } else {
+                // Прошло 3 минуты и более — удерживаем стоимость подачи (минималку из БД)
+                val penaltyAmount = order.tariff.basePrice
+                logger.info("Прошло больше 3 минут. Списываем стоимость подачи: $penaltyAmount UAH")
+                
+                liqPayService.captureFunds(paymentOrderId, penaltyAmount)
+
+                // Выплачиваем эту подачу на баланс водителю за вычетом комиссии системы
+                val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
+                val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0
+                val commissionAmount = penaltyAmount * (commissionPercent / 100.0)
+                val driverPayout = penaltyAmount - commissionAmount
+
+                order.driver?.let { driver ->
+                    driver.balance += driverPayout
+                    driverRepository.save(driver)
+
+                    // Фиксируем транзакцию компенсации в кошельке водителя
+                    val compTransaction = com.taxiapp.server.model.finance.WalletTransaction(
+                        driver = driver,
+                        amount = driverPayout,
+                        operationType = com.taxiapp.server.model.enums.TransactionType.DEPOSIT,
+                        orderId = order.id,
+                        description = "Компенсація за скасування замовлення після 3 хв подачі (#${order.id})"
+                    )
+                    walletTransactionRepository.save(compTransaction)
+                }
+            }
+        }
         
         val assignedDriver = order.driver
         if (assignedDriver != null && (order.status == OrderStatus.ACCEPTED || order.status == OrderStatus.DRIVER_ARRIVED)) {
@@ -846,6 +911,7 @@ class OrderService(
         // НАЗНАЧАЕМ ВОДИТЕЛЯ
         order.driver = driver
         order.offeredDriver = null
+        order.acceptedAt = LocalDateTime.now()
         
         // Если это запланированный заказ -> статус НЕ меняем (остается SCHEDULED)
         // Если это обычный заказ -> ставим ACCEPTED
@@ -982,50 +1048,72 @@ class OrderService(
         if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
 
         // =======================================================
-        // 💳 ФИНАНСОВЫЙ БЛОК: СПИСАНИЕ С КАРТЫ КЛИЕНТА
+        // 💳 ФИНАНСОВЫЙ БЛОК: ЗАКРЫТИЕ ХОЛДА И ДОСПИСАНИЕ ПРОСТОЯ
         // =======================================================
         if (order.paymentMethod == "CARD") {
-            val token = order.client.cardToken
-            
-            if (token.isNullOrEmpty()) {
-                // Токена нет (например, удалил карту). Переключаем на наличные.
-                order.paymentMethod = "CASH"
-                orderRepository.save(order)
-                broadcastOrderChange(order, "UPDATE")
-                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "У клієнта не прив'язана карта. Спосіб оплати змінено на ГОТІВКУ.")
+            val paymentOrderId = "ride_${order.id}"
+
+            // СЦЕНАРИЙ 1: Финальная цена осталась прежней или уменьшилась (простоя не было)
+            if (order.price <= order.authorizedAmount) {
+                // Делаем частичный или полный Capture на точную финальную цену поездки
+                val isSuccess = liqPayService.captureFunds(paymentOrderId, order.price)
+                
+                if (!isSuccess) {
+                    // Используем твой крутой паттерн: при ошибке переключаем на CASH, чтобы закрыть вручную
+                    order.paymentMethod = "CASH"
+                    orderRepository.save(order)
+                    broadcastOrderChange(order, "UPDATE")
+                    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка завершения платежу. Спосіб змінено на ГОТІВКУ.")
+                }
+                logger.info(">>> SUCCESS: Capture processed for exact amount: ${order.price}")
+            } 
+            // СЦЕНАРИЙ 2: Цена выросла из-за платного ожидания/простоя (order.price > order.authorizedAmount)
+            else {
+                // 1. Сначала полностью списываем всю первоначально заблокированную сумму (холд)
+                val isCaptureSuccess = liqPayService.captureFunds(paymentOrderId, order.authorizedAmount)
+                
+                if (!isCaptureSuccess) {
+                    order.paymentMethod = "CASH"
+                    orderRepository.save(order)
+                    broadcastOrderChange(order, "UPDATE")
+                    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка списання базової суми холда. Переведено на ГОТІВКУ.")
+                }
+
+                // 2. Рассчитываем дельту простоя и досписываем её асинхронно через paytoken
+                val delta = order.price - order.authorizedAmount
+                val token = order.client.cardToken
+
+                if (!token.isNullOrEmpty()) {
+                    val deltaOrderId = "ride_delta_${order.id}_${System.currentTimeMillis()}"
+                    val isDeltaSuccess = liqPayService.payWithToken(
+                        orderId = deltaOrderId,
+                        amount = delta,
+                        cardToken = token,
+                        description = "Доплата за простій замовлення #${order.id}"
+                    )
+                    
+                    if (!isDeltaSuccess) {
+                        // Если на дельту денег не хватило, уведомляем клиента и просим водителя взять остаток наличкой
+                        notificationService.sendOrderStatusToClient(
+                            token = order.client.fcmToken,
+                            orderId = order.id!!,
+                            status = order.status.name,
+                            title = "Помилка оплати простою",
+                            body = "Не вдалося списати кошти за простій з картки. Будь ласка, доплатіть водію готівкою: $delta UAH"
+                        )
+                        
+                        // Выбрасываем эксепшен Спринга: транзакция не откатится, метод оплаты переключится на CASH,
+                        // водитель увидит точную сумму дельты, возьмет её в руки и нажмет завершить еще раз!
+                        order.paymentMethod = "CASH"
+                        order.price = delta // Меняем цену на остаток дельты для корректного второго круга
+                        orderRepository.save(order)
+                        broadcastOrderChange(order, "UPDATE")
+                        
+                        throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Основна сума списана, але на карті немає грошей за простій. Візьміть з клієнта готівкою: $delta UAH та завершіть ще раз.")
+                    }
+                    logger.info(">>> SUCCESS: Hold captured and excess delta ($delta UAH) charged successfully!")
+                }
             }
-
-            val paymentOrderId = "ride_${order.id}_${System.currentTimeMillis()}"
-            
-            // Пытаемся списать деньги
-            val isSuccess = liqPayService.payWithToken(
-                orderId = paymentOrderId,
-                amount = order.price,
-                cardToken = token,
-                description = "Оплата поїздки #${order.id}"
-            )
-
-            if (!isSuccess) {
-                // ОШИБКА ОПЛАТЫ! Меняем метод на CASH и сохраняем
-                order.paymentMethod = "CASH"
-                orderRepository.save(order)
-                broadcastOrderChange(order, "UPDATE")
-
-                // Уведомляем клиента
-                notificationService.sendOrderStatusToClient(
-                    token = order.client.fcmToken,
-                    orderId = order.id!!,
-                    status = order.status.name,
-                    title = "Помилка оплати карткою",
-                    body = "Не вдалося списати кошти. Будь ласка, розрахуйтесь готівкою."
-                )
-
-                // Прерываем завершение заказа, чтобы водитель увидел ошибку и взял наличку!
-                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка оплати карткою. Спосіб змінено на ГОТІВКУ. Візьміть гроші та завершіть ще раз.")
-            }
-            
-            // Если код дошел сюда — списание с карты прошло успешно!
-            logger.info(">>> SUCCESS: Card charged for order ${order.id}")
         }
         // =======================================================
 

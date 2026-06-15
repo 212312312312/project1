@@ -246,6 +246,126 @@ class LiqPayService(
         return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
     }
 
+    // 1. Двухстадийный платёж: Блокировка (холд) средств на карте клиента
+    fun holdWithToken(orderId: String, amount: Double, cardToken: String, description: String): Boolean {
+        logger.info(">>> HOLDING FUNDS: Order $orderId, Amount: $amount")
+        
+        val params = mapOf(
+            "action" to "auth", // Важно: auth означает холдирование средств
+            "amount" to amount,
+            "currency" to "UAH",
+            "description" to description,
+            "order_id" to orderId,
+            "version" to "3",
+            "public_key" to publicKey,
+            "card_token" to cardToken
+        )
+
+        val json = objectMapper.writeValueAsString(params)
+        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+        val signature = createSignature(data)
+
+        val url = "https://www.liqpay.ua/api/request"
+        val requestBody = "data=$data&signature=$signature"
+
+        return try {
+            val headers = HttpHeaders()
+            headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
+            val entity = HttpEntity(requestBody, headers)
+
+            val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
+            val responseBody = responseEntity.body
+
+            if (responseBody != null) {
+                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+                val status = responseMap["status"]?.toString()
+                logger.info(">>> LIQPAY HOLD RESPONSE: status=$status")
+                status == "success" || status == "sandbox" || status == "auth_wait" || status == "wait_accept"
+            } else false
+        } catch (e: Exception) {
+            logger.error(">>> Error during holdWithToken API call", e)
+            false
+        }
+    }
+
+    // 2. Подтверждение списания (Capture) — полного или частичного
+    fun captureFunds(orderId: String, amount: Double): Boolean {
+        logger.info(">>> CAPTURING FUNDS: Order $orderId, Amount: $amount")
+        
+        val params = mapOf(
+            "action" to "capture", // Подтверждение заблокированной суммы
+            "amount" to amount,
+            "currency" to "UAH",
+            "order_id" to orderId,
+            "version" to "3",
+            "public_key" to publicKey
+        )
+
+        val json = objectMapper.writeValueAsString(params)
+        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+        val signature = createSignature(data)
+
+        val url = "https://www.liqpay.ua/api/request"
+        val requestBody = "data=$data&signature=$signature"
+
+        return try {
+            val headers = HttpHeaders()
+            headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
+            val entity = HttpEntity(requestBody, headers)
+
+            val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
+            val responseBody = responseEntity.body
+
+            if (responseBody != null) {
+                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+                val status = responseMap["status"]?.toString()
+                logger.info(">>> LIQPAY CAPTURE RESPONSE: status=$status")
+                status == "success" || status == "sandbox"
+            } else false
+        } catch (e: Exception) {
+            logger.error(">>> Error during captureFunds API call", e)
+            false
+        }
+    }
+
+    // 3. Отмена холдирования (Разморозка всей суммы)
+    fun voidFunds(orderId: String): Boolean {
+        logger.info(">>> VOIDING/RELEASING FUNDS: Order $orderId")
+        
+        val params = mapOf(
+            "action" to "void", // Полная отмена блокировки средств
+            "order_id" to orderId,
+            "version" to "3",
+            "public_key" to publicKey
+        )
+
+        val json = objectMapper.writeValueAsString(params)
+        val data = Base64.getEncoder().encodeToString(json.toByteArray(StandardCharsets.UTF_8))
+        val signature = createSignature(data)
+
+        val url = "https://www.liqpay.ua/api/request"
+        val requestBody = "data=$data&signature=$signature"
+
+        return try {
+            val headers = HttpHeaders()
+            headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
+            val entity = HttpEntity(requestBody, headers)
+
+            val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
+            val responseBody = responseEntity.body
+
+            if (responseBody != null) {
+                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+                val status = responseMap["status"]?.toString()
+                logger.info(">>> LIQPAY VOID RESPONSE: status=$status")
+                status == "success" || status == "sandbox" || status == "reversed"
+            } else false
+        } catch (e: Exception) {
+            logger.error(">>> Error during voidFunds API call", e)
+            false
+        }
+    }
+
     // Проверка статуса (Server-to-Server)
     fun getStatus(orderId: String): String {
         val params = mapOf(
