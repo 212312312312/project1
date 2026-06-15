@@ -138,6 +138,13 @@ class TaxiOrder(
     @Column(name = "commission_amount", nullable = false, columnDefinition = "double precision default 0.0")
     var commissionAmount: Double = 0.0,
 
+    // СРАЗУ ПОСЛЕ НЕГО ДОБАВЛЯЕШЬ ЭТИ ДВА ПОЛЯ:
+    @Column(name = "bank_commission_amount", nullable = false, columnDefinition = "double precision default 0.0")
+    var bankCommissionAmount: Double = 0.0,
+
+    @Column(name = "payout_amount", nullable = false, columnDefinition = "double precision default 0.0")
+    var payoutAmount: Double = 0.0,
+
     @Column(nullable = false)
     var isRatedByClient: Boolean = false,
 

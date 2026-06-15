@@ -1073,6 +1073,11 @@ class OrderService(
 
         order.commissionAmount = commissionAmount
 
+        if (order.paymentMethod == "CARD") {
+            order.bankCommissionAmount = order.price * 0.02 // Тестовые 2% комиссии LiqPay
+            order.payoutAmount = order.price - commissionAmount - order.bankCommissionAmount // Чистый остаток для теста вывода на карту
+        }
+
         // Транзакция комиссии
         val transaction = com.taxiapp.server.model.finance.WalletTransaction(
             driver = driver,

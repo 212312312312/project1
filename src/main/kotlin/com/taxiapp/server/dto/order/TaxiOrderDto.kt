@@ -51,7 +51,11 @@ data class TaxiOrderDto(
     val isDriverConfirmed: Boolean,
 
     // --- ПРИНИМАЕМ ПАРАМЕТР В ПЕРВИЧНЫЙ КОНСТРУКТОР ДЛЯ ПОДДЕРЖКИ .copy() ---
-    val activityBonus: Int
+    val activityBonus: Int,
+    val serviceCommission: Double?,
+    val amountToBalance: Double?,
+    val bankCommission: Double?,
+    val transferToCard: Double?
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.uuid.toString(),
@@ -139,6 +143,10 @@ data class TaxiOrderDto(
         isDriverConfirmed = order.isDriverConfirmed ?: false,
 
         // По умолчанию для всех остальных вызовов (эфир, активные) отдаем 0, чтобы не грузить сервер
-        activityBonus = 0
+        activityBonus = 0,
+        serviceCommission = if (order.status == OrderStatus.COMPLETED && order.commissionAmount > 0) order.commissionAmount else null,
+        amountToBalance = if (order.status == OrderStatus.COMPLETED && order.paymentMethod == "CARD") order.price else null,
+        bankCommission = if (order.status == OrderStatus.COMPLETED && order.bankCommissionAmount > 0) order.bankCommissionAmount else null,
+        transferToCard = if (order.status == OrderStatus.COMPLETED && order.payoutAmount > 0) order.payoutAmount else null
     )
 }
