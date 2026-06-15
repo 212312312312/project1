@@ -8,6 +8,7 @@ import com.taxiapp.server.repository.ClientPromoProgressRepository
 import com.taxiapp.server.repository.ClientRepository
 import com.taxiapp.server.repository.SmsVerificationCodeRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
+import java.util.UUID
 import com.taxiapp.server.repository.UserRepository
 import com.taxiapp.server.repository.RefreshTokenRepository 
 import com.taxiapp.server.repository.OrderRatingRepository // <-- ИМПОРТ ДОБАВЛЕН
@@ -65,23 +66,21 @@ class ClientAppController(
         return ResponseEntity.status(HttpStatus.CREATED).body(orderDto)
     }
 
-    // ОТРИМАННЯ ЗАМОВЛЕННЯ
-    @GetMapping("/orders/{id}")
-    fun getOrder(
-        @PathVariable id: Long, 
-        principal: Principal
-    ): ResponseEntity<TaxiOrderDto> {
-        val userLogin = principal.name
-        var user = userRepository.findByUserLogin(userLogin).orElse(null)
-        if (user == null) user = userRepository.findByUserPhone(userLogin).orElseThrow()
+    // ОТРИМАННЯ ЗАМОВЛЕННЯ (ИСПРАВЛЕНЫ ПУТИ ПОД КЛИЕНТА)
+    @GetMapping(*["/{id}", "/orders/{id}"]) // <-- Теперь сервер поймет оба варианта запроса от приложения!
+    fun getOrder(@PathVariable id: String, principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val order = try {
+            // Пробуем найти по UUID (если пришла длинная строка)
+            orderRepository.findByUuid(UUID.fromString(id))
+                .orElseGet { 
+                    // Если не нашли, пробуем найти по Long ID
+                    orderRepository.findById(id.toLongOrNull() ?: 0L).orElse(null) 
+                }
+        } catch (e: IllegalArgumentException) {
+            // Если это не UUID, ищем только по Long
+            orderRepository.findById(id.toLongOrNull() ?: 0L).orElse(null)
+        } ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено")
 
-        val order = orderRepository.findById(id)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
-        
-        if (order.client.id != user.id) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це чуже замовлення")
-        }
-        
         return ResponseEntity.ok(TaxiOrderDto(order))
     }
 
@@ -127,18 +126,34 @@ class ClientAppController(
         return ResponseEntity.ok(MessageResponse("Акаунт успішно видалено"))
     }
     
+   // СКАСУВАННЯ ЗАМОВЛЕННЯ (ОБНОВЛЕННЫЙ МЕТОД ПОД UUID)
     @PostMapping("/orders/{id}/cancel")
     fun cancelOrder(
-        @PathVariable id: Long,
-        @RequestParam(required = false) reasonText: String?, // НОВЕ
+        @PathVariable id: String, // <-- ИСПРАВЛЕНО: Теперь принимаем String (UUID или Long)
+        @RequestParam(required = false) reasonText: String?,
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
         val userLogin = principal.name
         var user = userRepository.findByUserLogin(userLogin).orElse(null)
         if (user == null) user = userRepository.findByUserPhone(userLogin).orElseThrow()
 
-        // Передаємо reasonText в сервіс
-        val orderDto = orderService.cancelOrder(user, id, reasonText)
+        // Безопасно ищем заказ сначала по UUID, а если не вышло (например, старый заказ) - по Long
+        val order = try {
+            orderRepository.findByUuid(UUID.fromString(id))
+                .orElseGet { 
+                    orderRepository.findById(id.toLongOrNull() ?: 0L).orElse(null) 
+                }
+        } catch (e: IllegalArgumentException) {
+            orderRepository.findById(id.toLongOrNull() ?: 0L).orElse(null)
+        } ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено")
+
+        // Проверяем, что этот заказ принадлежит именно этому клиенту
+        if (order.client.id != user.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Вы не имеете доступа к этому заказу")
+        }
+
+        // Передаем внутренний числовой order.id (который точно Long) в наш сервис
+        val orderDto = orderService.cancelOrder(user, order.id!!, reasonText)
         return ResponseEntity.ok(orderDto)
     }
 
@@ -148,11 +163,10 @@ class ClientAppController(
         val userDetails = authentication.principal as UserDetails
         
         val client = clientRepository.findByUserPhone(userDetails.username)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Клієнта не знайдено") }
 
-        val orders = orderRepository.findAllByClientOrderByCreatedAtDesc(client)
-        
-        val dtos = orders.map { TaxiOrderDto(it) }
+        // Вызываем правильный метод сервиса, который ищет по числовому ID
+        val dtos = orderService.getClientHistory(client)
         
         return ResponseEntity.ok(dtos)
     }

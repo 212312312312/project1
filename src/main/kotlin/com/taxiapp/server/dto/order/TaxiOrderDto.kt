@@ -7,6 +7,7 @@ import java.time.LocalDateTime
 
 data class TaxiOrderDto(
     val id: String,
+    val idLong: Long,
     val client: OrderClientDto,
     val driver: OrderDriverDto?,
     val status: OrderStatus,
@@ -54,6 +55,7 @@ data class TaxiOrderDto(
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.uuid.toString(),
+        idLong = order.id ?: 0L,
         client = OrderClientDto(order.client),
         driver = order.driver?.let { OrderDriverDto(it) },
         status = order.status,
