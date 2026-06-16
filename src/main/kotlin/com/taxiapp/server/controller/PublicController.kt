@@ -9,6 +9,8 @@ import com.taxiapp.server.service.SettingsService
 import com.taxiapp.server.service.TariffAdminService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import com.taxiapp.server.repository.ClientRepository // 👈 Добавляем репозиторий клиентов
+import java.security.Principal
 
 @RestController
 @RequestMapping("/api/v1/public")
@@ -16,7 +18,8 @@ class PublicController(
     private val tariffAdminService: TariffAdminService,
     private val orderService: OrderService,
     private val settingsService: SettingsService,
-    private val sectorService: SectorService // <-- ДОБАВЛЕН СЕРВИС
+    private val sectorService: SectorService,
+    private val clientRepository: ClientRepository // 👈 КЛАДЕМ СЮДА РЕПОЗИТОРИЙ
 ) {
 
     @GetMapping("/tariffs")
@@ -32,12 +35,22 @@ class PublicController(
     // ---------------------------------------------
 
     @PostMapping("/calculate-price")
-    fun calculatePrice(@RequestBody request: CalculatePriceRequest): List<CarTariffDto> {
-        // --- ОБНОВЛЕНО: Передаем request.waypointsCount в сервис ---
+    fun calculatePrice(
+        @RequestBody request: CalculatePriceRequest,
+        principal: Principal? // 👈 Спринг автоматически закинет сюда данные авторизации клиента
+    ): List<CarTariffDto> {
+        
+        // Находим клиента в базе по номеру телефона из токена, если он авторизован
+        val client = principal?.name?.let { phoneNumber ->
+            clientRepository.findByUserPhone(phoneNumber).orElse(null)
+        }
+
+        // Передаем найденного клиента четвертым параметром в сервис
         return orderService.calculatePricesForRoute(
             request.googleRoutePolyline, 
             request.distanceMeters, 
-            request.waypointsCount
+            request.waypointsCount,
+            client // 👈 Наша скидочная логика теперь увидит промокоды этого клиента!
         )
     }
 

@@ -17,6 +17,9 @@ data class TaxiOrderDto(
     val completedAt: LocalDateTime?,
     val price: Double,
 
+    val clientPayAmount: Double, // 👈 ДОДАТИ: Скільки реально платить клієнт
+    val companyDiscountCompensation: Double, // 👈 ДОДАТИ: Скільки доплачує компанія за знижку
+
     val startedAt: LocalDateTime? = null,
     val waitingPrice: Double = 0.0,
     val freeWaitingMinutes: Int = 3,
@@ -68,6 +71,14 @@ data class TaxiOrderDto(
         createdAt = order.createdAt,
         completedAt = order.completedAt,
         price = order.price,
+
+        // 👈 ДОДАТИ ЦЕЙ БЛОК РОЗРАХУНКУ:
+        clientPayAmount = if (order.price - order.appliedDiscount < order.tariff.basePrice) {
+            order.tariff.basePrice 
+        } else {
+            order.price - order.appliedDiscount
+        },
+        companyDiscountCompensation = order.appliedDiscount,
 
         startedAt = order.startedAt,
         waitingPrice = order.waitingPrice,

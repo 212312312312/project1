@@ -143,20 +143,59 @@ class OrderService(
         return result
     }
 
-    fun calculatePricesForRoute(polyline: String, totalMeters: Int, waypointsCount: Int = 0): List<CarTariffDto> {
+    fun calculatePricesForRoute(polyline: String, totalMeters: Int, waypointsCount: Int = 0, client: Client? = null): List<CarTariffDto> {
         val tariffs = tariffRepository.findAll().filter { it.isActive }
         return tariffs.map { tariff ->
             
-            // --- ОБНОВЛЕНО: Передаем waypointsCount в функцию расчета цены ---
-            val price = calculateExactTripPrice(
+            // 1. Рассчитываем чистую (грязную) цену по тарифу
+            var price = calculateExactTripPrice(
                 tariffId = tariff.id, 
                 polyline = polyline, 
                 totalDistanceMeters = totalMeters, 
                 serviceIds = emptyList(), 
                 addedValue = 0.0, 
-                waypointsCount = waypointsCount, // <--- НОВЫЙ ПАРАМЕТР
+                waypointsCount = waypointsCount,
                 isDebug = false
             )
+            
+            // 2. 🎁 ДОБАВЛЕНО: Применяем логику скидок, если клиент передан и авторизован
+            if (client != null) {
+                var discountAmount = 0.0
+                var promoCodeApplied = false
+
+                // Проверяем активный промокод клиента
+                val activePromoUsage = promoCodeService.findActiveUsage(client)
+                if (activePromoUsage != null) {
+                    val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
+                    if (!isExpired) {
+                        val percent = activePromoUsage.promoCode.discountPercent
+                        var calcDiscount = price * (percent / 100.0)
+                        val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
+                        if (maxAmount != null && calcDiscount > maxAmount) {
+                            calcDiscount = maxAmount
+                        }
+                        discountAmount = calcDiscount
+                        promoCodeApplied = true
+                    }
+                }
+
+                // Если промокод не применился, проверяем маркетинговые награды за миссии
+                if (!promoCodeApplied) {
+                    val activeReward = promoService.findActiveReward(client)
+                    if (activeReward != null) {
+                        val task = activeReward.promoTask
+                        val percent = task.discountPercent
+                        discountAmount = price * (percent / 100.0)
+                        if (task.maxDiscountAmount != null && discountAmount > task.maxDiscountAmount!!) {
+                            discountAmount = task.maxDiscountAmount!!
+                        }
+                    }
+                }
+
+                // Вычитаем честно заработанную скидку из цены предварительного просмотра
+                price -= discountAmount
+                if (price < tariff.basePrice) price = tariff.basePrice
+            }
             
             CarTariffDto(
                 id = tariff.id,
@@ -164,18 +203,14 @@ class OrderService(
                 basePrice = tariff.basePrice,
                 pricePerKm = tariff.pricePerKm,
                 pricePerKmOutCity = tariff.pricePerKmOutCity,
-                
-                // --- ОБНОВЛЕНО: Добавляем цену за точку в ответ клиенту ---
                 extraWaypointPrice = tariff.extraWaypointPrice, 
-                // -----------------------------------------------------------
-                
                 freeWaitingMinutes = tariff.freeWaitingMinutes,
                 pricePerWaitingMinute = tariff.pricePerWaitingMinute,
                 isActive = tariff.isActive,
                 imageUrl = tariff.imageUrl,
                 isBeta = tariff.isBeta,               
                 isUnavailable = tariff.isUnavailable,
-                calculatedPrice = price,
+                calculatedPrice = price, // <-- Сюда улетит уже уменьшенная цена со скидкой!
                 description = null
             )
         }
@@ -235,8 +270,8 @@ class OrderService(
 
         val waypointsCount = request.waypoints?.size ?: 0    
 
-        // --- Розрахунок ціни ---
-        var finalPrice = calculateExactTripPrice(
+        // --- Розрахунок базової ціни ---
+        val calculatedPrice = calculateExactTripPrice(
             tariffId = request.tariffId,
             polyline = request.googleRoutePolyline,
             totalDistanceMeters = request.distanceMeters ?: 0,
@@ -256,7 +291,7 @@ class OrderService(
             val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
             if (!isExpired) {
                 val percent = activePromoUsage.promoCode.discountPercent
-                var calcDiscount = finalPrice * (percent / 100.0)
+                var calcDiscount = calculatedPrice * (percent / 100.0)
                 val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
                 if (maxAmount != null && calcDiscount > maxAmount) {
                     calcDiscount = maxAmount
@@ -272,7 +307,7 @@ class OrderService(
             if (activeReward != null) {
                 val task = activeReward.promoTask
                 val percent = task.discountPercent
-                discountAmount = finalPrice * (percent / 100.0)
+                discountAmount = calculatedPrice * (percent / 100.0)
                 if (task.maxDiscountAmount != null && discountAmount > task.maxDiscountAmount!!) {
                     discountAmount = task.maxDiscountAmount!!
                 }
@@ -280,8 +315,20 @@ class OrderService(
             }
         }
 
-        finalPrice -= discountAmount
-        if (finalPrice < tariff.basePrice) finalPrice = tariff.basePrice
+        // ==========================================
+        // 🛠️ НОВА ФІНАНСОВА МАТЕМАТИКА АГРЕГАТОРА:
+        // ==========================================
+        val fullPrice = calculatedPrice // Водій бачить повну привабливу вартість (наприклад, 120 грн)
+
+        // Вираховуємо чисту частку клієнта з урахуванням ліміту мінімальної посадки (basePrice)
+        var clientPayAmount = fullPrice - discountAmount
+        if (clientPayAmount < tariff.basePrice) {
+            clientPayAmount = tariff.basePrice
+        }
+        
+        // Фіксуємо точну суму маркетингової знижки, яку доплатить компанія
+        val actualDiscountApplied = fullPrice - clientPayAmount
+        // ==========================================
 
         // --- Визначення секторів ---
         val destSector = if (request.destLat != null && request.destLng != null) {
@@ -302,8 +349,8 @@ class OrderService(
             status = initialStatus,
             createdAt = LocalDateTime.now(),
             tariff = tariff,
-            price = finalPrice,
-            appliedDiscount = discountAmount,
+            price = fullPrice, // 👈 Зберігаємо ПОВНУ ціну для водія
+            appliedDiscount = actualDiscountApplied, // 👈 Зберігаємо ЧЕСТНУ суму знижки для компенсації
             isPromoCodeUsed = isPromoCodeUsedForThisOrder,
             originLat = request.originLat ?: 0.0,
             originLng = request.originLng ?: 0.0,
@@ -339,7 +386,7 @@ class OrderService(
             newOrder.stops.addAll(stopsList)
         }
 
-        // --- Збереження запланованого замовлення ---
+        // --- Збереження запланованого замовлення (До збереження ID) ---
         if (initialStatus == OrderStatus.SCHEDULED) {
             logger.info("Order scheduled for ${newOrder.scheduledAt}")
             val savedScheduled = orderRepository.save(newOrder)
@@ -347,7 +394,7 @@ class OrderService(
             return TaxiOrderDto(savedScheduled)
         }
 
-        // 1. СНАЧАЛА сохраняем заказ в базу данных, чтобы получить сгенерированный ID!
+        // Зберігаємо замовлення в БД, щоб згенерувати ID для транзакцій LiqPay
         var savedOrder = orderRepository.save(newOrder)
 
         if (savedOrder.paymentMethod == "CARD") {
@@ -355,27 +402,26 @@ class OrderService(
             if (token.isNullOrEmpty()) {
                 throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "У вас немає прив'язаної картки для оплати")
             }
-            // Формируем уникальный неизменяемый ID платежа для этого заказа в LiqPay
             val paymentOrderId = "ride_${savedOrder.id}"
             
+            // 🛡️ БЕЗПЕКА: Списуємо/резервуємо з картки клієнта ТІЛЬКИ його чисту суму зі знижкою!
             val isHoldSuccess = liqPayService.holdWithToken(
                 orderId = paymentOrderId,
-                amount = finalPrice,
+                amount = clientPayAmount, // 👈 Передаємо суму клієнта
                 cardToken = token,
                 description = "Резервування коштів за поїздку UNIT #${savedOrder.id}"
             )
             
             if (!isHoldSuccess) {
-                // Если денег нет или банк отклонил — выбиваем ошибку СРАЗУ, поиск водителя не начнется
                 throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Недостатньо коштів на картці або помилка банку")
             }
             
-            // Фиксируем сумму холда в БД
-            savedOrder.authorizedAmount = finalPrice
+            // Фіксуємо реальну суму заблокованого холда клієнта в БД
+            savedOrder.authorizedAmount = clientPayAmount
             savedOrder = orderRepository.save(savedOrder)
         }
 
-        // --- Збереження запланованого замовлення ---
+        // --- Збереження запланованого замовлення (Після обробки CARD, про всяк випадок) ---
         if (initialStatus == OrderStatus.SCHEDULED) {
             logger.info("Order scheduled for ${savedOrder.scheduledAt}")
             broadcastOrderChange(savedOrder, "ADD")
@@ -385,8 +431,6 @@ class OrderService(
         // =====================================================================
         // 🚀 ЛОГІКА РОЗПОДІЛУ (WATERFALL): Ланцюг -> Авто/Цикл -> Ефір
         // =====================================================================
-        
-        // Оставляем только это объявление, привязанное к сохраненному savedOrder
         val rejectedIds = if (savedOrder.rejectedDriverIds.isNotEmpty()) savedOrder.rejectedDriverIds.toList() else null
 
         // 1. ЛАНЦЮГ (Chain)
@@ -398,19 +442,18 @@ class OrderService(
 
         if (chainDriver != null) {
             logger.info(">>> CHAIN driver found: ${chainDriver.id}")
-            assignOrderToDriver(savedOrder, chainDriver)// Теперь id точно не null!
+            assignOrderToDriver(savedOrder, chainDriver)
             savedOrder.assignmentType = "CHAIN"
-            savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
+            savedOrder = orderRepository.save(savedOrder)
         } else {
             // 2. AUTO/CYCLE - УМНЫЙ ПОИСК
-            val matchedFilter = filterRepository.findAllByDriverId(savedOrder.driver?.id ?: 0L) // или через твой репозиторий автофильтров
+            val matchedFilter = filterRepository.findAllByDriverId(savedOrder.driver?.id ?: 0L)
                 .filter { it.isActive }.firstOrNull() 
 
             val autoDriver = findDriverByAutoFilter(savedOrder)
 
             if (autoDriver != null) {
                 logger.info(">>> FILTER driver selected: ${autoDriver.id}")
-                // 👈 Адаптивно определяем базовый тип на основе параметров фильтра
                 savedOrder.assignmentType = when {
                     matchedFilter?.isCycle == true -> "CYCLE"
                     matchedFilter?.fromType == "HOME" -> "HOME"
@@ -429,15 +472,14 @@ class OrderService(
                 if (candidates.isNotEmpty()) {
                     val bestDriver = selectFastestDriver(candidates, savedOrder.originLat!!, savedOrder.originLng!!)
                     logger.info(">>> SMART Selection: Winner ${bestDriver.id} from ${candidates.size} candidates.")
-                    assignOrderToDriver(savedOrder, bestDriver) // Теперь id точно не null!
-                    savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
+                    assignOrderToDriver(savedOrder, bestDriver)
+                    savedOrder = orderRepository.save(savedOrder)
                 } else {
                     logger.info(">>> No drivers found. Sending to Ether.")
                     savedOrder.status = OrderStatus.REQUESTED
-                    savedOrder.assignmentType = "ETHER" // 👈 Фиксируем общий эфир
+                    savedOrder.assignmentType = "ETHER"
                     savedOrder = orderRepository.save(savedOrder)
                     
-                    // Так как никто не взялся и заказ ушел в общий эфир, пушим "ADD" для свободных водителей
                     broadcastOrderChange(savedOrder, "ADD")
                 }
             }
@@ -1052,176 +1094,208 @@ class OrderService(
         return TaxiOrderDto(saved)
     }
 
-    // ИСПРАВЛЕНИЕ: noRollbackFor не дает Спрингу откатить изменение на CASH при ошибке
     @Transactional(noRollbackFor = [ResponseStatusException::class])
-    fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-        
-        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+    val order = orderRepository.findById(orderId)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+    
+    if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
 
-        // =======================================================
-        // 💳 ФИНАНСОВЫЙ БЛОК: ЗАКРЫТИЕ ХОЛДА И ДОСПИСАНИЕ ПРОСТОЯ
-        // =======================================================
-        if (order.paymentMethod == "CARD") {
-            val paymentOrderId = "ride_${order.id}"
+    // Текущая реальная доля клиента к оплате (с учетом возможного простоя)
+    val currentClientPayAmount = order.price - order.appliedDiscount
 
-            // СЦЕНАРИЙ 1: Финальная цена осталась прежней или уменьшилась (простоя не было)
-            if (order.price <= order.authorizedAmount) {
-                // Делаем частичный или полный Capture на точную финальную цену поездки
-                val isSuccess = liqPayService.captureFunds(paymentOrderId, order.price)
+    // =======================================================
+    // 💳 ФИНАНСОВЫЙ БЛОК: ЗАКРЫТИЕ ХОЛДА И ДОСПИСАНИЕ ПРОСТОЯ
+    // =======================================================
+    if (order.paymentMethod == "CARD") {
+        val paymentOrderId = "ride_${order.id}"
+
+        // СЦЕНАРИЙ 1: Финальный чек клиента не вырос (простоя не было)
+        if (currentClientPayAmount <= order.authorizedAmount) {
+            val isSuccess = liqPayService.captureFunds(paymentOrderId, currentClientPayAmount)
+            
+            if (!isSuccess) {
+                order.paymentMethod = "CASH"
+                orderRepository.save(order)
+                broadcastOrderChange(order, "UPDATE")
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка завершения платежу. Спосіб змінено на ГОТІВКУ.")
+            }
+            logger.info(">>> SUCCESS: Capture processed for exact client amount: $currentClientPayAmount")
+        } 
+        // СЦЕНАРИЙ 2: Цена выросла из-за платного ожидания/простоя
+        else {
+            val isCaptureSuccess = liqPayService.captureFunds(paymentOrderId, order.authorizedAmount)
+            
+            if (!isCaptureSuccess) {
+                order.paymentMethod = "CASH"
+                orderRepository.save(order)
+                broadcastOrderChange(order, "UPDATE")
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка списання базової суми холда. Переведено на ГОТІВКУ.")
+            }
+
+            val delta = currentClientPayAmount - order.authorizedAmount
+            val token = order.client.cardToken
+
+            if (!token.isNullOrEmpty()) {
+                val deltaOrderId = "ride_delta_${order.id}_${System.currentTimeMillis()}"
+                val isDeltaSuccess = liqPayService.payWithToken(
+                    orderId = deltaOrderId,
+                    amount = delta,
+                    cardToken = token,
+                    description = "Доплата за простій замовлення #${order.id}"
+                )
                 
-                if (!isSuccess) {
-                    // Используем твой крутой паттерн: при ошибке переключаем на CASH, чтобы закрыть вручную
-                    order.paymentMethod = "CASH"
-                    orderRepository.save(order)
-                    broadcastOrderChange(order, "UPDATE")
-                    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка завершения платежу. Спосіб змінено на ГОТІВКУ.")
-                }
-                logger.info(">>> SUCCESS: Capture processed for exact amount: ${order.price}")
-            } 
-            // СЦЕНАРИЙ 2: Цена выросла из-за платного ожидания/простоя (order.price > order.authorizedAmount)
-            else {
-                // 1. Сначала полностью списываем всю первоначально заблокированную сумму (холд)
-                val isCaptureSuccess = liqPayService.captureFunds(paymentOrderId, order.authorizedAmount)
-                
-                if (!isCaptureSuccess) {
-                    order.paymentMethod = "CASH"
-                    orderRepository.save(order)
-                    broadcastOrderChange(order, "UPDATE")
-                    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка списання базової суми холда. Переведено на ГОТІВКУ.")
-                }
-
-                // 2. Рассчитываем дельту простоя и досписываем её асинхронно через paytoken
-                val delta = order.price - order.authorizedAmount
-                val token = order.client.cardToken
-
-                if (!token.isNullOrEmpty()) {
-                    val deltaOrderId = "ride_delta_${order.id}_${System.currentTimeMillis()}"
-                    val isDeltaSuccess = liqPayService.payWithToken(
-                        orderId = deltaOrderId,
-                        amount = delta,
-                        cardToken = token,
-                        description = "Доплата за простій замовлення #${order.id}"
+                if (!isDeltaSuccess) {
+                    notificationService.sendOrderStatusToClient(
+                        token = order.client.fcmToken,
+                        orderId = order.id!!,
+                        status = order.status.name,
+                        title = "Помилка оплати простою",
+                        body = "Не вдалося списати кошти за простій з картки. Будь ласка, доплатіть водію готівкою: $delta UAH"
                     )
                     
-                    if (!isDeltaSuccess) {
-                        // Если на дельту денег не хватило, уведомляем клиента и просим водителя взять остаток наличкой
-                        notificationService.sendOrderStatusToClient(
-                            token = order.client.fcmToken,
-                            orderId = order.id!!,
-                            status = order.status.name,
-                            title = "Помилка оплати простою",
-                            body = "Не вдалося списати кошти за простій з картки. Будь ласка, доплатіть водію готівкою: $delta UAH"
-                        )
-                        
-                        // Выбрасываем эксепшен Спринга: транзакция не откатится, метод оплаты переключится на CASH,
-                        // водитель увидит точную сумму дельты, возьмет её в руки и нажмет завершить еще раз!
-                        order.paymentMethod = "CASH"
-                        order.price = delta // Меняем цену на остаток дельты для корректного второго круга
-                        orderRepository.save(order)
-                        broadcastOrderChange(order, "UPDATE")
-                        
-                        throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Основна сума списана, але на карті немає грошей за простій. Візьміть з клієнта готівкою: $delta UAH та завершіть ще раз.")
-                    }
-                    logger.info(">>> SUCCESS: Hold captured and excess delta ($delta UAH) charged successfully!")
+                    order.paymentMethod = "CASH"
+                    order.price = delta 
+                    orderRepository.save(order)
+                    broadcastOrderChange(order, "UPDATE")
+                    
+                    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Основна сума списана, але на карті немає грошей за простій. Візьміть з клієнта готівкою: $delta UAH та завершіть ще раз.")
                 }
+                logger.info(">>> SUCCESS: Hold captured and excess delta ($delta UAH) charged successfully!")
             }
         }
-        // =======================================================
-
-        order.status = OrderStatus.COMPLETED
-        order.completedAt = LocalDateTime.now()
-
-        if (order.startedAt != null) {
-            val realDurationSeconds = java.time.Duration.between(order.startedAt, order.completedAt).toSeconds().toInt()
-            
-            // Если поездка завершилась аномально быстро (например, для тестов за 0 секунд), 
-            // ставим минимум 1 секунду, чтобы не было деления на ноль в других блоках статистики
-            order.durationSeconds = if (realDurationSeconds > 0) realDurationSeconds else 1
-            
-            logger.info("[STATS_FIX] Реальное время поездки #${order.id}: ${order.durationSeconds} сек. (Вместо теории Google)")
-        }
-
-        // 1. Оновлюємо статистику поїздок
-        driver.completedRides += 1
-        driverActivityService.processOrderCompletion(driver, order)
-        order.client.tripsCount += 1
-
-        // =======================================================
-        // 💰 ФИНАНСОВЫЙ БЛОК: РАСЧЕТ И СПИСАНИЕ КОМИССИИ ВОДИТЕЛЯ
-        // =======================================================
-        val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
-        val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0 // Дефолт 10%
-        
-        val commissionAmount = order.price * (commissionPercent / 100.0)
-
-        // Списываем комиссию системы с баланса водителя
-        driver.balance -= commissionAmount
-
-        // ЕСЛИ ОПЛАТА БЫЛА КАРТОЙ - Зачисляем стоимость поездки на баланс водителя
-        if (order.paymentMethod == "CARD") {
-            driver.balance += order.price
-            
-            val rideTransaction = com.taxiapp.server.model.finance.WalletTransaction(
-                driver = driver,
-                amount = order.price, // Зачисляем деньги
-                operationType = com.taxiapp.server.model.enums.TransactionType.DEPOSIT,
-                orderId = order.id,
-                description = "Безготівкова оплата замовлення #${order.id}"
-            )
-            walletTransactionRepository.save(rideTransaction)
-        }
-
-        order.commissionAmount = commissionAmount
-
-        if (order.paymentMethod == "CARD") {
-            order.bankCommissionAmount = order.price * 0.02 // Тестовые 2% комиссии LiqPay
-            order.payoutAmount = order.price - commissionAmount - order.bankCommissionAmount // Чистый остаток для теста вывода на карту
-        }
-
-        // Транзакция комиссии
-        val transaction = com.taxiapp.server.model.finance.WalletTransaction(
-            driver = driver,
-            amount = -commissionAmount, // Списание
-            operationType = com.taxiapp.server.model.enums.TransactionType.COMMISSION,
-            orderId = order.id,
-            description = "Комісія ${String.format("%.1f", commissionPercent)}% за замовлення #${order.id}"
-        )
-        walletTransactionRepository.save(transaction)
-        // =======================================================
-
-        driverRepository.save(driver) 
-
-        val filters = filterRepository.findAllByDriverId(driver.id!!)
-        for (f in filters) {
-            if (f.isActive && f.isAuto) {
-                f.isAuto = false 
-                if (!f.isEther && !f.isCycle) {
-                    f.isActive = false
-                }
-                filterRepository.save(f)
-            }
-        }
-
-        if (order.appliedDiscount > 0.0) {
-            if (order.isPromoCodeUsed) {
-                val activePromoUsage = promoCodeService.findActiveUsage(order.client)
-                activePromoUsage?.let { promoCodeService.markAsUsed(it.id) }
-            } else {
-                promoService.markRewardAsUsed(order.client)
-            }
-        }
-
-        promoService.updateProgressOnRideCompletion(order.client, order)
-        
-        val savedOrder = orderRepository.save(order)
-        chatService.clearChatForOrder(orderId)
-
-        broadcastOrderChange(savedOrder, "UPDATE") 
-        
-        return TaxiOrderDto(savedOrder)
     }
+    // =======================================================
+
+    order.status = OrderStatus.COMPLETED
+    order.completedAt = LocalDateTime.now()
+
+    if (order.startedAt != null) {
+        val realDurationSeconds = java.time.Duration.between(order.startedAt, order.completedAt).toSeconds().toInt()
+        order.durationSeconds = if (realDurationSeconds > 0) realDurationSeconds else 1
+    }
+
+    driver.completedRides += 1
+    driverActivityService.processOrderCompletion(driver, order)
+    order.client.tripsCount += 1
+
+    // =======================================================
+    // 💰 РАСЧЕТ И СПИСАНИЕ КОМИССИИ ВОДИТЕЛЯ (С ПОЛНОЙ СУММЫ)
+    // =======================================================
+    val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
+    val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0
+    
+    val commissionAmount = order.price * (commissionPercent / 100.0)
+    driver.balance -= commissionAmount // Списываем комиссию с основного счета
+
+    // ЕСЛИ ОПЛАТА КАРТОЙ - Зачисляем долю КЛИЕНТА на накопительный счет (экран "Операции")
+    if (order.paymentMethod == "CARD") {
+        val finalClientAmount = order.price - order.appliedDiscount
+        driver.balance += finalClientAmount // Падает в операции до автовывода раз в сутки
+        
+        val rideTransaction = com.taxiapp.server.model.finance.WalletTransaction(
+            driver = driver,
+            amount = finalClientAmount, 
+            operationType = com.taxiapp.server.model.enums.TransactionType.DEPOSIT,
+            orderId = order.id,
+            description = "Безготівкова оплата замовлення #${order.id}"
+        )
+        walletTransactionRepository.save(rideTransaction)
+    }
+
+    order.commissionAmount = commissionAmount
+
+    if (order.paymentMethod == "CARD") {
+        order.bankCommissionAmount = (order.price - order.appliedDiscount) * 0.02 
+        order.payoutAmount = (order.price - order.appliedDiscount) - commissionAmount - order.bankCommissionAmount 
+    }
+
+    // Транзакция списания комиссии
+    val transaction = com.taxiapp.server.model.finance.WalletTransaction(
+        driver = driver,
+        amount = -commissionAmount,
+        operationType = com.taxiapp.server.model.enums.TransactionType.COMMISSION,
+        orderId = order.id,
+        description = "Комісія ${String.format("%.1f", commissionPercent)}% за замовлення #${order.id}"
+    )
+    walletTransactionRepository.save(transaction)
+
+    // =======================================================
+    // 🎁 ВНЕДРЕНИЕ: МАРКЕТИНГОВАЯ ДОПЛАТА ВОДИТЕЛЮ ЗА СКИДКУ
+    // =======================================================
+    if (order.appliedDiscount > 0.0) {
+        val marketingWalletSetting = appSettingRepository.findById("company_marketing_balance").orElse(null)
+        val marketingBalance = marketingWalletSetting?.value?.toDoubleOrNull() ?: 0.0
+
+        if (marketingBalance >= order.appliedDiscount) {
+            // Сценарий А: Деньги у компании есть — списываем и сразу выплачиваем на баланс
+            marketingWalletSetting?.value = (marketingBalance - order.appliedDiscount).toString()
+            appSettingRepository.save(marketingWalletSetting)
+
+            driver.balance += order.appliedDiscount
+
+            // ИСПРАВЛЕНИЕ: Инициализируем status через .apply { }
+            val compensationTx = com.taxiapp.server.model.finance.WalletTransaction(
+                driver = driver,
+                amount = order.appliedDiscount,
+                operationType = com.taxiapp.server.model.enums.TransactionType.BONUS,
+                orderId = order.id,
+                description = "Доплата за знижку клієнта #" + order.id
+            ).apply {
+                status = com.taxiapp.server.model.enums.TransactionStatus.COMPLETED
+            }
+            
+            walletTransactionRepository.save(compensationTx)
+            logger.info(">>> MARKETING COMPENSATION: Paid ${order.appliedDiscount} UAH to driver ${driver.id}")
+        } else {
+            // Сценарий Б: Деньги закончились — создаем PENDING транзакцию
+            
+            // ИСПРАВЛЕНИЕ: Инициализируем status через .apply { }
+            val pendingTx = com.taxiapp.server.model.finance.WalletTransaction(
+                driver = driver,
+                amount = order.appliedDiscount,
+                operationType = com.taxiapp.server.model.enums.TransactionType.BONUS,
+                orderId = order.id,
+                description = "Доплата за знижку клієнта #${order.id} (очікує фінансування комп.)"
+            ).apply {
+                status = com.taxiapp.server.model.enums.TransactionStatus.PENDING
+            }
+            
+            walletTransactionRepository.save(pendingTx)
+            logger.warn(">>> MARKETING FUNDS DEPLETED: Compensation of ${order.appliedDiscount} UAH is PENDING for driver ${driver.id}")
+        }
+    }
+    // =======================================================
+
+    driverRepository.save(driver) 
+
+    val filters = filterRepository.findAllByDriverId(driver.id!!)
+    for (f in filters) {
+        if (f.isActive && f.isAuto) {
+            f.isAuto = false 
+            if (!f.isEther && !f.isCycle) f.isActive = false
+            filterRepository.save(f)
+        }
+    }
+
+    if (order.appliedDiscount > 0.0) {
+        if (order.isPromoCodeUsed) {
+            val activePromoUsage = promoCodeService.findActiveUsage(order.client)
+            activePromoUsage?.let { promoCodeService.markAsUsed(it.id) }
+        } else {
+            promoService.markRewardAsUsed(order.client)
+        }
+    }
+
+    promoService.updateProgressOnRideCompletion(order.client, order)
+    
+    val savedOrder = orderRepository.save(order)
+    chatService.clearChatForOrder(orderId)
+
+    broadcastOrderChange(savedOrder, "UPDATE") 
+    
+    return TaxiOrderDto(savedOrder)
+}
     
     @Scheduled(fixedRate = 60000) // Перевірка кожну хвилину
     @Transactional
