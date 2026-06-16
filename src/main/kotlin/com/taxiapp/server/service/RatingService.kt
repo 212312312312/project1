@@ -18,9 +18,14 @@ class RatingService(
 
     // --- ОЦЕНКА ВОДИТЕЛЯ (Делает Клиент) ---
     @Transactional
-    fun rateDriver(orderId: Long, score: Int, comment: String?) {
-        val order = taxiOrderRepository.findById(orderId)
-            .orElseThrow { RuntimeException("Замовлення не знайдено") }
+    fun rateDriver(orderIdStr: String, score: Int, comment: String?) {
+        val order = try {
+            val uuid = java.util.UUID.fromString(orderIdStr)
+            taxiOrderRepository.findByUuid(uuid).orElseThrow { RuntimeException("Замовлення не знайдено") }
+        } catch (e: IllegalArgumentException) {
+            val idLong = orderIdStr.toLongOrNull() ?: throw RuntimeException("Невірний формат ID")
+            taxiOrderRepository.findById(idLong).orElseThrow { RuntimeException("Замовлення не знайдено") }
+        }
 
         if (order.driver == null) throw RuntimeException("У замовлення немає водія")
         if (order.isRatedByClient) throw RuntimeException("Ви вже оцінили цю поїздку")
@@ -45,9 +50,14 @@ class RatingService(
 
     // --- ОЦЕНКА КЛИЕНТА (Делает Водитель) ---
     @Transactional
-    fun rateClient(orderId: Long, score: Int, comment: String?) {
-        val order = taxiOrderRepository.findById(orderId)
-            .orElseThrow { RuntimeException("Замовлення не знайдено") }
+    fun rateClient(orderIdStr: String, score: Int, comment: String?) {
+        val order = try {
+            val uuid = java.util.UUID.fromString(orderIdStr)
+            taxiOrderRepository.findByUuid(uuid).orElseThrow { RuntimeException("Замовлення не знайдено") }
+        } catch (e: IllegalArgumentException) {
+            val idLong = orderIdStr.toLongOrNull() ?: throw RuntimeException("Невірний формат ID")
+            taxiOrderRepository.findById(idLong).orElseThrow { RuntimeException("Замовлення не знайдено") }
+        }
 
         if (order.isRatedByDriver) throw RuntimeException("Ви вже оцінили цього пасажира")
 

@@ -398,16 +398,25 @@ class OrderService(
 
         if (chainDriver != null) {
             logger.info(">>> CHAIN driver found: ${chainDriver.id}")
-            assignOrderToDriver(savedOrder, chainDriver) // Теперь id точно не null!
+            assignOrderToDriver(savedOrder, chainDriver)// Теперь id точно не null!
+            savedOrder.assignmentType = "CHAIN"
             savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
         } else {
             // 2. AUTO/CYCLE - УМНЫЙ ПОИСК
+            val matchedFilter = filterRepository.findAllByDriverId(savedOrder.driver?.id ?: 0L) // или через твой репозиторий автофильтров
+                .filter { it.isActive }.firstOrNull() 
+
             val autoDriver = findDriverByAutoFilter(savedOrder)
 
             if (autoDriver != null) {
                 logger.info(">>> FILTER driver selected: ${autoDriver.id}")
-                assignOrderToDriver(savedOrder, autoDriver) // Теперь id точно не null!
-                savedOrder = orderRepository.save(savedOrder) // Пересохраняем статус OFFERING
+                // 👈 Адаптивно определяем базовый тип на основе параметров фильтра
+                savedOrder.assignmentType = when {
+                    matchedFilter?.isCycle == true -> "CYCLE"
+                    matchedFilter?.fromType == "HOME" -> "HOME"
+                    else -> "AUTO"
+                }
+                assignOrderToDriver(savedOrder, autoDriver)
             } else {
                 // 3. ETHER / BEST CANDIDATE (Ефір або пошук найкращого)
                 val candidates = driverRepository.findBestDriversCandidates(
@@ -425,6 +434,7 @@ class OrderService(
                 } else {
                     logger.info(">>> No drivers found. Sending to Ether.")
                     savedOrder.status = OrderStatus.REQUESTED
+                    savedOrder.assignmentType = "ETHER" // 👈 Фиксируем общий эфир
                     savedOrder = orderRepository.save(savedOrder)
                     
                     // Так как никто не взялся и заказ ушел в общий эфир, пушим "ADD" для свободных водителей
@@ -855,8 +865,11 @@ class OrderService(
         if (order.status == OrderStatus.SCHEDULED) {
             logger.info("Driver ${driver.id} rejected SCHEDULED order #${order.id}. Returning to Ether.")
             
-            // Штрафуємо (якщо треба)
-            driverActivityService.processOrderCancellation(driver, orderId, penalty, "$reasonText (Відмова від запланованого)")
+            // 👈 Проверяем, подтвердил ли уже его водитель (-50 или -30)
+            val adaptivePenalty = if (order.isDriverConfirmed == true) 50 else 30
+            val adaptiveText = if (order.isDriverConfirmed == true) "$reasonText (Скасовано підтверджене заплановане)" else "$reasonText (Скасовано заплановане)"
+            
+            driverActivityService.processOrderCancellation(driver, orderId, adaptivePenalty, adaptiveText)
             
             // Очищаємо водія, але не скасовуємо замовлення повністю
             order.rejectedDriverIds.add(driver.id!!)
@@ -1133,6 +1146,7 @@ class OrderService(
         // 1. Оновлюємо статистику поїздок
         driver.completedRides += 1
         driverActivityService.processOrderCompletion(driver, order)
+        order.client.tripsCount += 1
 
         // =======================================================
         // 💰 ФИНАНСОВЫЙ БЛОК: РАСЧЕТ И СПИСАНИЕ КОМИССИИ ВОДИТЕЛЯ

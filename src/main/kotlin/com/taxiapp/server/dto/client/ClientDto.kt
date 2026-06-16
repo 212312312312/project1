@@ -7,13 +7,15 @@ data class ClientDto(
     val phoneNumber: String, 
     val fullName: String,
     val isBlocked: Boolean,
-    val cardMask: String? // <-- НОВОЕ ПОЛЕ
+    val cardMask: String?,
+    val tripsCount: Int // <-- НОВОЕ ПОЛЕ
 ) {
     constructor(client: Client) : this(
         id = client.id ?: 0L,
         phoneNumber = client.userPhone ?: "Не вказано",
         fullName = client.fullName ?: "Невідомий користувач",
         isBlocked = client.isBlocked,
-        cardMask = client.cardMask // <-- Читаем из модели
+        cardMask = client.cardMask,
+        tripsCount = client.tripsCount // <-- Читаем из модели
     )
 }

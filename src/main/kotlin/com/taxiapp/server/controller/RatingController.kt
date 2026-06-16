@@ -9,7 +9,7 @@ import java.time.format.DateTimeFormatter
 
 // --- 1. DTO для входящего запроса ---
 data class CreateRatingRequest(
-    val orderId: Long,
+   val orderId: String,
     val score: Int,
     val comment: String?
 )

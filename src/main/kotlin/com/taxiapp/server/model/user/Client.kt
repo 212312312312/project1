@@ -21,6 +21,9 @@ class Client : User() {
     var ratingCount: Int = 0
     // ------------------
 
+    @Column(nullable = false, columnDefinition = "integer default 0")
+    var tripsCount: Int = 0
+
     // --- ПРИВЯЗКА КАРТЫ ---
     @Column(name = "card_token", length = 255)
     var cardToken: String? = null
@@ -28,4 +31,5 @@ class Client : User() {
     @Column(name = "card_mask", length = 20)
     var cardMask: String? = null
     // ----------------------
+
 }

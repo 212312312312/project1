@@ -25,7 +25,8 @@ data class OrderDriverDto(
     val hasMovementIssue: Boolean,
     val hasHearingIssue: Boolean,
     val isDeaf: Boolean,
-    val hasSpeechIssue: Boolean
+    val hasSpeechIssue: Boolean,
+    val rating: Double
 ) {
     constructor(driver: Driver) : this(
         id = driver.id!!,
@@ -47,6 +48,7 @@ data class OrderDriverDto(
         },
         
         completedRides = driver.completedRides,
+        rating = driver.rating,
         
         monthsInService = if (driver.createdAt != null) {
             ChronoUnit.MONTHS.between(driver.createdAt, LocalDateTime.now()).toInt()

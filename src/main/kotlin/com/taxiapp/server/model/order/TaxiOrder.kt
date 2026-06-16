@@ -132,6 +132,9 @@ class TaxiOrder(
     @Column(name = "payment_method")
     var paymentMethod: String = "CASH",
 
+    @Column(name = "assignment_type")
+    var assignmentType: String? = "ETHER", // Возможные значения: CHAIN, HOME, CYCLE, AUTO, ETHER
+
     @Column(nullable = false)
     var addedValue: Double = 0.0,
 

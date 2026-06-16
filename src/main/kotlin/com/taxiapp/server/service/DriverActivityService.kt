@@ -31,22 +31,46 @@ class DriverActivityService(
 
     @Transactional
     fun processOrderCompletion(driver: Driver, order: TaxiOrder) {
-        var pointsToAdd = 0
+        // 1. Базовые баллы на основе типа распределения заказа
+        var pointsToAdd = when (order.assignmentType) {
+            "CHAIN" -> 6
+            "HOME" -> 6
+            "CYCLE" -> 5
+            "AUTO" -> 4
+            else -> 3 // "ETHER" или null
+        }
+        
         val reasons = mutableListOf<String>()
+        reasons.add(when (order.assignmentType) {
+            "CHAIN" -> "Ланцюг замовлень"
+            "HOME" -> "Попутно додому"
+            "CYCLE" -> "Режим Цикл"
+            "AUTO" -> "Автопризначення"
+            else -> "Ефір"
+        })
 
-        pointsToAdd += 2
-        reasons.add("Ефір")
+        // 2. Дополнительные баллы за условия поездки
+        if (order.originSector?.isCity == false || order.destinationSector?.isCity == false) {
+            pointsToAdd += 3
+            reasons.add("За місто")
+        }
 
         if (order.stops.isNotEmpty()) {
             pointsToAdd += 3
             reasons.add("Проміжні точки")
         }
 
-        if (order.paymentMethod == "CARD") {
-            pointsToAdd += 1
-            reasons.add("Оплата карткою")
+        if (order.scheduledAt != null) {
+            pointsToAdd += 3
+            reasons.add("Заплановане замовлення")
         }
 
+        if (order.paymentMethod == "CARD") {
+            pointsToAdd += 1
+            reasons.add("Оплата на баланс")
+        }
+
+        // Собираем красивую детальную строчку для истории (например: "Замовлення #15: Ефір, За місто, Оплата на баланс")
         val reasonString = "Замовлення #${order.id}: " + reasons.joinToString(", ")
         updateScore(driver, pointsToAdd, reasonString, order.id)
     }
