@@ -15,10 +15,10 @@ data class TaxiOrderDto(
     val toAddress: String,
     val createdAt: LocalDateTime,
     val completedAt: LocalDateTime?,
-    val price: Double,
+    val price: Double, // 👈 ИСПРАВЛЕНО: Чистое объявление поля без ошибок компиляции
 
-    val clientPayAmount: Double, // 👈 ДОДАТИ: Скільки реально платить клієнт
-    val companyDiscountCompensation: Double, // 👈 ДОДАТИ: Скільки доплачує компанія за знижку
+    val clientPayAmount: Double, // Сколько реально платит клиент
+    val companyDiscountCompensation: Double, // Сколько доплачивает компания за скидку
 
     val startedAt: LocalDateTime? = null,
     val waitingPrice: Double = 0.0,
@@ -53,7 +53,6 @@ data class TaxiOrderDto(
     val toSector: String? = null,
     val isDriverConfirmed: Boolean,
 
-    // --- ПРИНИМАЕМ ПАРАМЕТР В ПЕРВИЧНЫЙ КОНСТРУКТОР ДЛЯ ПОДДЕРЖКИ .copy() ---
     val activityBonus: Int,
     val serviceCommission: Double?,
     val amountToBalance: Double?,
@@ -70,11 +69,17 @@ data class TaxiOrderDto(
         toAddress = order.toAddress,
         createdAt = order.createdAt,
         completedAt = order.completedAt,
-        price = order.price,
+        
+        // 👈 ИСПРАВЛЕНО: Передаем клиенту цену со скидкой с минимальным порогом 1.0 грн
+        price = if (order.price - order.appliedDiscount < 1.0) {
+            1.0
+        } else {
+            order.price - order.appliedDiscount
+        },
 
-        // 👈 ДОДАТИ ЦЕЙ БЛОК РОЗРАХУНКУ:
-        clientPayAmount = if (order.price - order.appliedDiscount < order.tariff.basePrice) {
-            order.tariff.basePrice 
+        // 👈 ИСПРАВЛЕНО: Синхронизируем клиентскую сумму (порог 1.0 вместо basePrice)
+        clientPayAmount = if (order.price - order.appliedDiscount < 1.0) {
+            1.0 
         } else {
             order.price - order.appliedDiscount
         },
@@ -153,7 +158,6 @@ data class TaxiOrderDto(
         fromSector = order.originSector?.name,
         isDriverConfirmed = order.isDriverConfirmed ?: false,
 
-        // По умолчанию для всех остальных вызовов (эфир, активные) отдаем 0, чтобы не грузить сервер
         activityBonus = calculateAdaptiveActivity(order),
         serviceCommission = if (order.status == OrderStatus.COMPLETED && order.commissionAmount > 0) order.commissionAmount else null,
         amountToBalance = if (order.status == OrderStatus.COMPLETED && order.paymentMethod == "CARD") order.price else null,
@@ -161,31 +165,27 @@ data class TaxiOrderDto(
         transferToCard = if (order.status == OrderStatus.COMPLETED && order.payoutAmount > 0) order.payoutAmount else null
     )
 
-    // 👈 Добавляем companion object, чтобы сделать калькулятор статичным
     companion object {
-        // 🧠 АДАПТИВНЫЙ КАЛЬКУЛЯТОР БАЛЛОВ АКТИВНОСТИ
         private fun calculateAdaptiveActivity(order: TaxiOrder): Int {
-            // 1. Базовые баллы за работу
             var totalScore = when (order.assignmentType) {
                 "CHAIN" -> 6
                 "HOME" -> 6
                 "CYCLE" -> 5
                 "AUTO" -> 4
-                else -> 3 // "ETHER" или null
+                else -> 3
             }
 
-            // 2. Дополнительные баллы (Бонусы)
             if (order.originSector?.isCity == false || order.destinationSector?.isCity == false) {
-                totalScore += 3 // За місто
+                totalScore += 3
             }
             if (order.stops.isNotEmpty()) {
-                totalScore += 3 // Із проміжними точками
+                totalScore += 3
             }
             if (order.scheduledAt != null) {
-                totalScore += 3 // Додаткове замовлення (Заплановане)
+                totalScore += 3
             }
             if (order.paymentMethod == "CARD") {
-                totalScore += 1 // Оплата на баланс (+1)
+                totalScore += 1
             }
 
             return totalScore

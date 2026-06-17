@@ -147,7 +147,7 @@ class OrderService(
         val tariffs = tariffRepository.findAll().filter { it.isActive }
         return tariffs.map { tariff ->
             
-            // 1. Рассчитываем чистую (грязную) цену по тарифу
+            // 1. Рассчитываем чистую цену по тарифу
             var price = calculateExactTripPrice(
                 tariffId = tariff.id, 
                 polyline = polyline, 
@@ -158,7 +158,9 @@ class OrderService(
                 isDebug = false
             )
             
-            // 2. 🎁 ДОБАВЛЕНО: Применяем логику скидок, если клиент передан и авторизован
+            var oldPrice: Double? = null // 👈 Хранилище для полной стоимости
+
+            // 2. Применяем логику скидок
             if (client != null) {
                 var discountAmount = 0.0
                 var promoCodeApplied = false
@@ -179,7 +181,7 @@ class OrderService(
                     }
                 }
 
-                // Если промокод не применился, проверяем маркетинговые награды за миссии
+                // Если промокод не применился, проверяем маркетинговые награды
                 if (!promoCodeApplied) {
                     val activeReward = promoService.findActiveReward(client)
                     if (activeReward != null) {
@@ -192,9 +194,15 @@ class OrderService(
                     }
                 }
 
-                // Вычитаем честно заработанную скидку из цены предварительного просмотра
-                price -= discountAmount
-                if (price < tariff.basePrice) price = tariff.basePrice
+                // 🎁 Если скидка сработала, фиксируем старую цену и вычитаем дисконт
+                if (discountAmount > 0.0) {
+                    oldPrice = price // 👈 Запоминаем исходную цену без скидки
+                    price -= discountAmount
+                    
+                    // Ставим минимальный порог поездки в 1 грн вместо tariff.basePrice,
+                    // чтобы скидки честно работали на коротких поездках!
+                    if (price < 1.0) price = 1.0 
+                }
             }
             
             CarTariffDto(
@@ -210,8 +218,9 @@ class OrderService(
                 imageUrl = tariff.imageUrl,
                 isBeta = tariff.isBeta,               
                 isUnavailable = tariff.isUnavailable,
-                calculatedPrice = price, // <-- Сюда улетит уже уменьшенная цена со скидкой!
-                description = null
+                calculatedPrice = price, 
+                description = null,
+                oldPrice = oldPrice // 👈 Передаем старую цену в обновленное поле DTO
             )
         }
     }
@@ -318,15 +327,15 @@ class OrderService(
         // ==========================================
         // 🛠️ НОВА ФІНАНСОВА МАТЕМАТИКА АГРЕГАТОРА:
         // ==========================================
-        val fullPrice = calculatedPrice // Водій бачить повну привабливу вартість (наприклад, 120 грн)
+        val fullPrice = calculatedPrice 
 
-        // Вираховуємо чисту частку клієнта з урахуванням ліміту мінімальної посадки (basePrice)
+        // Вычисляем чистую долю клиента
         var clientPayAmount = fullPrice - discountAmount
-        if (clientPayAmount < tariff.basePrice) {
-            clientPayAmount = tariff.basePrice
+        if (clientPayAmount < 1.0) { // 👈 ИСПРАВЛЕНО: Ставим порог 1.0 вместо tariff.basePrice, чтобы заказ на 2км создавался со скидкой!
+            clientPayAmount = 1.0
         }
         
-        // Фіксуємо точну суму маркетингової знижки, яку доплатить компанія
+        // Фиксируем сумму скидки для компенсации водителю
         val actualDiscountApplied = fullPrice - clientPayAmount
         // ==========================================
 

@@ -19,7 +19,8 @@ data class CarTariffDto(
     // --- НОВІ ПОЛЯ ДЛЯ SMART PRICING ---
     // Вони можуть бути null, якщо ми просто переглядаємо список тарифів в адмінці
     var calculatedPrice: Double? = null,
-    val description: String? = null
+    val description: String? = null,
+    var oldPrice: Double? = null
 ) {
     // Конструктор для конвертації з Entity (БД)
     constructor(tariff: CarTariff) : this(
@@ -38,6 +39,7 @@ data class CarTariffDto(
         
         // За замовчуванням ціна не порахована
         calculatedPrice = null,
-        description = null
+        description = null,
+        oldPrice = null
     )
 }

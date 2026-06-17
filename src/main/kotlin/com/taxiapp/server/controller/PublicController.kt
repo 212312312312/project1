@@ -35,23 +35,24 @@ class PublicController(
     // ---------------------------------------------
 
     @PostMapping("/calculate-price")
-    fun calculatePrice(
+    fun calculatePrices(
         @RequestBody request: CalculatePriceRequest,
-        principal: Principal? // 👈 Спринг автоматически закинет сюда данные авторизации клиента
-    ): List<CarTariffDto> {
+        principal: Principal? // 👈 Добавляем Principal для получения текущего пользователя
+    ): ResponseEntity<List<CarTariffDto>> {
         
-        // Находим клиента в базе по номеру телефона из токена, если он авторизован
-        val client = principal?.name?.let { phoneNumber ->
-            clientRepository.findByUserPhone(phoneNumber).orElse(null)
+        // 🎁 Пытаемся найти авторизованного клиента по его логину/номеру телефона
+        val client = principal?.name?.let { username ->
+            clientRepository.findByUserPhone(username).orElse(null)
         }
 
-        // Передаем найденного клиента четвертым параметром в сервис
-        return orderService.calculatePricesForRoute(
-            request.googleRoutePolyline, 
-            request.distanceMeters, 
-            request.waypointsCount,
-            client // 👈 Наша скидочная логика теперь увидит промокоды этого клиента!
+        // Передаем найденного клиента (или null) в метод сервиса
+        val tariffs = orderService.calculatePricesForRoute(
+            polyline = request.googleRoutePolyline,
+            totalMeters = request.distanceMeters,
+            waypointsCount = request.waypointsCount,
+            client = client // 👈 Теперь скидка применится автоматически!
         )
+        return ResponseEntity.ok(tariffs)
     }
 
     @GetMapping("/settings/car-icon")
