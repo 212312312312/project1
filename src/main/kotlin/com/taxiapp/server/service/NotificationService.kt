@@ -141,7 +141,9 @@ class NotificationService(
                     try {
                         task()
                     } catch (e: Exception) {
-                        logger.error(">>> FCM Error in afterCommit: \${e.message}")
+                        // --- ИСПРАВЛЕНО: Убрано экранирование бакслеша, добавлен полный вывод ошибки ---
+                        logger.error(">>> Критична помилка відправки FCM пуша після комміту: ${e.message}")
+                        e.printStackTrace() // Выведет точную причину (Invalid Token / App Not Initialized) в лог
                     }
                 }
             })
@@ -150,7 +152,8 @@ class NotificationService(
             try {
                 task()
             } catch (e: Exception) {
-                logger.error(">>> FCM Error: \${e.message}")
+                logger.error(">>> Критична помилка відправки FCM пуша (без транзакції): ${e.message}")
+                e.printStackTrace()
             }
         }
     }

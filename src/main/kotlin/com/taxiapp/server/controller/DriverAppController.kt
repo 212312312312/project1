@@ -194,6 +194,25 @@ class DriverAppController(
         return ResponseEntity.ok(dtos)
     }
 
+    // --- НОВЫЙ ЭНДПОИНТ: СОХРАНЕНИЕ АКТУАЛЬНОГО FCM ТОКЕНА ВОДИТЕЛЯ ---
+    @PostMapping("/profile/fcm-token")
+    fun updateFcmToken(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestBody request: Map<String, String>
+    ): ResponseEntity<MessageResponse> {
+        val driver = getDriverFromUser(userDetails)
+        val token = request["token"]
+        
+        if (token.isNullOrBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Токен не може бути порожнім")
+        }
+
+        driver.fcmToken = token
+        driverRepository.save(driver)
+
+        return ResponseEntity.ok(MessageResponse("FCM токен водія успішно оновлено"))
+    }
+
     // --- ЭНДПОИНТЫ КАРТ ВЫПЛАТ ---
     @GetMapping("/cards")
     fun getCards(@AuthenticationPrincipal user: User): ResponseEntity<List<DriverCardDto>> {
