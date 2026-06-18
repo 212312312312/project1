@@ -1482,5 +1482,80 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         }
     }
 
+    @Transactional
+    fun arriveAtWaypoint(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        if (order.status != OrderStatus.IN_PROGRESS) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Не можна відзначити прибуття на точку в цьому статусі")
+        }
+
+        order.status = OrderStatus.ARRIVED_AT_WAYPOINT
+        order.currentStopOrder += 1
+        order.waypointArrivedAt = LocalDateTime.now()
+
+        val savedOrder = orderRepository.save(order)
+        
+        // Мгновенно обновляем всех (водителя, клиента, диспетчера) через твои чистые сокеты
+        broadcastOrderChange(savedOrder, "UPDATE")
+
+        // Отправляем Push-уведомление клиенту
+        val currentStopAddress = savedOrder.stops.sortedBy { it.stopOrder }.find { it.stopOrder == savedOrder.currentStopOrder }?.address ?: ""
+        notificationService.sendOrderStatusToClient(
+            token = savedOrder.client.fcmToken,
+            orderId = savedOrder.id!!,
+            status = savedOrder.status.name, // "ARRIVED_AT_WAYPOINT"
+            title = "Водій на проміжній точці",
+            body = "Очікуйте, водій прибув на зупинку: $currentStopAddress"
+        )
+
+        return TaxiOrderDto(savedOrder)
+    }
+
+    @Transactional
+    fun resumeTrip(driver: Driver, orderId: Long): TaxiOrderDto {
+        val order = orderRepository.findById(orderId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+        if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваше замовлення")
+        if (order.status != OrderStatus.ARRIVED_AT_WAYPOINT) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Поїздку неможливо продовжити з цього стану")
+        }
+
+        // --- ЛОГИКА РАСЧЕТА СТОИМОСТИ ОЖИДАНИЯ НА ТОЧКЕ ---
+        if (order.waypointArrivedAt != null) {
+            val minutesWaited = maxOf(0, java.time.temporal.ChronoUnit.MINUTES.between(order.waypointArrivedAt!!, LocalDateTime.now()).toInt())
+            val freeMinutes = order.tariff.freeWaitingMinutes
+
+            if (minutesWaited > freeMinutes) {
+                val paidMinutes = minutesWaited - freeMinutes
+                val extraCost = paidMinutes * order.tariff.pricePerWaitingMinute
+
+                order.waitingPrice += extraCost
+                order.price += extraCost // Плюсуем простой к общей стоимости заказа
+                logger.info("[WAYPOINT_WAITING] Заказ ${order.id}: платное ожидание $paidMinutes мин. Добавлено: $extraCost UAH")
+            }
+        }
+
+        // Возвращаем заказ в статус поездки
+        order.status = OrderStatus.IN_PROGRESS
+        order.waypointArrivedAt = null // Сбрасываем таймер точки для следующей остановки (если она есть)
+
+        val savedOrder = orderRepository.save(order)
+        broadcastOrderChange(savedOrder, "UPDATE")
+
+        notificationService.sendOrderStatusToClient(
+            token = savedOrder.client.fcmToken,
+            orderId = savedOrder.id!!,
+            status = savedOrder.status.name, // "IN_PROGRESS"
+            title = "Рушаємо далі",
+            body = "Поїздка продовжилась."
+        )
+
+        return TaxiOrderDto(savedOrder)
+    }
+
     fun mapToDto(order: TaxiOrder): TaxiOrderDto = TaxiOrderDto(order)
 }

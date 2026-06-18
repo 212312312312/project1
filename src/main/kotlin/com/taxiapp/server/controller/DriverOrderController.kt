@@ -89,6 +89,22 @@ class DriverOrderController(
         return ResponseEntity.ok(order)
     }
 
+
+    @PostMapping("/{id}/waypoint/arrive")
+    fun arriveAtWaypoint(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        val internalId = getInternalId(id)
+        val order = orderService.arriveAtWaypoint(driver, internalId)
+        return ResponseEntity.ok(order)
+    }
+
+    @PostMapping("/{id}/waypoint/resume")
+    fun resumeTrip(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        val internalId = getInternalId(id)
+        val order = orderService.resumeTrip(driver, internalId)
+        return ResponseEntity.ok(order)
+    }
     @GetMapping("/history")
     fun getOrderHistory(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
         val driver = getDriverFromPrincipal(principal)

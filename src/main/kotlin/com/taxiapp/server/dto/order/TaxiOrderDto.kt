@@ -15,10 +15,10 @@ data class TaxiOrderDto(
     val toAddress: String,
     val createdAt: LocalDateTime,
     val completedAt: LocalDateTime?,
-    val price: Double, // 👈 ИСПРАВЛЕНО: Чистое объявление поля без ошибок компиляции
+    val price: Double, 
 
-    val clientPayAmount: Double, // Сколько реально платит клиент
-    val companyDiscountCompensation: Double, // Сколько доплачивает компания за скидку
+    val clientPayAmount: Double, 
+    val companyDiscountCompensation: Double, 
 
     val startedAt: LocalDateTime? = null,
     val waitingPrice: Double = 0.0,
@@ -36,7 +36,7 @@ data class TaxiOrderDto(
     val googleRoutePolyline: String?,
 
     val arrivedAt: LocalDateTime? = null,
-    val waitingStartTime: LocalDateTime? = null, // 💡 Реальное время, от которого мобилки включат таймер
+    val waitingStartTime: LocalDateTime? = null, 
     val scheduledAt: LocalDateTime?,
     val carModel: String? = null,
     val carPlate: String? = null,
@@ -53,6 +53,10 @@ data class TaxiOrderDto(
     val fromSector: String? = null,
     val toSector: String? = null,
     val isDriverConfirmed: Boolean,
+    
+    // 🛠️ ДОБАВЛЕНО В ОБЪЯВЛЕНИЕ ПОЛЕЙ КЛАССА:
+    val currentStopOrder: Int = 0,
+    val waypointArrivedAt: LocalDateTime? = null,
 
     val activityBonus: Int,
     val serviceCommission: Double?,
@@ -71,14 +75,12 @@ data class TaxiOrderDto(
         createdAt = order.createdAt,
         completedAt = order.completedAt,
         
-        // 👈 ИСПРАВЛЕНО: Передаем клиенту цену со скидкой с минимальным порогом 1.0 грн
         price = if (order.price - order.appliedDiscount < 1.0) {
             1.0
         } else {
             order.price - order.appliedDiscount
         },
 
-        // 👈 ИСПРАВЛЕНО: Синхронизируем клиентскую сумму (порог 1.0 вместо basePrice)
         clientPayAmount = if (order.price - order.appliedDiscount < 1.0) {
             1.0 
         } else {
@@ -102,10 +104,14 @@ data class TaxiOrderDto(
         googleRoutePolyline = order.googleRoutePolyline,
 
         arrivedAt = order.arrivedAt,
-        waitingStartTime = if (order.arrivedAt != null) {
-            // Если приехал раньше времени подачи — таймер в UI запустится только в момент scheduledAt
+        
+        // 💡 МОДИФИЦИРОВАНО: Автоматическое переключение таймера ожидания на промежуточную точку
+        waitingStartTime = if (order.status == OrderStatus.ARRIVED_AT_WAYPOINT) {
+            order.waypointArrivedAt
+        } else if (order.arrivedAt != null) {
             if (order.scheduledAt != null && order.arrivedAt!!.isBefore(order.scheduledAt)) order.scheduledAt else order.arrivedAt
         } else null,
+        
         scheduledAt = order.scheduledAt,
         carModel = order.driver?.car?.let { "${it.make} ${it.model}" },
         carPlate = order.driver?.car?.plateNumber,
@@ -162,6 +168,10 @@ data class TaxiOrderDto(
         toSector = order.destinationSector?.name,
         fromSector = order.originSector?.name,
         isDriverConfirmed = order.isDriverConfirmed ?: false,
+
+        // 🛠️ ЗАПОЛНЯЕМ НОВЫЕ ПАРАМЕТРЫ ИЗ МОДЕЛИ:
+        currentStopOrder = order.currentStopOrder,
+        waypointArrivedAt = order.waypointArrivedAt,
 
         activityBonus = calculateAdaptiveActivity(order),
         serviceCommission = if (order.status == OrderStatus.COMPLETED && order.commissionAmount > 0) order.commissionAmount else null,

@@ -5,6 +5,7 @@ enum class OrderStatus {
     REQUESTED,
     OFFERING,
     ACCEPTED,
+    ARRIVED_AT_WAYPOINT,
     DRIVER_ARRIVED,
     IN_PROGRESS,
     COMPLETED,

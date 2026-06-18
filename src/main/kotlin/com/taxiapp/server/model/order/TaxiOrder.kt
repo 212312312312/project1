@@ -168,6 +168,12 @@ class TaxiOrder(
     @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
     var stops: MutableList<OrderStop> = mutableListOf()
     
+    @Column(name = "current_stop_order", nullable = false, columnDefinition = "integer default 0")
+    var currentStopOrder: Int = 0
+
+    @Column(name = "waypoint_arrived_at")
+    var waypointArrivedAt: LocalDateTime? = null
+    
     protected constructor() : this(
         client = Client(), 
         fromAddress = "",
