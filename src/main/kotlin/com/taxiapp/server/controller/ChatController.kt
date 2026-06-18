@@ -7,30 +7,30 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
 @RestController
-@RequestMapping("/api/v1/chat") // <--- ИСПРАВЛЕНО: добавили /v1
+@RequestMapping("/api/v1/chat")
 class ChatController(private val chatService: ChatService) {
 
-    // Получить историю сообщений при открытии экрана
-    @GetMapping("/{orderId}")
-    fun getMessages(@PathVariable orderId: Long): ResponseEntity<List<ChatMessageDto>> {
-        return ResponseEntity.ok(chatService.getOrderMessages(orderId))
+    // Получить историю сообщений (принимает или Long ID, или UUID String)
+    @GetMapping("/{orderIdOrUuid}")
+    fun getMessages(@PathVariable orderIdOrUuid: String): ResponseEntity<List<ChatMessageDto>> {
+        return ResponseEntity.ok(chatService.getOrderMessages(orderIdOrUuid))
     }
 
     // Отправка сообщения от клиента
-    @PostMapping("/client/{orderId}")
+    @PostMapping("/client/{orderIdOrUuid}")
     fun sendFromClient(
-        @PathVariable orderId: Long,
+        @PathVariable orderIdOrUuid: String,
         @RequestBody request: SendMessageRequest
     ): ResponseEntity<ChatMessageDto> {
-        return ResponseEntity.ok(chatService.sendMessage(orderId, "CLIENT", request.content))
+        return ResponseEntity.ok(chatService.sendMessage(orderIdOrUuid, "CLIENT", request.content))
     }
 
     // Отправка сообщения от водителя
-    @PostMapping("/driver/{orderId}")
+    @PostMapping("/driver/{orderIdOrUuid}")
     fun sendFromDriver(
-        @PathVariable orderId: Long,
+        @PathVariable orderIdOrUuid: String,
         @RequestBody request: SendMessageRequest
     ): ResponseEntity<ChatMessageDto> {
-        return ResponseEntity.ok(chatService.sendMessage(orderId, "DRIVER", request.content))
+        return ResponseEntity.ok(chatService.sendMessage(orderIdOrUuid, "DRIVER", request.content))
     }
 }
