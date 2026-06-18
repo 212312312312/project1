@@ -682,6 +682,7 @@ class OrderService(
     }
 
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
+        if (!driver.isOnline) return emptyList()
         if (driver.activityScore <= 0) return emptyList()
 
         // --- ВИПРАВЛЕННЯ: Використовуємо новий метод, щоб приховати зайняті SCHEDULED ---
@@ -953,6 +954,9 @@ class OrderService(
     
     @Transactional
     fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+        if (!driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
         if (driver.activityScore <= 0) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність.")
 
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }

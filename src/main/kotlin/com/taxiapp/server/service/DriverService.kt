@@ -36,7 +36,9 @@ class DriverService(
     private val smsService: SmsService,
     private val walletTransactionRepository: WalletTransactionRepository,
     private val userRepository: UserRepository,
-    private val driverCardRepository: com.taxiapp.server.repository.DriverCardRepository // ДОБАВЛЕНО
+    private val driverCardRepository: com.taxiapp.server.repository.DriverCardRepository,
+    // Находим конструктор DriverService и добавляем туда:
+    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository // ДОБАВЛЕНО
 ) {
     // Временное хранилище для кодов подтверждения (Номер -> Код)
     private val verificationCodes = ConcurrentHashMap<String, String>()
@@ -146,12 +148,24 @@ class DriverService(
             driver.longitude = request.longitude
             driver.lastUpdate = LocalDateTime.now()
             
-            // ЛОГИКА: Если был OFFLINE или MANUAL -> ставим CHAIN
-            // Мы избавляемся от MANUAL как дефолтного статуса
             if (driver.searchMode == DriverSearchMode.OFFLINE || driver.searchMode == DriverSearchMode.MANUAL) {
                 driver.searchMode = DriverSearchMode.CHAIN
             }
         } else {
+            // --- ДОБАВЛЕНО: Запрет выхода в офлайн, если есть активный или запланированный заказ ---
+            val activeStatuses = listOf(
+                com.taxiapp.server.model.enums.OrderStatus.ACCEPTED,
+                com.taxiapp.server.model.enums.OrderStatus.DRIVER_ARRIVED,
+                com.taxiapp.server.model.enums.OrderStatus.IN_PROGRESS,
+                com.taxiapp.server.model.enums.OrderStatus.SCHEDULED
+            )
+            val hasActiveOrders = taxiOrderRepository.findAllByDriverId(driver.id!!)
+                .any { it.status in activeStatuses }
+
+            if (hasActiveOrders) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Неможливо вийти в офлайн під час виконання замовлення")
+            }
+
             driver.isOnline = false
             driver.searchMode = DriverSearchMode.OFFLINE 
         }
@@ -159,9 +173,7 @@ class DriverService(
         val updatedDriver = driverRepository.save(driver)
         val driverDto = DriverDto(updatedDriver)
 
-        // Уведомляем админов/диспетчеров
         messagingTemplate.convertAndSend("/topic/admin/drivers", driverDto)
-
         return driverDto
     }
 

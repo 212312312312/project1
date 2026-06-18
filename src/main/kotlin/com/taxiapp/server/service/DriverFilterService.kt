@@ -53,7 +53,9 @@ class DriverFilterService(
         val driverId = getCurrentDriverId()
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
-
+        if (!driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
         // Визначаємо isActive: якщо хоч щось включено -> фільтр активний
         val isActive = req.isEther || req.isAuto || req.isCycle
         
@@ -95,20 +97,26 @@ class DriverFilterService(
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваш фільтр")
         }
 
-        // ВАЛИДАЦИЯ: Нельзя Auto и Cycle одновременно
+        // 1. ВАЛИДАЦИЯ: Нельзя Auto и Cycle одновременно
         if (req.isAuto && req.isCycle) {
              throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Авто і Цикл не можуть працювати разом")
         }
 
-        // ЛОГИКА: Фільтр активний, якщо увімкнено хоч один режим
+        // 2. ЛОГИКА: Вычисляем активность (строго ОДНО объявление переменной)
         val shouldBeActive = req.isEther || req.isAuto || req.isCycle
 
-        // Якщо фільтр стає активним (а був вимкнений) — перевіряємо ліміт (макс 3)
+        // 3. ПРОВЕРКА ОНЛАЙНА: Если фильтр пытаются включить в оффлайне — блокируем
+        if (shouldBeActive && !filter.driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
+
+        // 4. ЛИМИТЫ: Если фильтр переходит из выключенного в активное состояние — проверяем лимит (макс 3)
         if (shouldBeActive && !filter.isActive) {
             checkActiveFiltersLimit(getCurrentDriverId(), excludeFilterId = id)
         }
 
-        filter.isActive = shouldBeActive // Сервер сам ставить активність
+        // 5. СОХРАНЕНИЕ: Обновляем состояние сущности в БД
+        filter.isActive = shouldBeActive
         filter.isEther = req.isEther
         filter.isAuto = req.isAuto
         filter.isCycle = req.isCycle
@@ -156,6 +164,9 @@ class DriverFilterService(
     fun toggleFilter(id: Long) {
         val filter = filterRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         if (filter.driver.id != getCurrentDriverId()) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        if (!filter.isActive && !filter.driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
         if (!filter.isActive) checkActiveFiltersLimit(getCurrentDriverId(), id)
         
         filter.isActive = !filter.isActive
