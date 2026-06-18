@@ -1051,7 +1051,15 @@ class OrderService(
 
         // --- ЛОГИКА РАСЧЕТА ПЛАТНОГО ОЖИДАНИЯ ---
         if (order.arrivedAt != null) {
-            val minutesWaited = java.time.temporal.ChronoUnit.MINUTES.between(order.arrivedAt, order.startedAt).toInt()
+            // 💡 Если водитель приехал раньше запланированного времени, бесплатное ожидание начнется строго в scheduledAt
+            val waitingStart = if (order.scheduledAt != null && order.arrivedAt!!.isBefore(order.scheduledAt)) {
+                order.scheduledAt!!
+            } else {
+                order.arrivedAt!!
+            }
+            
+            // maxOf(0, ...) гарантирует, что если клиент вышел еще ДО времени подачи, мы не улетим в минус
+            val minutesWaited = maxOf(0, java.time.temporal.ChronoUnit.MINUTES.between(waitingStart, order.startedAt).toInt())
             val freeMinutes = order.tariff.freeWaitingMinutes
             
             if (minutesWaited > freeMinutes) {

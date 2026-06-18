@@ -36,6 +36,7 @@ data class TaxiOrderDto(
     val googleRoutePolyline: String?,
 
     val arrivedAt: LocalDateTime? = null,
+    val waitingStartTime: LocalDateTime? = null, // 💡 Реальное время, от которого мобилки включат таймер
     val scheduledAt: LocalDateTime?,
     val carModel: String? = null,
     val carPlate: String? = null,
@@ -101,6 +102,10 @@ data class TaxiOrderDto(
         googleRoutePolyline = order.googleRoutePolyline,
 
         arrivedAt = order.arrivedAt,
+        waitingStartTime = if (order.arrivedAt != null) {
+            // Если приехал раньше времени подачи — таймер в UI запустится только в момент scheduledAt
+            if (order.scheduledAt != null && order.arrivedAt!!.isBefore(order.scheduledAt)) order.scheduledAt else order.arrivedAt
+        } else null,
         scheduledAt = order.scheduledAt,
         carModel = order.driver?.car?.let { "${it.make} ${it.model}" },
         carPlate = order.driver?.car?.plateNumber,
