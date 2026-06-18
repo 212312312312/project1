@@ -124,6 +124,8 @@ class AuthService(
                     this.passwordHash = passwordEncoder.encode("google_login_stub")
                     this.role = Role.CLIENT
                     this.isBlocked = false
+                    // Записуємо маркетингове джерело з Google-запиту в сутність
+                    this.acquisitionSource = request.acquisitionSource
                 }
                 user = clientRepository.save(newClient)
             }
@@ -224,6 +226,8 @@ class AuthService(
             val newClient = Client().apply {
                 userPhone = normalizedPhone; userLogin = normalizedPhone; fullName = "Райдер"
                 passwordHash = passwordEncoder.encode("sms_login"); role = Role.CLIENT; isBlocked = false
+                // Записуємо маркетингове джерело з запиту в сутність користувача
+                this.acquisitionSource = request.acquisitionSource
             }
             user = clientRepository.save(newClient)
         }

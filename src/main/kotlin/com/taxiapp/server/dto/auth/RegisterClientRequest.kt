@@ -12,5 +12,8 @@ data class RegisterClientRequest(
     val password: String,
 
     @field:NotBlank(message = "ФИО не может быть пустым")
-    val fullName: String
+    val fullName: String,
+
+    // Маркетинговый источник (например: fb_poznyaki, inst_promo)
+    val acquisitionSource: String? = null
 )

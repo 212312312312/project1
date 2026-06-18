@@ -15,5 +15,8 @@ data class SmsVerifyDto(
     val phoneNumber: String,
 
     @field:NotBlank(message = "Введіть код")
-    val code: String
+    val code: String,
+
+    // Маркетингове джерело (наприклад: fb_ad_poznyaki)
+    val acquisitionSource: String? = null
 )

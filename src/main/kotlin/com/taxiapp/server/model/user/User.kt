@@ -32,11 +32,16 @@ open class User : UserDetails {
     @Column(nullable = false)
     lateinit var fullName: String
 
+    @Column(name = "deletion_requested_at")
+    var deletionRequestedAt: LocalDateTime? = null
+
+    // --- НОВЕ ПОЛЕ ДЛЯ АНАЛІТИКИ МАРКЕТИНГУ ---
+    @Column(name = "acquisition_source", nullable = true)
+    var acquisitionSource: String? = null
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     lateinit var role: Role
-
-
 
     @Column(nullable = false)
     var isBlocked: Boolean = false
@@ -47,10 +52,6 @@ open class User : UserDetails {
     // Зберігає дату реєстрації.
     @Column(name = "created_at")
     var createdAt: LocalDateTime? = LocalDateTime.now()
-
-    // --- НОВЕ ПОЛЕ ДЛЯ ЧЕРГИ НА ВИДАЛЕННЯ ---
-    @Column(name = "deletion_requested_at")
-    var deletionRequestedAt: LocalDateTime? = null
 
     // --- Реализация UserDetails ---
 
