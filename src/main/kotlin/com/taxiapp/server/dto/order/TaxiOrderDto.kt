@@ -54,17 +54,15 @@ data class TaxiOrderDto(
     val toSector: String? = null,
     val isDriverConfirmed: Boolean,
     
-    // 🛠️ ДОБАВЛЕНО В ОБЪЯВЛЕНИЕ ПОЛЕЙ КЛАССА:
-    val currentStopOrder: Int = 0,
-    val waypointArrivedAt: LocalDateTime? = null,
-
     val activityBonus: Int,
     val serviceCommission: Double?,
     val amountToBalance: Double?,
     val bankCommission: Double?,
     val transferToCard: Double?,
-    val currentStopOrder: Int,
-    val waypointArrivedAt: java.time.LocalDateTime?
+    
+    // Новые поля (оставлены один раз с дефолтными значениями в конце)
+    val currentStopOrder: Int = 0,
+    val waypointArrivedAt: LocalDateTime? = null
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.uuid.toString(),
@@ -76,8 +74,6 @@ data class TaxiOrderDto(
         toAddress = order.toAddress,
         createdAt = order.createdAt,
         completedAt = order.completedAt,
-        currentStopOrder = order.currentStopOrder,
-        waypointArrivedAt = order.waypointArrivedAt,
         
         price = if (order.price - order.appliedDiscount < 1.0) {
             1.0
@@ -109,7 +105,7 @@ data class TaxiOrderDto(
 
         arrivedAt = order.arrivedAt,
         
-        // 💡 МОДИФИЦИРОВАНО: Автоматическое переключение таймера ожидания на промежуточную точку
+        // Автоматическое переключение таймера ожидания на промежуточную точку
         waitingStartTime = if (order.status == OrderStatus.ARRIVED_AT_WAYPOINT) {
             order.waypointArrivedAt
         } else if (order.arrivedAt != null) {
@@ -173,15 +169,15 @@ data class TaxiOrderDto(
         fromSector = order.originSector?.name,
         isDriverConfirmed = order.isDriverConfirmed ?: false,
 
-        // 🛠️ ЗАПОЛНЯЕМ НОВЫЕ ПАРАМЕТРЫ ИЗ МОДЕЛИ:
-        currentStopOrder = order.currentStopOrder,
-        waypointArrivedAt = order.waypointArrivedAt,
-
         activityBonus = calculateAdaptiveActivity(order),
         serviceCommission = if (order.status == OrderStatus.COMPLETED && order.commissionAmount > 0) order.commissionAmount else null,
         amountToBalance = if (order.status == OrderStatus.COMPLETED && order.paymentMethod == "CARD") order.price else null,
         bankCommission = if (order.status == OrderStatus.COMPLETED && order.bankCommissionAmount > 0) order.bankCommissionAmount else null,
-        transferToCard = if (order.status == OrderStatus.COMPLETED && order.payoutAmount > 0) order.payoutAmount else null
+        transferToCard = if (order.status == OrderStatus.COMPLETED && order.payoutAmount > 0) order.payoutAmount else null,
+
+        // Передаем параметры ровно один раз
+        currentStopOrder = order.currentStopOrder,
+        waypointArrivedAt = order.waypointArrivedAt
     )
 
     companion object {

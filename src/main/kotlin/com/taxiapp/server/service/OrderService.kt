@@ -761,7 +761,8 @@ class OrderService(
             OrderStatus.ACCEPTED,
             OrderStatus.DRIVER_ARRIVED,
             OrderStatus.IN_PROGRESS,
-            OrderStatus.SCHEDULED // <--- ВАЖНО: Добавили это!
+            OrderStatus.SCHEDULED,
+            OrderStatus.ARRIVED_AT_WAYPOINT / // <--- ВАЖНО: Добавили это!
         )
         // Ищем заказ, где этот водитель назначен главным (driver_id)
         val activeOrder = orderRepository.findAllByDriverId(driver.id!!)
@@ -1457,17 +1458,18 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     }
 
     fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
-        val activeStatuses = listOf(
-            OrderStatus.REQUESTED, 
-            OrderStatus.OFFERING, 
-            OrderStatus.ACCEPTED, 
-            OrderStatus.DRIVER_ARRIVED, 
-            OrderStatus.IN_PROGRESS,
-            OrderStatus.SCHEDULED 
-        )
-        return orderRepository.findAllByStatusIn(activeStatuses)
-            .map { TaxiOrderDto(it) }
-            .sortedByDescending { it.id }
+    val activeStatuses = listOf(
+        OrderStatus.REQUESTED, 
+        OrderStatus.OFFERING, 
+        OrderStatus.ACCEPTED, 
+        OrderStatus.DRIVER_ARRIVED, 
+        OrderStatus.IN_PROGRESS,
+        OrderStatus.SCHEDULED,
+        OrderStatus.ARRIVED_AT_WAYPOINT // 👈 ДОБАВЛЕНО, чтобы база данных возвращала этот статус диспетчеру!
+    )
+    return orderRepository.findAllByStatusIn(activeStatuses)
+        .map { TaxiOrderDto(it) }
+        .sortedByDescending { it.id }
     }
 
     private fun sendSocketAfterCommit(destination: String, message: Any) {
