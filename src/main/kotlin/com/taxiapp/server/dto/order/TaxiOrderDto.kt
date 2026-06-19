@@ -62,7 +62,9 @@ data class TaxiOrderDto(
     val serviceCommission: Double?,
     val amountToBalance: Double?,
     val bankCommission: Double?,
-    val transferToCard: Double?
+    val transferToCard: Double?,
+    val currentStopOrder: Int,
+    val waypointArrivedAt: java.time.LocalDateTime?
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.uuid.toString(),
@@ -74,6 +76,8 @@ data class TaxiOrderDto(
         toAddress = order.toAddress,
         createdAt = order.createdAt,
         completedAt = order.completedAt,
+        currentStopOrder = order.currentStopOrder,
+        waypointArrivedAt = order.waypointArrivedAt,
         
         price = if (order.price - order.appliedDiscount < 1.0) {
             1.0
