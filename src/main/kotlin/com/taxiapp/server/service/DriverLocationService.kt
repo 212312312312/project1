@@ -41,7 +41,8 @@ class DriverLocationService(
                 bearing = newBearing
             )
 
-            messagingTemplate.convertAndSend("/topic/order/${order.id}/tracking", trackingDto)
+            // ФИКС: Переключили с order.id на order.uuid, так как клиент подписывается именно по UUID заказа
+            messagingTemplate.convertAndSend("/topic/order/${order.uuid}/tracking", trackingDto)
         }
     }
 

@@ -762,7 +762,7 @@ class OrderService(
             OrderStatus.DRIVER_ARRIVED,
             OrderStatus.IN_PROGRESS,
             OrderStatus.SCHEDULED,
-            OrderStatus.ARRIVED_AT_WAYPOINT / // <--- ВАЖНО: Добавили это!
+            OrderStatus.ARRIVED_AT_WAYPOINT // <--- ВАЖНО: Добавили это!
         )
         // Ищем заказ, где этот водитель назначен главным (driver_id)
         val activeOrder = orderRepository.findAllByDriverId(driver.id!!)
