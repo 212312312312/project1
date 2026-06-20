@@ -442,11 +442,15 @@ class OrderService(
         // =====================================================================
         val rejectedIds = if (savedOrder.rejectedDriverIds.isNotEmpty()) savedOrder.rejectedDriverIds.toList() else null
 
+       // Рассчитываем порог активности водителя (не более 45 секунд с последнего пинга логов)
+        val lastSeenThreshold = LocalDateTime.now().minusSeconds(45)
+
         // 1. ЛАНЦЮГ (Chain)
         val chainDriver = driverRepository.findBestChainDriver(
             pickupLat = savedOrder.originLat!!,
             pickupLng = savedOrder.originLng!!,
-            rejectedDriverIds = rejectedIds
+            rejectedDriverIds = rejectedIds,
+            lastSeenThreshold = lastSeenThreshold // 👈 Передаем порог
         ).orElse(null)
 
         if (chainDriver != null) {
@@ -475,7 +479,8 @@ class OrderService(
                     savedOrder.originLat!!,
                     savedOrder.originLng!!,
                     destSector?.id,
-                    rejectedIds
+                    rejectedIds,
+                    lastSeenThreshold = lastSeenThreshold // 👈 Передаем порог
                 )
 
                 if (candidates.isNotEmpty()) {
@@ -1401,11 +1406,13 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
                 // але статус самої сутності в базі краще тримати SCHEDULED або REQUESTED
                 
                 // Спробуємо знайти водія
+                val scheduledThreshold = LocalDateTime.now().minusSeconds(45)
                 val bestDriver = driverRepository.findBestDriverForOrder(
-                    order.originLat ?: 0.0,
-                    order.originLng ?: 0.0,
-                    order.destinationSector?.id,
-                    order.rejectedDriverIds.toList()
+                    pickupLat = order.originLat ?: 0.0,
+                    pickupLng = order.originLng ?: 0.0,
+                    destinationSectorId = order.destinationSector?.id,
+                    rejectedDriverIds = order.rejectedDriverIds.toList(),
+                    lastSeenThreshold = scheduledThreshold // 👈 Передаем порог
                 ).orElse(null)
 
                 if (bestDriver != null) {
