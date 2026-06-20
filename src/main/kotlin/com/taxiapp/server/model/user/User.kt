@@ -16,6 +16,10 @@ open class User : UserDetails {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0
 
+    // Добавь это поле сразу после объявления val id: Long = 0
+    @Column(unique = true, nullable = false, updatable = false)
+    val uuid: String = java.util.UUID.randomUUID().toString()   
+
     @Column(unique = true, nullable = true)
     var userLogin: String? = null 
 

@@ -18,33 +18,34 @@ class DriverLocationService(
 ) {
 
     @Transactional
-    fun updateLocation(driverId: Long, request: UpdateLocationRequest) {
-        val driver = driverRepository.findById(driverId).orElseThrow { RuntimeException("Driver not found") }
-        
-        driver.latitude = request.lat
-        driver.longitude = request.lng
-        
-        val newBearing = request.bearing ?: 0f
-        driver.bearing = newBearing
-        
-        driverRepository.save(driver)
+fun updateLocation(driverUuid: String, request: UpdateLocationRequest) {
+    // 1. Ищем водителя по строковому UUID
+    val driver = driverRepository.findByUuid(driverUuid).orElseThrow { RuntimeException("Driver not found") }
+    val driverId = driver.id
+    
+    driver.latitude = request.lat
+    driver.longitude = request.lng
+    
+    val newBearing = request.bearing ?: 0f
+    driver.bearing = newBearing
+    
+    driverRepository.save(driver)
 
-        // Ретрансляция (Tracking)
-        val activeOrderOpt = orderRepository.findActiveOrderByDriverId(driverId)
-        
-        if (activeOrderOpt.isPresent) {
-            val order = activeOrderOpt.get()
-            
-            val trackingDto = TrackingLocationDto(
-                lat = request.lat,
-                lng = request.lng,
-                bearing = newBearing
-            )
-
-            // ФИКС: Переключили с order.id на order.uuid, так как клиент подписывается именно по UUID заказа
-            messagingTemplate.convertAndSend("/topic/order/${order.uuid}/tracking", trackingDto)
-        }
+    // 2. Ретрансляция (Tracking) для активного заказа клиента
+    val activeOrderOpt = orderRepository.findActiveOrderByDriverId(driverId)
+    if (activeOrderOpt.isPresent) {
+        val order = activeOrderOpt.get()
+        val trackingDto = TrackingLocationDto(
+            lat = request.lat,
+            lng = request.lng,
+            bearing = newBearing
+        )
+        messagingTemplate.convertAndSend("/topic/order/${order.uuid}/tracking", trackingDto)
     }
+
+    // 3. ФИКС ДЛЯ ДИСПЕТЧЕРА: Трансляция координат на общую веб-карту в реальном времени!
+    messagingTemplate.convertAndSend("/topic/admin/drivers/locations", DriverLocationDto(driver))
+}
 
     @Transactional
     fun clearLocation(driverId: Long) {

@@ -14,6 +14,8 @@ import java.util.Optional
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
 
+    // Добавь эту строчку в интерфейс репозитория
+fun findByUuid(uuid: String): java.util.Optional<Driver>
 
     fun findAllByRegistrationStatusNot(status: RegistrationStatus): List<Driver>
 

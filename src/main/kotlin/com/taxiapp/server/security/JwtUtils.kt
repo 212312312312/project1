@@ -27,9 +27,9 @@ class JwtUtils(
         return extractClaim(token, Claims::getSubject)
     }
 
-    fun extractUserId(token: String): Long {
-        val claims = extractAllClaims(token)
-        return (claims["userId"] as Number).toLong()
+    fun extractUserUuid(token: String): String {
+    val claims = extractAllClaims(token)
+    return claims["userUuid"] as String
     }
 
     fun <T> extractClaim(token: String, claimsResolver: Function<Claims, T>): T {
@@ -49,12 +49,12 @@ class JwtUtils(
             .body
     }
 
-    fun generateToken(userDetails: UserDetails, userId: Long, role: String): String {
-        val claims = HashMap<String, Any>()
-        claims["userId"] = userId
-        claims["role"] = role 
-        return createToken(claims, userDetails.username)
-    }
+    fun generateToken(userDetails: UserDetails, userUuid: String, role: String): String {
+    val claims = HashMap<String, Any>()
+    claims["userUuid"] = userUuid
+    claims["role"] = role 
+    return createToken(claims, userDetails.username)
+}
 
     private fun createToken(claims: Map<String, Any>, subject: String): String {
         return Jwts.builder()

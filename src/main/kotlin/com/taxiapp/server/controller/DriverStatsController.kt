@@ -6,11 +6,14 @@ import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.security.JwtUtils
 import jakarta.servlet.http.HttpServletRequest
 import org.springframework.format.annotation.DateTimeFormat
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
+import com.taxiapp.server.repository.DriverRepository
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -18,6 +21,7 @@ import java.time.LocalDateTime
 @RequestMapping("/api/v1/driver/stats")
 class DriverStatsController(
     private val orderRepository: TaxiOrderRepository,
+    private val driverRepository: DriverRepository,
     private val jwtUtils: JwtUtils
 ) {
 
@@ -28,8 +32,13 @@ class DriverStatsController(
         servletRequest: HttpServletRequest
     ): ResponseEntity<DriverStatsDto> {
         val authHeader = servletRequest.getHeader("Authorization")
+
+        // Получаем driverId через извлечение UUID
         val driverId = if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            jwtUtils.extractUserId(authHeader.substring(7))
+            val driverUuid = jwtUtils.extractUserUuid(authHeader.substring(7))
+            val driver = driverRepository.findByUuid(driverUuid)
+                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Водій не знайдений") }
+            driver.id
         } else {
             return ResponseEntity.status(401).build()
         }

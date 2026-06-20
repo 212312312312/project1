@@ -142,20 +142,25 @@ class DriverAppController(
     }
 
     @PostMapping("/location")
-    fun updateLocation(
-        @RequestBody request: UpdateLocationRequest,
-        servletRequest: HttpServletRequest
-    ): ResponseEntity<Void> {
-        val authHeader = servletRequest.getHeader("Authorization")
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            val token = authHeader.substring(7)
-            try {
-                val driverId = jwtUtils.extractUserId(token)
-                driverLocationService.updateLocation(driverId, request)
-            } catch (e: Exception) {}
+fun updateLocation(
+    @RequestBody request: UpdateLocationRequest,
+    servletRequest: HttpServletRequest
+): ResponseEntity<Void> {
+    val authHeader = servletRequest.getHeader("Authorization")
+    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+        val token = authHeader.substring(7)
+        try {
+            // Извлекаем строковый UUID вместо Long ID
+            val driverUuid = jwtUtils.extractUserUuid(token)
+            driverLocationService.updateLocation(driverUuid, request)
+        } catch (e: Exception) {
+            // Теперь мы увидим реальную причину в логах сервера, если передача упадет
+            println(">>> КРИТИЧЕСКАЯ ОШИБКА ОБНОВЛЕНИЯ ЛОКАЦИИ: ${e.message}")
+            e.printStackTrace()
         }
-        return ResponseEntity.ok().build()
     }
+    return ResponseEntity.ok().build()
+}
 
     @GetMapping("/transactions")
     fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
@@ -327,7 +332,7 @@ class DriverAppController(
     ): ResponseEntity<LoginResponse> {
         val driver = getDriverFromUser(userDetails)
         val updatedUser = driverService.changePhone(driver, request.newPhone, request.code, request.changeToken)
-        val newToken = jwtUtils.generateToken(updatedUser, updatedUser.id!!, updatedUser.role.name)
+        val newToken = jwtUtils.generateToken(updatedUser, updatedUser.uuid, updatedUser.role.name)
         val newRefreshToken = authService.createRefreshToken(updatedUser.id!!)
         
         return ResponseEntity.ok(LoginResponse(
@@ -356,15 +361,18 @@ class DriverAppController(
     }
 
     @DeleteMapping("/location")
-    fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
-        val authHeader = servletRequest.getHeader("Authorization")
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            val token = authHeader.substring(7)
-            val driverId = jwtUtils.extractUserId(token)
-            driverLocationService.clearLocation(driverId)
-        }
-        return ResponseEntity.ok().build()
+fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
+    val authHeader = servletRequest.getHeader("Authorization")
+    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+        val token = authHeader.substring(7)
+        // Извлекаем UUID и находим водителя, чтобы получить его внутренний Long ID для очистки
+        val driverUuid = jwtUtils.extractUserUuid(token)
+        val driver = driverRepository.findByUuid(driverUuid)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений") }
+        driverLocationService.clearLocation(driver.id)
     }
+    return ResponseEntity.ok().build()
+}
 
     @GetMapping("/forms/add-car")
     fun getAddCarForm(@RequestParam token: String): ResponseEntity<Void> {
@@ -436,14 +444,15 @@ class DriverAppController(
     }
 
     private fun validateTokenAndGetDriver(token: String): Driver {
-        try {
-            val driverId = jwtUtils.extractUserId(token)
-            return driverRepository.findById(driverId)
-                .orElseThrow { RuntimeException("Driver not found") }
-        } catch (e: Exception) {
-             throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid token")
-        }
+    try {
+        // Извлекаем UUID и ищем через репозиторий по UUID
+        val driverUuid = jwtUtils.extractUserUuid(token)
+        return driverRepository.findByUuid(driverUuid)
+            .orElseThrow { RuntimeException("Driver not found") }
+    } catch (e: Exception) {
+         throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid token")
     }
+}
 
     @GetMapping("/cars")
     fun getMyCars(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<CarDto>> {

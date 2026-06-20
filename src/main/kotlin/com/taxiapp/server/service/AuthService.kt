@@ -77,7 +77,7 @@ class AuthService(
         } catch (e: Exception) { throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Невірний логін або пароль") }
         
         val userDetails = userDetailsService.loadUserByUsername(normalizedLogin)
-        val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+        val token = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
         val refreshToken = createRefreshToken(user.id)
@@ -133,7 +133,7 @@ class AuthService(
             if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
 
             val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.email!!)
-            val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+            val token = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
             val refreshToken = createRefreshToken(user.id)
             val isPending = user.deletionRequestedAt != null
 
@@ -188,7 +188,7 @@ class AuthService(
         if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
 
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: normalizedPhone)
-        val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+        val token = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
         val refreshToken = createRefreshToken(user.id)
@@ -232,7 +232,7 @@ class AuthService(
             user = clientRepository.save(newClient)
         }
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: normalizedPhone)
-        val token = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+        val token = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
         val refreshToken = createRefreshToken(user.id)
@@ -414,13 +414,13 @@ class AuthService(
             // 4. Оновлюємо старий (основний) акаунт новими даними
             existingUser.email = googleEmail
             
-            // Якщо старий акаунт не мав імені (був "Райдер"), беремо ім'я з Google
+            // Якщо акаунт не мав імені (був "Райдер"), беремо ім'я з Google
             if (existingUser.fullName == "Райдер" || existingUser.fullName == "Клієнт") {
                 existingUser.fullName = googleName
             }
             
             userRepository.save(existingUser)
-            existingUser // Тепер це наш головний акаунт для логіну
+            existingUser // Тепер это наш главный аккаунт для логина
             
         } else {
             // ==========================================
@@ -436,7 +436,7 @@ class AuthService(
 
         // 4. Генеруємо нові токени для фінального користувача
         val userDetails = userDetailsService.loadUserByUsername(finalUser.userLogin!!)
-        val token = jwtUtils.generateToken(userDetails, finalUser.id, finalUser.role.name)
+        val token = jwtUtils.generateToken(userDetails, finalUser.uuid, finalUser.role.name)
         val refreshToken = createRefreshToken(finalUser.id)
         
         return LoginResponse(
@@ -457,9 +457,6 @@ class AuthService(
             ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") 
         }
         
-        // --- ИЗМЕНЕНИЕ: Удалена строка refreshTokenRepository.deleteByUser(user) ---
-        // Теперь мы не разлогиниваем другие устройства пользователя при новом входе.
-
         val refreshToken = com.taxiapp.server.model.auth.RefreshToken().apply {
             this.user = user
             this.token = jwtUtils.generateRefreshToken()
@@ -484,20 +481,20 @@ class AuthService(
         // ==========================================
         // ИЗМЕНЕНИЕ: ИДЕАЛЬНАЯ РОТАЦИЯ (Rotation)
         // 1. Удаляем ИСПОЛЬЗОВАННЫЙ рефреш токен (исключает перехват и повторное использование)
+        // ==========================================
         refreshTokenRepository.delete(oldRefreshToken)
         refreshTokenRepository.flush()
         
-        // 2. Генерируем новый (старые сессии на других устройствах остаются живы)
+        // 2. Генерируем новый
         val newRefreshToken = createRefreshToken(user.id)
-        // ==========================================
 
         val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.userPhone!!)
-        val newAccessToken = jwtUtils.generateToken(userDetails, user.id, user.role.name)
+        val newAccessToken = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
         val isPending = user.deletionRequestedAt != null
         
         return LoginResponse(
             token = newAccessToken, 
-            refreshToken = newRefreshToken.token, // Отдаем новый рефреш
+            refreshToken = newRefreshToken.token,
             userId = user.id, 
             phoneNumber = user.userPhone ?: "", 
             fullName = user.fullName ?: "Користувач", 
