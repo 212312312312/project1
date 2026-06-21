@@ -3,6 +3,7 @@ package com.taxiapp.server.service
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.taxiapp.server.dto.tariff.CarTariffDto
 import com.taxiapp.server.dto.tariff.CreateTariffRequest
+import org.springframework.data.redis.core.RedisTemplate
 import com.taxiapp.server.model.order.CarTariff
 import com.taxiapp.server.repository.CarTariffRepository
 import org.springframework.http.HttpStatus
@@ -16,8 +17,10 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder
 class TariffAdminService(
     private val tariffRepository: CarTariffRepository,
     private val fileStorageService: FileStorageService,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val redisTemplate: RedisTemplate<String, Any> // <-- Инжектим Redis
 ) {
+    private val CACHE_KEY = "tariffs:all" // Ключ кэша в Redis
 
     // Вспомогательная функция для построения полного URL
     private fun buildImageUrl(filename: String?): String? {
@@ -46,18 +49,27 @@ class TariffAdminService(
         )
     }
 
-    // (Read) Отримати всі тарифи
+    // (Read) Отримати всі тарифи — ТЕПЕР ИЗ КЭША!
     @Transactional(readOnly = true)
     fun getAllTariffs(): List<CarTariffDto> {
-        return tariffRepository.findAll().map { toDto(it) }
+        // Проверяем наличие в Redis
+        val cached = redisTemplate.opsForValue().get(CACHE_KEY) as? List<*>
+        if (cached != null) {
+            // Безопасно приводим типы через objectMapper, защищаясь от ошибок каста Jackson
+            return cached.map { objectMapper.convertValue(it, CarTariffDto::class.java) }
+        }
+
+        // Если в кэше пусто — берем из БД и сохраняем в Redis
+        val tariffs = tariffRepository.findAll().map { toDto(it) }
+        redisTemplate.opsForValue().set(CACHE_KEY, tariffs)
+        return tariffs
     }
 
-    // (Create) Створити новий тариф
+    // (Create) Створити новий тариф — Сбрасываем кэш
     @Transactional
     fun createTariff(requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
         
-        // ISPR: store -> storeFile
         val filename: String? = file?.let {
             fileStorageService.storeFile(it)
         }
@@ -71,15 +83,17 @@ class TariffAdminService(
             pricePerWaitingMinute = request.pricePerWaitingMinute,
             extraWaypointPrice = request.extraWaypointPrice,
             isActive = request.isActive,
-            isBeta = request.isBeta,               // <--- ДОБАВЛЕНО
+            isBeta = request.isBeta,
             isUnavailable = request.isUnavailable,
             imageUrl = filename
         )
         val savedTariff = tariffRepository.save(newTariff)
+        
+        redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша
         return toDto(savedTariff)
     }
 
-    // (Update) Оновити існуючий тариф
+    // (Update) Оновити існуючий тариф — Сбрасываем кэш
     @Transactional
     fun updateTariff(tariffId: Long, requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
@@ -91,7 +105,6 @@ class TariffAdminService(
 
         if (file != null) {
             fileStorageService.delete(tariff.imageUrl)
-            // ISPR: store -> storeFile
             newFilename = fileStorageService.storeFile(file)
         }
 
@@ -103,15 +116,17 @@ class TariffAdminService(
         tariff.freeWaitingMinutes = request.freeWaitingMinutes
         tariff.pricePerWaitingMinute = request.pricePerWaitingMinute
         tariff.isActive = request.isActive
-        tariff.isBeta = request.isBeta                 // <--- ДОБАВЛЕНО
+        tariff.isBeta = request.isBeta
         tariff.isUnavailable = request.isUnavailable
         tariff.imageUrl = newFilename
 
         val updatedTariff = tariffRepository.save(tariff)
+        
+        redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша
         return toDto(updatedTariff)
     }
     
-    // (Delete) Видалити тариф
+    // (Delete) Видалити тариф — Сбрасываем кэш
     @Transactional
     fun deleteTariff(tariffId: Long) {
          val tariff = tariffRepository.findById(tariffId)
@@ -120,6 +135,8 @@ class TariffAdminService(
          fileStorageService.delete(tariff.imageUrl)
          
          tariffRepository.delete(tariff)
+         
+         redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша
     }
 
     fun getTariffById(id: Long): CarTariffDto {
