@@ -53,7 +53,9 @@ fun updateLocation(driverUuid: String, request: UpdateLocationRequest) {
         val driver = driverRepository.findById(driverId).orElse(null) ?: return
         driver.latitude = null
         driver.longitude = null
-        driver.searchMode = DriverSearchMode.OFFLINE
+        if (driver.searchMode == DriverSearchMode.CHAIN || driver.searchMode == DriverSearchMode.HOME) {
+            driver.searchMode = DriverSearchMode.MANUAL
+        }
         driver.isOnline = false // На всякий случай дублируем
         driverRepository.save(driver)
         messagingTemplate.convertAndSend("/topic/admin/drivers/locations", DriverLocationDto(driver))

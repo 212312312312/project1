@@ -148,11 +148,8 @@ class DriverService(
             driver.longitude = request.longitude
             driver.lastUpdate = LocalDateTime.now()
             
-            if (driver.searchMode == DriverSearchMode.OFFLINE || driver.searchMode == DriverSearchMode.MANUAL) {
-                driver.searchMode = DriverSearchMode.CHAIN
-            }
         } else {
-            // --- ДОБАВЛЕНО: Запрет выхода в офлайн, если есть активный или запланированный заказ ---
+            // --- МЕТОД ВЫХОДА В ОФЛАЙН ---
             val activeStatuses = listOf(
                 com.taxiapp.server.model.enums.OrderStatus.ACCEPTED,
                 com.taxiapp.server.model.enums.OrderStatus.DRIVER_ARRIVED,
@@ -167,7 +164,11 @@ class DriverService(
             }
 
             driver.isOnline = false
-            driver.searchMode = DriverSearchMode.OFFLINE 
+            
+            // ИСПРАВЛЕНО ТУТ: Вместо OFFLINE переводим в MANUAL, чтобы UI приложения сбрасывал кнопку поиска
+            if (driver.searchMode == DriverSearchMode.CHAIN || driver.searchMode == DriverSearchMode.HOME) {
+                driver.searchMode = DriverSearchMode.MANUAL
+            }
         }
         
         val updatedDriver = driverRepository.save(driver)
@@ -254,22 +255,14 @@ class DriverService(
 
     @Transactional
     fun getSearchState(driver: Driver): DriverSearchStateDto {
-        // Проверяем лимиты "Домой"
         checkAndResetHomeLimit(driver)
         
         val sectorNames = driver.homeSectors.joinToString(", ") { it.name }
         val sectorIds = driver.homeSectors.mapNotNull { it.id }
 
-        // ЛОГИКА ПОДМЕНЫ: Если в базе MANUAL (Эфир) -> отдаем CHAIN (Ланцюг)
-        // Чтобы приложение никогда не рисовало экран Эфира
-        val effectiveMode = if (driver.searchMode == DriverSearchMode.MANUAL) {
-            DriverSearchMode.CHAIN
-        } else {
-            driver.searchMode
-        }
-
+        // --- СТАЛО: Возвращаем чистый режим из базы данных без подмен ---
         return DriverSearchStateDto(
-            mode = effectiveMode,
+            mode = driver.searchMode, 
             radius = driver.searchRadius,
             homeSectorIds = sectorIds,
             homeSectorNames = if (sectorNames.isNotEmpty()) sectorNames else null,
@@ -308,11 +301,9 @@ class DriverService(
             driver.homeSectors.addAll(sectors)
         }
 
-        // ВАЖНО: Если клиент прислал MANUAL (по ошибке), сохраняем как CHAIN
-        driver.searchMode = if (settings.mode == DriverSearchMode.MANUAL) DriverSearchMode.CHAIN else settings.mode
+        driver.searchMode = settings.mode 
         
         driver.searchRadius = settings.radius.coerceIn(0.5, 30.0) 
-        
         driverRepository.save(driver)
 
         // Возвращаем обновленный статус (используем наш метод getSearchState для консистентности)

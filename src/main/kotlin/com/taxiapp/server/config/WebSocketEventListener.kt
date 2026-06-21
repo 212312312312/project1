@@ -26,12 +26,17 @@ class WebSocketEventListener(
             ?: driverRepository.findByUserPhone(username)
 
         driver?.let {
-            // Жестко переводим в офлайн, так как приложение было закрыто (свайпнуто)
+            // Жестко переводим в офлайн, так как приложение закрыто
             it.isOnline = false
-            it.searchMode = DriverSearchMode.OFFLINE
+            
+            // --- СТАЛО (СБРОС В MANUAL ПРИ ДРОПЕ СОКЕТА): ---
+            if (it.searchMode == DriverSearchMode.CHAIN || it.searchMode == DriverSearchMode.HOME) {
+                it.searchMode = DriverSearchMode.MANUAL
+            }
+            
             driverRepository.save(it)
             
-            logger.info("[WS_DISCONNECT] Водій ID=${it.id} ($username) закрыл приложение. Авто-офлайн успешно применен.")
+            logger.info("[WS_DISCONNECT] Водій ID=${it.id} ($username) закрыл приложение. Статус офлайн применен, режим переведен в MANUAL.")
         }
     }
 }
