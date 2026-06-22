@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.util.Base64
+import org.springframework.messaging.simp.SimpMessagingTemplate
 import com.taxiapp.server.service.NotificationService
 
 @RestController
@@ -27,11 +28,12 @@ import com.taxiapp.server.service.NotificationService
 class PaymentController(
     private val paymentRepository: PaymentTransactionRepository,
     private val driverRepository: DriverRepository,
-    private val clientRepository: ClientRepository, // <-- ВНЕДРЯЕМ РЕПОЗИТОРИЙ КЛИЕНТА
+    private val clientRepository: ClientRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
     private val liqPayService: LiqPayService,
     private val notificationService: NotificationService,
-    private val driverService: com.taxiapp.server.service.DriverService
+    private val driverService: com.taxiapp.server.service.DriverService,
+    private val messagingTemplate: SimpMessagingTemplate // <-- ДОБАВЛЕНО ДЛЯ РАБОТЫ С СОКЕТАМИ
 ) {
 
     data class InitPaymentRequest(val amount: Double)
@@ -145,21 +147,30 @@ class PaymentController(
     private fun handleBindDriverCardCallback(orderReference: String, status: String, jsonNode: JsonNode): ResponseEntity<String> {
         println(">>> LIQPAY DRIVER CARD BIND WEBHOOK: Status = $status")
 
-        if (status in listOf("success", "sandbox", "wait_accept", "auth")) {
-            val driverIdStr = orderReference.split("_").getOrNull(3) ?: return ResponseEntity.badRequest().body("Invalid format")
-            val driverId = driverIdStr.toLongOrNull() ?: return ResponseEntity.badRequest().body("Invalid driver ID")
+        val driverIdStr = orderReference.split("_").getOrNull(3) ?: return ResponseEntity.badRequest().body("Invalid format")
+        val driverId = driverIdStr.toLongOrNull() ?: return ResponseEntity.badRequest().body("Invalid driver ID")
 
-            // Извлекаем маску и токен карты из параметров ответа LiqPay
+        if (status in listOf("success", "sandbox", "wait_accept", "auth")) {
             val cardMask = jsonNode.path("sender_card_mask2").asText(null) ?: jsonNode.path("sender_card_mask").asText(null)
             val cardToken = jsonNode.path("sender_card_token").asText(null) ?: jsonNode.path("card_token").asText(null) ?: jsonNode.path("token").asText(null)
 
             if (!cardMask.isNullOrEmpty()) {
                 val finalToken = cardToken ?: "sandbox_driver_token_${jsonNode.path("payment_id").asText()}"
-                
-                // Передаем данные в DriverService для записи в БД
                 driverService.completeDriverCardBinding(driverId, finalToken, cardMask)
                 println(">>> DRIVER CARD BOUND SUCCESSFULLY. Driver: $driverId, Mask: $cardMask")
+
+                // ====== ТОЧЕЧНОЕ ДОБАВЛЕНИЕ: Отправляем статус УСПЕХА в сокет водителя ======
+                messagingTemplate.convertAndSend(
+                    "/topic/drivers/$driverId/card-bind", 
+                    mapOf("status" to "SUCCESS", "cardMask" to cardMask)
+                )
             }
+        } else {
+            // ====== ТОЧЕЧНОЕ ДОБАВЛЕНИЕ: Отправляем статус ОШИБКИ в сокет водителя ======
+            messagingTemplate.convertAndSend(
+                "/topic/drivers/$driverId/card-bind", 
+                mapOf("status" to "FAILED", "message" to "Status: $status")
+            )
         }
         return ResponseEntity.ok("OK")
     }
@@ -175,30 +186,42 @@ class PaymentController(
             val client = clientRepository.findById(clientId).orElse(null)
                 ?: return ResponseEntity.ok("Client not found")
 
-            // Ищем маску
             val cardMask = jsonNode.path("sender_card_mask2").asText(null) 
                 ?: jsonNode.path("sender_card_mask").asText(null)
             
-            // Ищем реальный токен
             val cardToken = jsonNode.path("sender_card_token").asText(null) 
                 ?: jsonNode.path("card_token").asText(null) 
                 ?: jsonNode.path("token").asText(null)
 
-            // ИСПРАВЛЕНИЕ: Проверяем только наличие маски. 
-            // В режиме тестирования LiqPay может не прислать токен сразу.
             if (!cardMask.isNullOrEmpty()) { 
                 client.cardMask = cardMask
-                
-                // Если токен пустой, сохраняем ID платежа как токен-заглушку, чтобы приложение не падало
                 client.cardToken = cardToken ?: "sandbox_token_${jsonNode.path("payment_id").asText()}"
-                
                 clientRepository.save(client)
                 println(">>> CARD BOUND SUCCESSFULLY for Client $clientId. Mask: $cardMask")
+
+                // ====== ТОЧЕЧНОЕ ДОБАВЛЕНИЕ: Отправляем статус УСПЕХА в сокет клиента ======
+                messagingTemplate.convertAndSend(
+                    "/topic/clients/$clientId/card-bind", 
+                    mapOf("status" to "SUCCESS", "cardMask" to cardMask)
+                )
             } else {
                 println(">>> ERROR: LiqPay returned SUCCESS, but CARD MASK is missing!")
+                // ====== ТОЧЕЧНОЕ ДОБАВЛЕНИЕ: Отправляем ошибку маски в сокет ======
+                messagingTemplate.convertAndSend(
+                    "/topic/clients/$clientId/card-bind", 
+                    mapOf("status" to "FAILED", "message" to "Missing card mask")
+                )
             }
         } else {
             println(">>> CARD BIND FAILED for order $orderReference with status $status")
+            val clientId = orderReference.split("_").getOrNull(2)?.toLongOrNull()
+            if (clientId != null) {
+                // ====== ТОЧЕЧНОЕ ДОБАВЛЕНИЕ: Отправляем статус ОШИБКИ в сокет клиента ======
+                messagingTemplate.convertAndSend(
+                    "/topic/clients/$clientId/card-bind", 
+                    mapOf("status" to "FAILED", "message" to "Status: $status")
+                )
+            }
         }
         return ResponseEntity.ok("OK")
     }
@@ -240,24 +263,43 @@ class PaymentController(
 
             println(">>> PAYMENT SUCCESS: Driver ${driver.id} balance updated (+${payment.amount})")
 
-            try {
-                notificationService.saveAndSend(
-                    driver = driver,
-                    title = "Баланс поповнено",
-                    body = "Ваш баланс поповнено на ${String.format("%.2f", payment.amount)} UAH",
-                    type = "PAYMENT"
-                )
-            } catch (e: Exception) {
-                println(">>> Ошибка при отправке уведомления о пополнении: ${e.message}")
-            }
-
-            return ResponseEntity.ok(mapOf("status" to "SUCCESS", "message" to "Оплата успішна!"))
-        } else if (status == "failure" || status == "error" || status == "reversed") {
-            payment.status = PaymentStatus.FAILED
-            paymentRepository.save(payment)
-            return ResponseEntity.ok(mapOf("status" to "FAILED", "message" to "Оплата відхилена ($status)"))
+        // 🔥 ВНЕДРЯЕМ: Мгновенное уведомление водителя через сокет об успешном балансе
+        try {
+            messagingTemplate.convertAndSend(
+                "/topic/drivers/${driver.id}/balance-update",
+                mapOf("status" to "SUCCESS", "balance" to driver.balance, "added" to payment.amount)
+            )
+        } catch (e: Exception) {
+            println(">>> Ошибка при отправке WebSocket водителю: ${e.message}")
         }
 
-        return ResponseEntity.ok(mapOf("status" to "PENDING", "message" to "Статус: $status"))
+        try {
+            notificationService.saveAndSend(
+                driver = driver,
+                title = "Баланс поповнено",
+                body = "Ваш баланс поповнено на ${String.format("%.2f", payment.amount)} UAH",
+                type = "PAYMENT"
+            )
+        } catch (e: Exception) {
+            println(">>> Ошибка при отправке уведомления о пополнении: ${e.message}")
+        }
+
+        return ResponseEntity.ok(mapOf("status" to "SUCCESS", "message" to "Оплата успішна!"))
+    } else if (status == "failure" || status == "error" || status == "reversed") {
+        payment.status = PaymentStatus.FAILED
+        paymentRepository.save(payment)
+
+        // 🔥 ВНЕДРЯЕМ: Отправляем ошибку в сокет, чтобы клиентское приложение сразу сняло лоадер
+        try {
+            messagingTemplate.convertAndSend(
+                "/topic/drivers/${payment.driver.id}/balance-update",
+                mapOf("status" to "FAILED", "message" to "Оплата відхилена ($status)")
+            )
+        } catch (e: Exception) { }
+
+        return ResponseEntity.ok(mapOf("status" to "FAILED", "message" to "Оплата відхилена ($status)"))
     }
+
+    return ResponseEntity.ok(mapOf("status" to "PENDING", "message" to "Статус: $status"))
+}
 }

@@ -228,4 +228,33 @@ class NotificationService(
             }
         }
     }
+
+    // ДОБАВИТЬ ЭТОТ МЕТОД В КЛАСС NotificationService
+
+fun sendOrderCancelToDriver(driver: com.taxiapp.server.model.user.Driver, order: com.taxiapp.server.model.order.TaxiOrder) {
+    val token = driver.fcmToken // Достаем токен водителя
+    if (token.isNullOrBlank()) return
+
+    try {
+        // ЗАМЕНИТЬ ТОЛЬКО ЭТОТ КУСОК СБОРКИ MESSAGE В NotificationService.kt:
+
+val message = com.google.firebase.messaging.Message.builder()
+    .setToken(token)
+    .putData("type", "ORDER_CANCEL") 
+    .putData("orderId", order.uuid.toString())
+    .putData("title", "Замовлення скасовано")
+    .putData("body", "Клієнт скасував замовлення") // Убрали хвост с номером заказа
+    .setAndroidConfig(
+        com.google.firebase.messaging.AndroidConfig.builder()
+            .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
+            .build()
+    )
+    .build()
+
+        com.google.firebase.messaging.FirebaseMessaging.getInstance().sendAsync(message)
+    } catch (e: Exception) {
+        // Здесь можно прописать логгер, если он у тебя объявлен (например, логгер.error)
+        println("Не вдалося відправити пуш про скасування водію: ${e.message}")
+    }
+}
 }

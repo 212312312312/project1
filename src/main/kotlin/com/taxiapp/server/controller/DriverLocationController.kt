@@ -13,10 +13,6 @@ import org.springframework.web.bind.annotation.RestController
 class DriverLocationController(
     private val driverLocationService: DriverLocationService
 ) {
-
-    @GetMapping
-    @PreAuthorize("hasAnyRole('ADMINISTRATOR', 'DISPATCHER')")
-    fun getOnlineDriversForMap(): ResponseEntity<List<DriverLocationDto>> {
-        return ResponseEntity.ok(driverLocationService.getOnlineDriversForMap())
-    }
+    // 🗑️ СТАРЫЙ МЕТОД @GetMapping УДАЛЕН. 
+    // Вся логика карты переведена на реактивные WebSockets для экономии ресурсов сервера.
 }

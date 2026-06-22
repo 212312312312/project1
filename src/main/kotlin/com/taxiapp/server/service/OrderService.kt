@@ -50,8 +50,8 @@ class OrderService(
     private val walletTransactionRepository: WalletTransactionRepository,
     private val appSettingRepository: AppSettingRepository,
     private val liqPayService: LiqPayService,
-    private val activityHistoryRepository: DriverActivityHistoryRepository
-
+    private val activityHistoryRepository: DriverActivityHistoryRepository,
+    private val redisTemplate: org.springframework.data.redis.core.RedisTemplate<String, String> // <-- ДОБАВЛЕНО
 ) {
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
@@ -503,22 +503,27 @@ class OrderService(
     }
 
     private fun assignOrderToDriver(order: TaxiOrder, driver: Driver) {
-    val dist = calculateDistanceKm(
-        driver.latitude ?: 0.0,
-        driver.longitude ?: 0.0,
-        order.originLat!!,
-        order.originLng!!
-    )
-    logger.info(">>> Assigning order ${order.id} to driver ${driver.id} (Distance: ${String.format("%.2f", dist)} km)")
+        val dist = calculateDistanceKm(
+            driver.latitude ?: 0.0,
+            driver.longitude ?: 0.0,
+            order.originLat!!,
+            order.originLng!!
+        )
+        logger.info(">>> Assigning order ${order.id} to driver ${driver.id} (Distance: ${String.format("%.2f", dist)} km)")
 
-    order.status = OrderStatus.OFFERING
-    order.offeredDriver = driver
-    order.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
-    notificationService.sendOrderOffer(driver, order)
-    
-    // Оповещаем клиента через сокет, что заказ перешел в статус OFFERING (подбор водителя)
-    broadcastOrderChange(order, "UPDATE")
-}
+        val expiresAt = LocalDateTime.now().plusSeconds(20) // Фиксируем время
+        order.status = OrderStatus.OFFERING
+        order.offeredDriver = driver
+        order.offerExpiresAt = expiresAt
+        
+        // 🔥 ВНЕДРЯЕМ: Добавление в Redis Sorted Set (ZSET)
+        // Score = timestamp в секундах, когда заказ сгорит.
+        val epochSecond = expiresAt.toEpochSecond(java.time.ZoneOffset.UTC)
+        redisTemplate.opsForZSet().add("orders:expired_offers", order.id.toString(), epochSecond.toDouble())
+
+        notificationService.sendOrderOffer(driver, order)
+        broadcastOrderChange(order, "UPDATE")
+    }
 
     private fun selectFastestDriver(drivers: List<Driver>, targetLat: Double, targetLng: Double): Driver {
         // Простая эвристика: выбираем того, кто ближе, но с учетом "коэффициента извилистости"
@@ -570,7 +575,10 @@ class OrderService(
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         
         if (order.status == OrderStatus.OFFERING && order.offeredDriver?.id == driver.id) {
-            logger.info("Водій ${driver.id} відхилив пропозицію ${order.id}")
+        logger.info("Водій ${driver.id} відхилив пропозицію ${order.id}")
+        
+        // 🔥 ВНЕДРЯЕМ: Очистка таймаута из Redis
+        redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
             
             // --- ЛОГИКА ШТРАФА ---
             // Если заказ был в статусе OFFERING и имел назначенного водителя, значит это был
@@ -589,27 +597,39 @@ class OrderService(
         }
     }
 
-    @Scheduled(fixedRate = 10000) // Проверка каждые 10 секунд вместо 5
+    @Scheduled(fixedRate = 2000) // 🔥 Оптимизировано: проверка каждые 2 сек через сверхбыстрый Redis
     @Transactional
     fun checkExpiredOffers() {
-        val now = LocalDateTime.now()
-        // Теперь база данных САМА отдает только просроченные предложения (мгновенно)
-        val expiredOrders = orderRepository.findAllByStatusAndOfferExpiresAtBefore(OrderStatus.OFFERING, now)
+        val nowEpoch = java.time.Instant.now().epochSecond.toDouble()
+        
+        // Забираем из Redis только те ID заказов, у которых время предложения УЖЕ истекло (от 0 до текущего момента)
+        val expiredIds = redisTemplate.opsForZSet().rangeByScore("orders:expired_offers", 0.0, nowEpoch) ?: emptySet()
 
-        for (order in expiredOrders) {
-            logger.info("Час пропозиції замовлення ${order.id} вичерпано. Штраф і перехід в Ефір.")
+        if (expiredIds.isEmpty()) return
+
+        for (idStr in expiredIds) {
+            val orderId = idStr.toLongOrNull() ?: continue
+            val order = orderRepository.findById(orderId).orElse(null) ?: continue
             
-            order.offeredDriver?.let { 
-                 driverActivityService.updateScore(it, -50, "Пропущено замовлення #${order.id}")
-                 order.rejectedDriverIds.add(it.id!!)
+            // Если заказ всё еще ждет этого водителя — наказываем и возвращаем в эфир
+            if (order.status == OrderStatus.OFFERING) {
+                logger.info("Час пропозиції замовлення ${order.id} вичерпано (Redis ZSET). Штраф і перехід в Ефір.")
+                
+                order.offeredDriver?.let { 
+                     driverActivityService.updateScore(it, -50, "Пропущено замовлення #${order.id}")
+                     order.rejectedDriverIds.add(it.id!!)
+                }
+
+                order.status = OrderStatus.REQUESTED
+                order.offeredDriver = null
+                order.offerExpiresAt = null
+                
+                val saved = orderRepository.save(order)
+                broadcastOrderChange(saved, "ADD")
             }
-
-            order.status = OrderStatus.REQUESTED
-            order.offeredDriver = null
-            order.offerExpiresAt = null
             
-            val saved = orderRepository.save(order)
-            broadcastOrderChange(saved, "ADD")
+            // Обязательно вычищаем обработанный ID из Redis Sorted Set
+            redisTemplate.opsForZSet().remove("orders:expired_offers", idStr)
         }
     }
     
@@ -828,7 +848,12 @@ class OrderService(
     // ОНОВЛЕНО: додано reasonText
     fun cancelOrder(user: User, orderId: Long, reasonText: String? = null): TaxiOrderDto {
         val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-        if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+    if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
+    // 🔥 ИСПРАВЛЕНО: Для HashOperations используется метод delete
+    order.driver?.let { drv ->
+        redisTemplate.opsForHash<String, String>().delete("orders:active_drivers", drv.id.toString())
+    }
 
         // --- ЛОГИКА РАЗМОРОЗКИ ИЛИ СНЯТИЯ МИНИМАЛКИ ПРИ ОТМЕНЕ КЛИЕНТОМ ---
         if (order.paymentMethod == "CARD" && order.authorizedAmount > 0.0) {
@@ -871,14 +896,16 @@ class OrderService(
         }
         
         val assignedDriver = order.driver
-        if (assignedDriver != null && (order.status == OrderStatus.ACCEPTED || order.status == OrderStatus.DRIVER_ARRIVED)) {
-            notificationService.saveAndSend(
-                driver = assignedDriver,
-                title = "Замовлення скасовано",
-                body = "Клієнт скасував замовлення за адресою ${order.fromAddress}",
-                type = "ORDER_CANCEL"
-            )
-        }
+if (assignedDriver != null && (
+    order.status == OrderStatus.OFFERING ||          // Если карточка еще только висит на экране подбора
+    order.status == OrderStatus.ACCEPTED ||          // Если водитель взял и едет на подачу
+    order.status == OrderStatus.DRIVER_ARRIVED ||    // Если уже стоит на месте и ждет клиента
+    order.status == OrderStatus.IN_PROGRESS ||       // Если уже едут по маршруту
+    order.status == OrderStatus.ARRIVED_AT_WAYPOINT  // Если остановились на промежуточной точке
+)) {
+    // Вызываем наш новый точечный метод пуша
+    notificationService.sendOrderCancelToDriver(assignedDriver, order)
+}
 
         // НОВЕ: Зберігаємо причину скасування
         if (reasonText != null) {
@@ -896,8 +923,10 @@ class OrderService(
         return TaxiOrderDto(saved)
     }
 
-    @Transactional
-    fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrderDto {
+   @Transactional
+fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrderDto {
+    // 🔥 ИСПРАВЛЕНО: Для HashOperations используется метод delete
+    redisTemplate.opsForHash<String, String>().delete("orders:active_drivers", driver.id.toString())
         val order = orderRepository.findById(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
 
@@ -969,9 +998,10 @@ class OrderService(
         
         // Логика для обычных предложений (OFFERING)
         if (order.status == OrderStatus.OFFERING) {
-             // ... (старая логика проверки водителя и времени) ...
-             if (order.offeredDriver?.id != driver.id) throw ResponseStatusException(HttpStatus.CONFLICT, "Зайнято")
-             // ...
+            if (order.offeredDriver?.id != driver.id) throw ResponseStatusException(HttpStatus.CONFLICT, "Зайнято")
+            
+            // Очистка таймаута из Redis
+            redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
         } 
         // Логика для запланированных (SCHEDULED)
         else if (order.status == OrderStatus.SCHEDULED) {
@@ -998,10 +1028,15 @@ class OrderService(
         // Списываем поездки "Домой" (если надо) ...
         
         val saved = orderRepository.save(order)
+
+        // 🔥 ВНЕДРЕНО: Якщо замовлення активне (не SCHEDULED), додаємо маппинг водія до Redis Hash для трекингу
+        if (saved.status != OrderStatus.SCHEDULED) {
+            redisTemplate.opsForHash<String, String>().put("orders:active_drivers", driver.id.toString(), saved.uuid.toString())
+        }
+
         broadcastOrderChange(saved, "ADD") // Обновляем диспетчера и водителя
 
-        // --- ДОБАВЛЕНО: Отправка Push-уведомления клиенту при принятии заказа водителем ---
-        // --- ИСПРАВЛЕНО: Безопасный текст пуша без обращения к несуществующим полям ---
+        // Отправка Push-уведомления клиенту при принятии заказа водителем
         if (saved.status == OrderStatus.ACCEPTED) {
             notificationService.sendOrderStatusToClient(
                 token = saved.client.fcmToken,
@@ -1011,9 +1046,7 @@ class OrderService(
                 body = "Водій прийняв ваше замовлення та прямує до вас."
             )
         }
-        // ---------------------------------------------------------------------------------
-        // ---------------------------------------------------------------------------------
-
+        
         return TaxiOrderDto(saved)
     }
 
@@ -1117,18 +1150,24 @@ class OrderService(
         order.status = OrderStatus.ACCEPTED
         
         val saved = orderRepository.save(order)
+
+        // 🔥 ВНЕДРЕНО: Замовлення активоване, вмикаємо швидкий трекінг через Redis Hash
+        redisTemplate.opsForHash<String, String>().put("orders:active_drivers", driver.id.toString(), saved.uuid.toString())
+
         broadcastOrderChange(saved, "ADD") // Оновлюємо статус у всіх
         return TaxiOrderDto(saved)
     }
 
     @Transactional(noRollbackFor = [ResponseStatusException::class])
 fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+    // 1. Сразу чистим Redis Hash
+    redisTemplate.opsForHash<String, String>().delete("orders:active_drivers", driver.id.toString())
+
     val order = orderRepository.findById(orderId)
-        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) } // 👈 ИСПРАВЛЕНО: перенос строки
     
     if (order.driver?.id != driver.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
 
-    // Текущая реальная доля клиента к оплате (с учетом возможного простоя)
     val currentClientPayAmount = order.price - order.appliedDiscount
 
     // =======================================================
@@ -1137,7 +1176,6 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     if (order.paymentMethod == "CARD") {
         val paymentOrderId = "ride_${order.id}"
 
-        // СЦЕНАРИЙ 1: Финальный чек клиента не вырос (простоя не было)
         if (currentClientPayAmount <= order.authorizedAmount) {
             val isSuccess = liqPayService.captureFunds(paymentOrderId, currentClientPayAmount)
             
@@ -1145,12 +1183,10 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
                 order.paymentMethod = "CASH"
                 orderRepository.save(order)
                 broadcastOrderChange(order, "UPDATE")
-                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка завершения платежу. Спосіб змінено на ГОТІВКУ.")
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка завершення платежу. Спосіб змінено на ГОТІВКУ.")
             }
             logger.info(">>> SUCCESS: Capture processed for exact client amount: $currentClientPayAmount")
-        } 
-        // СЦЕНАРИЙ 2: Цена выросла из-за платного ожидания/простоя
-        else {
+        } else {
             val isCaptureSuccess = liqPayService.captureFunds(paymentOrderId, order.authorizedAmount)
             
             if (!isCaptureSuccess) {
@@ -1213,12 +1249,11 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0
     
     val commissionAmount = order.price * (commissionPercent / 100.0)
-    driver.balance -= commissionAmount // Списываем комиссию с основного счета
+    driver.balance = driver.balance - commissionAmount // 👈 ИСПРАВЛЕНО: Явное вычитание типов
 
-    // ЕСЛИ ОПЛАТА КАРТОЙ - Зачисляем долю КЛИЕНТА на накопительный счет (экран "Операции")
     if (order.paymentMethod == "CARD") {
         val finalClientAmount = order.price - order.appliedDiscount
-        driver.balance += finalClientAmount // Падает в операции до автовывода раз в сутки
+        driver.balance = driver.balance + finalClientAmount // 👈 ИСПРАВЛЕНО: Явное сложение
         
         val rideTransaction = com.taxiapp.server.model.finance.WalletTransaction(
             driver = driver,
@@ -1237,7 +1272,6 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         order.payoutAmount = (order.price - order.appliedDiscount) - commissionAmount - order.bankCommissionAmount 
     }
 
-    // Транзакция списания комиссии
     val transaction = com.taxiapp.server.model.finance.WalletTransaction(
         driver = driver,
         amount = -commissionAmount,
@@ -1248,20 +1282,18 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     walletTransactionRepository.save(transaction)
 
     // =======================================================
-    // 🎁 ВНЕДРЕНИЕ: МАРКЕТИНГОВАЯ ДОПЛАТА ВОДИТЕЛЮ ЗА СКИДКУ
+    // 🎁 МАРКЕТИНГОВАЯ ДОПЛАТА ВОДИТЕЛЮ ЗА СКИДКУ
     // =======================================================
     if (order.appliedDiscount > 0.0) {
         val marketingWalletSetting = appSettingRepository.findById("company_marketing_balance").orElse(null)
         val marketingBalance = marketingWalletSetting?.value?.toDoubleOrNull() ?: 0.0
 
         if (marketingBalance >= order.appliedDiscount) {
-            // Сценарий А: Деньги у компании есть — списываем и сразу выплачиваем на баланс
             marketingWalletSetting?.value = (marketingBalance - order.appliedDiscount).toString()
             appSettingRepository.save(marketingWalletSetting)
 
-            driver.balance += order.appliedDiscount
+            driver.balance = driver.balance + order.appliedDiscount // 👈 ИСПРАВЛЕНО
 
-            // ИСПРАВЛЕНИЕ: Инициализируем status через .apply { }
             val compensationTx = com.taxiapp.server.model.finance.WalletTransaction(
                 driver = driver,
                 amount = order.appliedDiscount,
@@ -1275,9 +1307,6 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
             walletTransactionRepository.save(compensationTx)
             logger.info(">>> MARKETING COMPENSATION: Paid ${order.appliedDiscount} UAH to driver ${driver.id}")
         } else {
-            // Сценарий Б: Деньги закончились — создаем PENDING транзакцию
-            
-            // ИСПРАВЛЕНИЕ: Инициализируем status через .apply { }
             val pendingTx = com.taxiapp.server.model.finance.WalletTransaction(
                 driver = driver,
                 amount = order.appliedDiscount,
@@ -1292,7 +1321,6 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
             logger.warn(">>> MARKETING FUNDS DEPLETED: Compensation of ${order.appliedDiscount} UAH is PENDING for driver ${driver.id}")
         }
     }
-    // =======================================================
 
     driverRepository.save(driver) 
 
@@ -1418,10 +1446,16 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
                 if (bestDriver != null) {
                     logger.info("Offering scheduled order #${order.id} to ${bestDriver.id}")
                     order.status = OrderStatus.OFFERING
-                    order.offeredDriver = bestDriver
-                    order.offerExpiresAt = LocalDateTime.now().plusSeconds(20)
-                    notificationService.sendOrderOffer(bestDriver, order)
-                    orderRepository.save(order)
+    order.offeredDriver = bestDriver
+    val expiresAt = LocalDateTime.now().plusSeconds(20)
+    order.offerExpiresAt = expiresAt
+    
+    // 🔥 ВНЕДРЯЕМ СЮДА ТОЖЕ:
+    val epochSecond = expiresAt.toEpochSecond(java.time.ZoneOffset.UTC)
+    redisTemplate.opsForZSet().add("orders:expired_offers", order.id.toString(), epochSecond.toDouble())
+
+    notificationService.sendOrderOffer(bestDriver, order)
+    orderRepository.save(order)
                 } else {
                     // Нікого немає - просто висить в ефірі
                     if (order.status != OrderStatus.REQUESTED) {

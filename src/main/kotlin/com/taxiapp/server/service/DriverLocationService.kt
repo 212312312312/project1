@@ -91,15 +91,16 @@ class DriverLocationService(
         redisTemplate.opsForHash<String, Any>().put(META_KEY, driverId.toString(), updatedMeta)
 
         // 3. Ретрансляция (Tracking) для активного заказа клиента
-        val activeOrderOpt = orderRepository.findActiveOrderByDriverId(driverId)
-        if (activeOrderOpt.isPresent) {
-            val order = activeOrderOpt.get()
+        val orderUuidStr = redisTemplate.opsForHash<String, Any>().get("orders:active_drivers", driverId.toString())?.toString()
+        
+        if (!orderUuidStr.isNullOrEmpty()) {
             val trackingDto = TrackingLocationDto(
                 lat = request.lat,
                 lng = request.lng,
                 bearing = newBearing
             )
-            messagingTemplate.convertAndSend("/topic/order/${order.uuid}/tracking", trackingDto)
+            // Пушим координаты напрямую в сокет-канал конкретной поездки пассажира
+            messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingDto)
         }
 
         // 4. Трансляция координат на общую веб-карту для диспетчера
