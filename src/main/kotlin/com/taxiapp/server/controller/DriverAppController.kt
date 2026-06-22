@@ -162,10 +162,13 @@ fun updateLocation(
     return ResponseEntity.ok().build()
 }
 
+    // ПОЛНОСТЬЮ ЗАМЕНИ ЭТИ ДВА МЕТОДА В DriverAppController.kt
+
     @GetMapping("/transactions")
     fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         val transactions = driverService.getDriverTransactions(user)
+        
         val dtos = transactions.map { tx ->
             WalletTransactionDto(
                 id = tx.id ?: 0L,
@@ -174,17 +177,17 @@ fun updateLocation(
                 description = tx.description,
                 createdAt = tx.createdAt.toString(),
                 balanceAfter = tx.balanceAfter,
-                orderId = tx.orderId
+                orderId = tx.orderId // 👈 Напрямую читаем заполненное поле из БД
             )
         }
         return ResponseEntity.ok(dtos)
     }
 
-    // Эндпоинт для экрана "Ваші кошти" (Незавершенные операции)
     @GetMapping("/transactions/pending")
     fun getPendingTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         val transactions = driverService.getPendingDriverTransactions(user)
+        
         val dtos = transactions.map { tx ->
             WalletTransactionDto(
                 id = tx.id ?: 0L,
@@ -193,11 +196,13 @@ fun updateLocation(
                 description = tx.description,
                 createdAt = tx.createdAt.toString(),
                 balanceAfter = tx.balanceAfter,
-                orderId = tx.orderId
+                orderId = tx.orderId // 👈 Напрямую читаем заполненное поле из БД
             )
         }
         return ResponseEntity.ok(dtos)
     }
+
+   
 
     // --- НОВЫЙ ЭНДПОИНТ: СОХРАНЕНИЕ АКТУАЛЬНОГО FCM ТОКЕНА ВОДИТЕЛЯ ---
     @PostMapping("/profile/fcm-token")

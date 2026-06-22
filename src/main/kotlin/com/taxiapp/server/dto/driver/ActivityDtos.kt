@@ -11,7 +11,8 @@ data class DriverActivityDto(
 data class ActivityHistoryItemDto(
     val change: Int,
     val reason: String,
-    val date: LocalDateTime
+    val date: LocalDateTime,
+    val orderUuid: String? = null // Передаем UUID на клиент
 )
 
 enum class ActivityLevel {

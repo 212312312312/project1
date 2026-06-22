@@ -22,8 +22,12 @@ class DriverActivityHistory(
     @Column(nullable = false)
     var reason: String, // Например: "Замовлення #123 (Ефір)"
 
+    // НАЙДИ ПОЛЕ orderId И СРАЗУ ПОСЛЕ НЕГО ДОБАВЬ orderUuid:
     @Column(name = "order_id")
     var orderId: Long? = null, // Ссылка на заказ, если изменение связано с ним
+
+    @Column(name = "order_uuid")
+    var orderUuid: String? = null, // Новое поле: Публичный UUID заказа для мобильного приложения
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)

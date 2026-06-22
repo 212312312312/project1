@@ -20,7 +20,7 @@ class DriverActivityService(
     @Transactional(readOnly = true)
     fun getDriverActivity(driver: Driver): DriverActivityDto {
         val history = historyRepository.findTop50ByDriverIdOrderByCreatedAtDesc(driver.id!!)
-            .map { ActivityHistoryItemDto(it.pointsChange, it.reason, it.createdAt) }
+            .map { ActivityHistoryItemDto(it.pointsChange, it.reason, it.createdAt, it.orderUuid) }
 
         return DriverActivityDto(
             score = driver.activityScore,
@@ -71,23 +71,23 @@ class DriverActivityService(
         }
 
         // Собираем красивую детальную строчку для истории (например: "Замовлення #15: Ефір, За місто, Оплата на баланс")
-        val reasonString = "Замовлення #${order.id}: " + reasons.joinToString(", ")
-        updateScore(driver, pointsToAdd, reasonString, order.id)
+        val reasonString = reasons.joinToString(", ")
+        updateScore(driver, pointsToAdd, reasonString, order.id, order.uuid.toString())
     }
 
     // --- ОБНОВЛЕНО: Принимаем размер штрафа и текст причины ---
     @Transactional
-    fun processOrderCancellation(driver: Driver, orderId: Long, penalty: Int, reasonText: String) {
-        // penalty должен приходить положительным числом (например, 50), здесь мы делаем его отрицательным
+    fun processOrderCancellation(driver: Driver, orderId: Long, penalty: Int, reasonText: String, orderUuid: String? = null) {
         val pointsChange = -penalty
-        val finalReason = "Скасування (#$orderId): $reasonText"
+        // Убрали скобки с номером заказа (#$orderId)
+        val finalReason = if (reasonText.isNullOrBlank()) "Скасування" else "Скасування: $reasonText"
         
-        updateScore(driver, pointsChange, finalReason, orderId)
+        updateScore(driver, pointsChange, finalReason, orderId, orderUuid)
     }
     // -----------------------------------------------------------
 
     @Transactional 
-    fun updateScore(driver: Driver, change: Int, reason: String, orderId: Long? = null) {
+    fun updateScore(driver: Driver, change: Int, reason: String, orderId: Long? = null, orderUuid: String? = null) {
         val newScore = (driver.activityScore + change).coerceIn(0, 1000)
         
         driver.activityScore = newScore
@@ -97,7 +97,8 @@ class DriverActivityService(
             driver = driver,
             pointsChange = change,
             reason = reason,
-            orderId = orderId
+            orderId = orderId,
+            orderUuid = orderUuid
         )
         historyRepository.save(history)
     }

@@ -9,7 +9,6 @@ import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
-import java.util.Optional
 
 @Repository
 interface DriverRepository : JpaRepository<Driver, Long> {
@@ -19,65 +18,6 @@ interface DriverRepository : JpaRepository<Driver, Long> {
     fun findAllByRegistrationStatusNot(status: RegistrationStatus): List<Driver>
 
     fun findAllByRegistrationStatus(status: RegistrationStatus): List<Driver>
-
-    @Query(value = """
-        SELECT d.*, u.* FROM drivers d
-        JOIN users u ON d.id = u.id
-        WHERE d.is_online = true 
-          AND u.is_blocked = false 
-          AND d.search_mode != 'OFFLINE'
-          AND d.latitude IS NOT NULL 
-          AND d.longitude IS NOT NULL
-        ORDER BY (
-            6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:lat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:lng)) + 
-                sin(radians(:lat)) * sin(radians(d.latitude))
-            )))
-        ) ASC
-        LIMIT 5
-    """, nativeQuery = true)
-    fun findTop5NearestAvailableDrivers(
-        @Param("lat") lat: Double, 
-        @Param("lng") lng: Double
-    ): List<Driver>
-
-    @Query("""
-        SELECT d FROM Driver d 
-        WHERE d.latitude IS NOT NULL 
-        AND d.latitude != 0.0 
-        AND d.lastUpdate > :threshold
-    """)
-    fun findAllActiveOnMap(@Param("threshold") threshold: LocalDateTime): List<Driver>
-
-    @Query(value = """
-        SELECT d.*, u.* FROM drivers d
-        JOIN users u ON d.id = u.id
-        JOIN taxi_orders o ON o.driver_id = d.id
-        WHERE d.is_online = true 
-          AND d.activity_score > 0
-          AND o.status = 'IN_PROGRESS'
-          AND d.last_update > :lastSeenThreshold
-          AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
-          AND (
-               6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:pickupLat)) * cos(radians(o.dest_lat)) * cos(radians(o.dest_lng) - radians(:pickupLng)) + 
-                sin(radians(:pickupLat)) * sin(radians(o.dest_lat))
-               ))) <= d.search_radius
-          )
-        ORDER BY (
-               6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:pickupLat)) * cos(radians(o.dest_lat)) * cos(radians(o.dest_lng) - radians(:pickupLng)) + 
-                sin(radians(:pickupLat)) * sin(radians(o.dest_lat))
-               )))
-        ) ASC
-        LIMIT 1
-    """, nativeQuery = true)
-    fun findBestChainDriver(
-        @Param("pickupLat") pickupLat: Double, 
-        @Param("pickupLng") pickupLng: Double,
-        @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?,
-        @Param("lastSeenThreshold") lastSeenThreshold: LocalDateTime
-    ): Optional<Driver>
 
     @Modifying
     @Transactional
@@ -104,85 +44,9 @@ interface DriverRepository : JpaRepository<Driver, Long> {
 
     fun findAllByHomeSectorsId(sectorId: Long): List<Driver>
 
-    @Query(value = """
-        SELECT d.*, u.* FROM drivers d
-        JOIN users u ON d.id = u.id
-        LEFT JOIN driver_home_sectors dhs ON d.id = dhs.driver_id
-        WHERE d.is_online = true 
-          AND u.is_blocked = false 
-          AND d.activity_score > -1
-          AND d.search_mode != 'OFFLINE'
-          AND d.latitude IS NOT NULL 
-          AND d.longitude IS NOT NULL
-          AND d.last_update > :lastSeenThreshold
-          AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
-          AND (
-              (d.search_mode = 'CHAIN') OR
-              (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
-          )
-        AND (
-            6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
-                sin(radians(:pickupLat)) * sin(radians(d.latitude))
-            ))) <= d.search_radius
-        )
-        ORDER BY (
-            6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
-                sin(radians(:pickupLat)) * sin(radians(d.latitude))
-            )))
-        ) ASC
-        LIMIT 5
-    """, nativeQuery = true)
-    fun findBestDriversCandidates(
-        @Param("pickupLat") pickupLat: Double, 
-        @Param("pickupLng") pickupLng: Double, 
-        @Param("destinationSectorId") destinationSectorId: Long?,
-        @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?,
-        @Param("lastSeenThreshold") lastSeenThreshold: LocalDateTime
-    ): List<Driver>
-
     @Query("SELECT d FROM Driver d WHERE d.deletionRequestedAt IS NOT NULL AND d.deletionRequestedAt < :threshold")
     fun findAllPendingDeletionBefore(@Param("threshold") threshold: LocalDateTime): List<Driver>
 
     @Query("SELECT d FROM Driver d WHERE d.deletionRequestedAt IS NOT NULL")
     fun findAllPendingDeletion(): List<Driver>
-
-    @Query(value = """
-        SELECT d.*, u.* FROM drivers d
-        JOIN users u ON d.id = u.id
-        LEFT JOIN driver_home_sectors dhs ON d.id = dhs.driver_id
-        WHERE d.is_online = true 
-          AND u.is_blocked = false 
-          AND d.activity_score > -1
-          AND d.search_mode != 'OFFLINE'
-          AND d.last_update > :lastSeenThreshold
-          AND d.latitude IS NOT NULL 
-          AND d.longitude IS NOT NULL
-          AND (coalesce(:rejectedDriverIds) IS NULL OR d.id NOT IN (:rejectedDriverIds))
-          AND (
-              (d.search_mode = 'CHAIN') OR
-              (d.search_mode = 'HOME' AND d.home_rides_left > 0 AND dhs.sector_id = :destinationSectorId)
-          )
-        AND (
-            6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
-                sin(radians(:pickupLat)) * sin(radians(d.latitude))
-            ))) <= d.search_radius
-        )
-        ORDER BY (
-            6371 * acos(least(1.0, greatest(-1.0, 
-                cos(radians(:pickupLat)) * cos(radians(d.latitude)) * cos(radians(d.longitude) - radians(:pickupLng)) + 
-                sin(radians(:pickupLat)) * sin(radians(d.latitude))
-            )))
-        ) ASC
-        LIMIT 1
-    """, nativeQuery = true)
-    fun findBestDriverForOrder(
-        @Param("pickupLat") pickupLat: Double, 
-        @Param("pickupLng") pickupLng: Double, 
-        @Param("destinationSectorId") destinationSectorId: Long?,
-        @Param("rejectedDriverIds") rejectedDriverIds: List<Long>?,
-        @Param("lastSeenThreshold") lastSeenThreshold: LocalDateTime
-    ): Optional<Driver>
 }

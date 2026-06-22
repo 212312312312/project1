@@ -165,21 +165,35 @@ class DriverLocationService(
     }
 
     fun getOnlineDriversForMap(): List<DriverLocationDto> {
-        val allMeta = redisTemplate.opsForHash<String, Any>().entries(META_KEY)
-        
-        return allMeta.map { (driverIdKey, metaObj) ->
-            val meta = metaObj as Map<*, *>
+        // center локация Киева для UNIT такси
+        val center = Point(30.5234, 50.4501) 
+        // Ищем всех активных водителей в радиусе 100 км от центра города через Redis GEO
+        val circle = Circle(center, Distance(100.0, Metrics.KILOMETERS))
+        val args = RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs().includeCoordinates()
+        val geoResults = redisTemplate.opsForGeo().radius(GEO_KEY, circle, args) ?: return emptyList()
+
+        val driverIds = geoResults.content.map { it.content.name.toString() }
+        if (driverIds.isEmpty()) return emptyList()
+
+        // 🚀 ВЫСОКОНАГРУЖЕННЫЙ ХИТ: вытягиваем мету пачкой через HMGET за O(N) вместо блокирующего HGETALL
+        val metaList = redisTemplate.opsForHash<String, Any>().multiGet(META_KEY, driverIds)
+
+        return geoResults.content.mapIndexedNotNull { index, result ->
+            val driverIdStr = result.content.name.toString()
+            val point = result.content.point
+            val meta = metaList.getOrNull(index) as? Map<*, *> ?: return@mapIndexedNotNull null
+
             DriverLocationDto(
-                driverId = driverIdKey.toString().toLong(), // <-- ФИКС: Безопасно парсим ключ в Long
+                driverId = driverIdStr.toLong(),
                 fullName = meta["fullName"] as? String ?: "Водій",
-                lat = (meta["lat"] as? String)?.toDouble() ?: 0.0,
-                lng = (meta["lng"] as? String)?.toDouble() ?: 0.0,
+                lat = point.y,
+                lng = point.x,
                 bearing = (meta["bearing"] as? String)?.toFloat() ?: 0f,
                 status = meta["status"] as? String ?: "MANUAL",
                 isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false,
                 carModel = meta["carModel"] as? String ?: "Не вказано",
                 carColor = meta["carColor"] as? String ?: ""
             )
-        }.filter { it.lat != 0.0 && it.lng != 0.0 }
+        }
     }
 }
