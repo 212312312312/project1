@@ -38,13 +38,10 @@ class DriverService(
     private val userRepository: UserRepository,
     private val driverCardRepository: com.taxiapp.server.repository.DriverCardRepository,
     // Находим конструктор DriverService и добавляем туда:
-    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository // ДОБАВЛЕНО
+    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository,
+    private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate, // ДОБАВЛЕНО
 ) {
-    // Временное хранилище для кодов подтверждения (Номер -> Код)
-    private val verificationCodes = ConcurrentHashMap<String, String>()
-    
-    // Временное хранилище токенов смены телефона (Токен -> Старый номер телефона)
-    private val changePhoneTokens = ConcurrentHashMap<String, String>()
+
 
     @Transactional(readOnly = true)
     fun getDriverProfile(user: User): DriverDto {
@@ -183,28 +180,48 @@ class DriverService(
     fun sendVerificationCodeToCurrentPhone(user: User) {
         val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
         val code = Random.nextInt(100000, 999999).toString()
-        verificationCodes[phone] = code
+        
+        // Сохраняем код в Redis на 10 минут, сбрасываем старые попытки
+        redisTemplate.opsForValue().set("driver:phone:current-code:$phone", code, 10, java.util.concurrent.TimeUnit.MINUTES)
+        redisTemplate.delete("driver:phone:current-attempts:$phone")
+        
         smsService.sendSms(phone, "Код зміни номера: $code")
     }
 
     fun verifyCurrentPhoneCode(user: User, code: String): String {
         val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
+        val attemptsKey = "driver:phone:current-attempts:$phone"
+        val codeKey = "driver:phone:current-code:$phone"
         
-        if (code == "000000") { // Backdoor для тестов
-             val token = UUID.randomUUID().toString()
-             changePhoneTokens[token] = phone
-             return token
+        val attempts = redisTemplate.opsForValue().get(attemptsKey)?.toIntOrNull() ?: 0
+        if (attempts >= 3) {
+            redisTemplate.delete(codeKey)
+            throw RuntimeException("Перевищено кількість спроб. Надішліть код повторно.")
         }
 
-        val savedCode = verificationCodes[phone]
-        if (savedCode != null && savedCode == code) {
-            verificationCodes.remove(phone)
-            val token = UUID.randomUUID().toString()
-            changePhoneTokens[token] = phone
-            return token
-        } else {
-            throw RuntimeException("Невірний код")
+        val savedCode = redisTemplate.opsForValue().get(codeKey)
+        if (savedCode == null) throw RuntimeException("Код застарів або не існує")
+
+        // --- ЗАЩИТА: Бэкдор "000000" ПОЛНОСТЬЮ УДАЛЕН ---
+        if (savedCode != code) {
+            val newAttempts = attempts + 1
+            if (newAttempts >= 3) {
+                redisTemplate.delete(codeKey)
+                redisTemplate.delete(attemptsKey)
+                throw RuntimeException("Перевищено кількість спроб. Код анульовано.")
+            }
+            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, java.util.concurrent.TimeUnit.MINUTES)
+            throw RuntimeException("Невірний код. Залишилось спроб: ${3 - newAttempts}")
         }
+
+        // Код верный — генерируем токен и сохраняем связь в Redis на 5 минут
+        val token = UUID.randomUUID().toString()
+        redisTemplate.opsForValue().set("driver:phone:change-token:$token", phone, 5, java.util.concurrent.TimeUnit.MINUTES)
+        
+        // Зачищаем использованные ключи кода
+        redisTemplate.delete(codeKey)
+        redisTemplate.delete(attemptsKey)
+        return token
     }
 
     fun sendVerificationCodeToNewPhone(newPhone: String) {
@@ -212,7 +229,11 @@ class DriverService(
             throw RuntimeException("Цей номер вже зареєстрований")
         }
         val code = Random.nextInt(100000, 999999).toString()
-        verificationCodes[newPhone] = code
+        
+        // Сохраняем в Redis на 10 минут
+        redisTemplate.opsForValue().set("driver:phone:new-code:$newPhone", code, 10, java.util.concurrent.TimeUnit.MINUTES)
+        redisTemplate.delete("driver:phone:new-attempts:$newPhone")
+        
         smsService.sendSms(newPhone, "Код підтвердження нового номера: $code")
     }
 
@@ -220,20 +241,41 @@ class DriverService(
     fun changePhone(user: User, newPhone: String, code: String, changeToken: String): User {
         val currentPhone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
 
-        val savedPhoneForToken = changePhoneTokens[changeToken]
+        // Проверяем токен владения операцией в Redis
+        val tokenKey = "driver:phone:change-token:$changeToken"
+        val savedPhoneForToken = redisTemplate.opsForValue().get(tokenKey)
         if (savedPhoneForToken == null || savedPhoneForToken != currentPhone) {
              throw RuntimeException("Помилка безпеки: підтвердіть старий номер знову")
         }
         
-        if (code != "000000") {
-            val savedCode = verificationCodes[newPhone]
-            if (savedCode == null || savedCode != code) {
-                throw RuntimeException("Невірний код для нового номера")
-            }
+        val codeKey = "driver:phone:new-code:$newPhone"
+        val attemptsKey = "driver:phone:new-attempts:$newPhone"
+        
+        val attempts = redisTemplate.opsForValue().get(attemptsKey)?.toIntOrNull() ?: 0
+        if (attempts >= 3) {
+            redisTemplate.delete(codeKey)
+            throw RuntimeException("Перевищено спроби введення для нового номера")
         }
 
-        verificationCodes.remove(newPhone)
-        changePhoneTokens.remove(changeToken)
+        val savedCode = redisTemplate.opsForValue().get(codeKey)
+        if (savedCode == null) throw RuntimeException("Код для нового номера застарів")
+
+        if (savedCode != code) {
+            val newAttempts = attempts + 1
+            if (newAttempts >= 3) {
+                redisTemplate.delete(codeKey)
+                redisTemplate.delete(attemptsKey)
+                redisTemplate.delete(tokenKey)
+                throw RuntimeException("Перевищено спроби для нового номера. Процес анульовано.")
+            }
+            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, java.util.concurrent.TimeUnit.MINUTES)
+            throw RuntimeException("Невірний код нового номера. Залишилось спроб: ${3 - newAttempts}")
+        }
+
+        // Все проверки пройдены — выжигаем токены из Redis и обновляем БД
+        redisTemplate.delete(codeKey)
+        redisTemplate.delete(attemptsKey)
+        redisTemplate.delete(tokenKey)
 
         user.userPhone = newPhone
         if (user.userLogin == currentPhone) {

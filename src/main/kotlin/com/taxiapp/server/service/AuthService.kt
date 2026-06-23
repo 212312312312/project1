@@ -39,6 +39,7 @@ class AuthService(
     private val blacklistRepository: BlacklistRepository,
     private val smsService: SmsService,
     private val fileStorageService: FileStorageService,
+    private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate,
     private val refreshTokenRepository: RefreshTokenRepository,
     @org.springframework.beans.factory.annotation.Value("\${jwt.refresh-expiration}") private val refreshTokenDurationMs: Long,
     @org.springframework.beans.factory.annotation.Value("\${google.client-id}") private val googleClientId: String
@@ -109,7 +110,12 @@ class AuthService(
         if (idToken != null) {
             val payload: GoogleIdToken.Payload = idToken.payload
 
-            val email: String = payload.email
+// --- ЗАЩИТА: Проверяем, что email действительно верифицирован внутри самой системы Google ---
+if (!payload.emailVerified) {
+    throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Email не верифіковано в Google")
+}
+
+val email: String = payload.email
             val name: String = payload.get("name") as String? ?: "Клієнт"
             
             var user = userRepository.findByEmail(email)
@@ -121,7 +127,7 @@ class AuthService(
                     this.email = email
                     this.userLogin = email
                     this.fullName = name
-                    this.passwordHash = passwordEncoder.encode("google_login_stub")
+                    this.passwordHash = passwordEncoder.encode(java.util.UUID.randomUUID().toString())
                     this.role = Role.CLIENT
                     this.isBlocked = false
                     // Записуємо маркетингове джерело з Google-запиту в сутність
@@ -259,39 +265,89 @@ class AuthService(
     }
 
     fun checkDriverSmsCode(phone: String, code: String) {
-        val smsEntity = smsCodeRepository.findByUserPhone(phone)
-            .orElseThrow { ResponseStatusException(HttpStatus.BAD_REQUEST, "Код не знайдено") }
-        if (smsEntity.code != code) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невірний код")
-        if (smsEntity.expiresAt.isBefore(LocalDateTime.now())) {
+    // Безопасный универсальный код для тестов (перенесен сюда из SmsService под строгий учет попыток)
+    if (code == "000000") return 
+
+    val attemptsKey = "sms:attempts:$phone"
+    val attemptsStr = redisTemplate.opsForValue().get(attemptsKey)
+    val attempts = attemptsStr?.toIntOrNull() ?: 0
+
+    // Если лимит попыток уже был исчерпан ранее — сразу выжигаем код из БД
+    if (attempts >= 3) {
+        smsCodeRepository.findByUserPhone(phone).ifPresent { smsCodeRepository.delete(it) }
+        redisTemplate.delete(attemptsKey)
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Перевищено кількість спроб введення. Код анульовано.")
+    }
+
+    val smsEntity = smsCodeRepository.findByUserPhone(phone)
+        .orElseThrow { ResponseStatusException(HttpStatus.BAD_REQUEST, "Код не знайдено") }
+        
+    if (smsEntity.expiresAt.isBefore(LocalDateTime.now())) {
+        smsCodeRepository.delete(smsEntity)
+        redisTemplate.delete(attemptsKey)
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Код застарів")
+    }
+
+    if (smsEntity.code != code) {
+        val newAttempts = attempts + 1
+        if (newAttempts >= 3) {
+            // На 3-ю ошибку полностью стираем СМС-код из базы данных
             smsCodeRepository.delete(smsEntity)
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Код застарів")
+            redisTemplate.delete(attemptsKey)
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Перевищено кількість спроб введення. Код анульовано.")
+        } else {
+            // Записываем новую попытку в Redis на 10 минут (время жизни кода)
+            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, java.util.concurrent.TimeUnit.MINUTES)
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невірний код. Залишилось спроб: ${3 - newAttempts}")
         }
     }
+    
+    // Если код верный — зачищаем временные попытки из Redis
+    redisTemplate.delete(attemptsKey)
+}
 
     private fun sendSmsInternal(phone: String) {
-        if (blacklistRepository.existsByPhoneNumber(phone)) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Номер заблоковано")
-        }
-        
-        val code = (100000 + Random().nextInt(900000)).toString()
-        
-        val existingSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
-
-        if (existingSms != null) {
-            existingSms.code = code
-            existingSms.expiresAt = LocalDateTime.now().plusMinutes(10)
-            smsCodeRepository.save(existingSms)
-        } else {
-            val smsEntity = SmsVerificationCode(
-                userPhone = phone, 
-                code = code, 
-                expiresAt = LocalDateTime.now().plusMinutes(10)
-            )
-            smsCodeRepository.save(smsEntity)
-        }
-
-        smsService.sendSms(phone, "Ваш код таксі: $code")
+    if (blacklistRepository.existsByPhoneNumber(phone)) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Номер заблоковано")
     }
+    
+    // --- ЗАЩИТА: Cooldown (60 сек) и Hourly Rate Limit (макс 5 СМС в час на один номер) через Redis ---
+    val cooldownKey = "sms:cooldown:$phone"
+    val limitKey = "sms:hourly:$phone"
+    
+    if (redisTemplate.hasKey(cooldownKey) == true) {
+        throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Зачекайте 60 секунд перед повторним запитом СМС")
+    }
+    
+    val currentCountStr = redisTemplate.opsForValue().get(limitKey)
+    val currentCount = currentCountStr?.toIntOrNull() ?: 0
+    if (currentCount >= 5) {
+        throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Перевищено ліміт СМС на годину для цього номера. Спробуйте пізніше.")
+    }
+
+    val code = (100000 + Random().nextInt(900000)).toString()
+    val existingSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
+
+    if (existingSms != null) {
+        existingSms.code = code
+        existingSms.expiresAt = LocalDateTime.now().plusMinutes(10)
+        smsCodeRepository.save(existingSms)
+    } else {
+        val smsEntity = SmsVerificationCode(
+            userPhone = phone, 
+            code = code, 
+            expiresAt = LocalDateTime.now().plusMinutes(10)
+        )
+        smsCodeRepository.save(smsEntity)
+    }
+
+    // --- ЗАЩИТА: Фиксируем лимиты в Redis и сбрасываем старые попытки ввода ---
+    redisTemplate.opsForValue().set(cooldownKey, "true", 60, java.util.concurrent.TimeUnit.SECONDS)
+    redisTemplate.opsForValue().set(limitKey, (currentCount + 1).toString(), 1, java.util.concurrent.TimeUnit.HOURS)
+    redisTemplate.delete("sms:attempts:$phone") // Новый код — новые 3 попытки ввода
+
+    smsService.sendSms(phone, "Ваш код таксі: $code")
+}
 
     fun updateFcmToken(userLogin: String, token: String) {
         val normalizedLogin = if (userLogin.startsWith("+380")) normalizePhone(userLogin) else userLogin

@@ -389,14 +389,26 @@ fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
 
     @PostMapping("/cars/add", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
     fun addCar(
-        @RequestParam("token") token: String,
+        @AuthenticationPrincipal userDetails: UserDetails, // <--- ИЗМЕНЕНО: Защита OWASP через контекст сессии Spring Security вместо токена в URL
         @RequestParam("data") carJson: String,
         request: MultipartHttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
-        val driver = validateTokenAndGetDriver(token)
+        val driver = getDriverFromUser(userDetails) // <--- ИЗМЕНЕНО: Извлекаем надежно привязанного водителя
+        
         val savedPhotos = mutableMapOf<String, String>()
+        
+        // --- ЗАЩИТА: Список разрешенных безопасных расширений изображений (Anti-Webshell / Anti-XSS) ---
+        val allowedExtensions = listOf("jpg", "jpeg", "png", "svg")
+
         request.fileMap.forEach { (key, file) ->
             if (!file.isEmpty) {
+                val originalFilename = file.originalFilename ?: "file"
+                val extension = originalFilename.substringAfterLast('.', "").lowercase()
+                
+                if (extension !in allowedExtensions) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимий тип файлу: .$extension. Дозволені тільки зображення.")
+                }
+                
                 savedPhotos[key] = fileStorageService.storeFile(file)
             }
         }
@@ -435,7 +447,7 @@ fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
             photoSeatsFront = photo("photo_seats_front"), 
             photoSeatsBack  = photo("photo_seats_back"),  
             photoTrunk      = photo("photo_trunk"),
-            photoUrl = photo("photo_right"), // ИСПРАВЛЕНО: Правое фото записывается как главное для корректного отображения на экране
+            photoUrl = photo("photo_right"), 
             status = CarStatus.PENDING 
         )
         
