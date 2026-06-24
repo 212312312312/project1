@@ -146,9 +146,16 @@ class OrderService(
 
     fun calculatePricesForRoute(polyline: String, totalMeters: Int, waypointsCount: Int = 0, client: Client? = null): List<CarTariffDto> {
         // 🚀 ОПТИМИЗИРОВАНО: Берем активные тарифы из оперативного Redis-кеша вместо СУБД
-        val activeTariffs = tariffAdminService.getAllTariffs().filter { it.isActive }
-        
-        return activeTariffs.map { tariffDto ->
+        val allCachedTariffs = tariffAdminService.getAllTariffs()
+    
+    // 🛠️ ЛОГ ДЛЯ СТОПРОЦЕНТНОЙ ДИАГНОСТИКИ:
+    allCachedTariffs.forEach { 
+        println(">>> ТАРИФ ИЗ КЭША ДЛЯ КЛИЕНТА: ID=${it.id}, Name=${it.name}, isActive=${it.isActive}")
+    }
+
+    val activeTariffs = allCachedTariffs.filter { it.isActive }
+    
+    return activeTariffs.map { tariffDto ->
             
             // 1. Рассчитываем чистую цену по тарифу (используем ID из кеш-DTO)
             var price = calculateExactTripPrice(
