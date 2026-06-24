@@ -307,47 +307,47 @@ val email: String = payload.email
 }
 
     private fun sendSmsInternal(phone: String) {
-    if (blacklistRepository.existsByPhoneNumber(phone)) {
-        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Номер заблоковано")
-    }
-    
-    // --- ЗАЩИТА: Cooldown (60 сек) и Hourly Rate Limit (макс 5 СМС в час на один номер) через Redis ---
-    val cooldownKey = "sms:cooldown:$phone"
-    val limitKey = "sms:hourly:$phone"
-    
-    if (redisTemplate.hasKey(cooldownKey) == true) {
-        throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Зачекайте 60 секунд перед повторним запитом СМС")
-    }
-    
-    val currentCountStr = redisTemplate.opsForValue().get(limitKey)
-    val currentCount = currentCountStr?.toIntOrNull() ?: 0
-    if (currentCount >= 5) {
-        throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Перевищено ліміт СМС на годину для цього номера. Спробуйте пізніше.")
-    }
+        if (blacklistRepository.existsByPhoneNumber(phone)) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Номер заблоковано")
+        }
+        
+        // --- ЗАХИСТ: Cooldown (60 сек) та Rate Limit (макс 5 СМС на 5 хвилин) через Redis ---
+        val cooldownKey = "sms:cooldown:$phone"
+        val limitKey = "sms:rate:$phone" // змінено префікс для скидання старих годинних багів у Redis
+        
+        if (redisTemplate.hasKey(cooldownKey) == true) {
+            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Зачекайте 60 секунд перед повторним запитом СМС")
+        }
+        
+        val currentCountStr = redisTemplate.opsForValue().get(limitKey)
+        val currentCount = currentCountStr?.toIntOrNull() ?: 0
+        if (currentCount >= 5) {
+            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Перевищено ліміт СМС. Зачекайте 5 хвилин перед наступною спробою.")
+        }
 
-    val code = (100000 + Random().nextInt(900000)).toString()
-    val existingSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
+        val code = (100000 + Random().nextInt(900000)).toString()
+        val existingSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
 
-    if (existingSms != null) {
-        existingSms.code = code
-        existingSms.expiresAt = LocalDateTime.now().plusMinutes(10)
-        smsCodeRepository.save(existingSms)
-    } else {
-        val smsEntity = SmsVerificationCode(
-            userPhone = phone, 
-            code = code, 
-            expiresAt = LocalDateTime.now().plusMinutes(10)
-        )
-        smsCodeRepository.save(smsEntity)
+        if (existingSms != null) {
+            existingSms.code = code
+            existingSms.expiresAt = LocalDateTime.now().plusMinutes(10)
+            smsCodeRepository.save(existingSms)
+        } else {
+            val smsEntity = SmsVerificationCode(
+                userPhone = phone, 
+                code = code, 
+                expiresAt = LocalDateTime.now().plusMinutes(10)
+            )
+            smsCodeRepository.save(smsEntity)
+        }
+
+        // --- ЗАХИСТ: Фіксуємо ліміти в Redis (тепер на 5 хвилин) та скидаємо спроби введення ---
+        redisTemplate.opsForValue().set(cooldownKey, "true", 60, java.util.concurrent.TimeUnit.SECONDS)
+        redisTemplate.opsForValue().set(limitKey, (currentCount + 1).toString(), 5, java.util.concurrent.TimeUnit.MINUTES)
+        redisTemplate.delete("sms:attempts:$phone") 
+
+        smsService.sendSms(phone, "Ваш код таксі: $code")
     }
-
-    // --- ЗАЩИТА: Фиксируем лимиты в Redis и сбрасываем старые попытки ввода ---
-    redisTemplate.opsForValue().set(cooldownKey, "true", 60, java.util.concurrent.TimeUnit.SECONDS)
-    redisTemplate.opsForValue().set(limitKey, (currentCount + 1).toString(), 1, java.util.concurrent.TimeUnit.HOURS)
-    redisTemplate.delete("sms:attempts:$phone") // Новый код — новые 3 попытки ввода
-
-    smsService.sendSms(phone, "Ваш код таксі: $code")
-}
 
     fun updateFcmToken(userLogin: String, token: String) {
         val normalizedLogin = if (userLogin.startsWith("+380")) normalizePhone(userLogin) else userLogin
