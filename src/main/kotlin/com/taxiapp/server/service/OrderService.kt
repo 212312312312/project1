@@ -874,7 +874,33 @@ class OrderService(
     }
 
     fun getClientHistory(client: Client): List<TaxiOrderDto> {
-        return orderRepository.findAllByClientId(client.id!!).map { TaxiOrderDto(it) }
+        val clientActiveOrdersKey = "client:active_orders:${client.id}"
+        
+        // 1. За $O(1)$ забираем из Redis ID всех текущих активных заказов клиента
+        val activeOrderIdsRaw = redisTemplate.opsForSet().members(clientActiveOrdersKey) ?: emptySet<Any>()
+        val activeOrderIds = activeOrderIdsRaw.mapNotNull { it.toString().toLongOrNull() }
+        
+        // 2. Точечно достаем из БД только эти активные заказы (минуя миллион архивных строк)
+        val activeOrders = if (activeOrderIds.isNotEmpty()) {
+            orderRepository.findAllById(activeOrderIds)
+        } else {
+            emptyList()
+        }
+        
+        // 3. Достаем из БД архивные поездки, жестко ограничив выборку последними 30 записями
+        val archiveStatuses = listOf(OrderStatus.COMPLETED, OrderStatus.CANCELLED)
+        val archivedOrders = orderRepository.findArchivedOrdersByClientId(
+            clientId = client.id!!,
+            statuses = archiveStatuses,
+            pageable = org.springframework.data.domain.PageRequest.of(0, 30)
+        )
+        
+        // 4. Объединяем результаты в один поток (сначала свежие активные, затем архив)
+        val combinedOrders = mutableListOf<TaxiOrder>()
+        combinedOrders.addAll(activeOrders.sortedByDescending { it.id })
+        combinedOrders.addAll(archivedOrders)
+        
+        return combinedOrders.map { TaxiOrderDto(it) }
     }
 
     @Transactional

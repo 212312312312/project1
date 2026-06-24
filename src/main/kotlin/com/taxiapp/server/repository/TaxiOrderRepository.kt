@@ -100,7 +100,15 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         @Param("start") start: LocalDateTime, 
         @Param("end") end: LocalDateTime
     ): List<TaxiOrder>
+
+    @Query("SELECT o FROM TaxiOrder o WHERE o.client.id = :clientId AND o.status IN :statuses ORDER BY o.createdAt DESC")
+    fun findArchivedOrdersByClientId(
+        @Param("clientId") clientId: Long,
+        @Param("statuses") statuses: List<OrderStatus>,
+        pageable: org.springframework.data.domain.Pageable
+    ): List<TaxiOrder>
 }
+
 
 interface CancellationStatProjection {
     val reason: String

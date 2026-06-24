@@ -17,7 +17,8 @@ class RedisConfig {
         template.connectionFactory = connectionFactory
         
         val stringSerializer = StringRedisSerializer()
-        val jsonSerializer = Jackson2JsonRedisSerializer(Any::class.java)
+        // Передаем настроенный objectMapper, чтобы Redis сохранял DTO с учетом специфики Kotlin
+        val jsonSerializer = Jackson2JsonRedisSerializer(objectMapper, Any::class.java) 
         
         template.keySerializer = stringSerializer
         template.hashKeySerializer = stringSerializer

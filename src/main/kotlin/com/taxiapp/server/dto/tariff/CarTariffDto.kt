@@ -11,7 +11,8 @@ data class CarTariffDto(
     val freeWaitingMinutes: Int,
     val pricePerWaitingMinute: Double,
     val extraWaypointPrice: Double,
-    @com.fasterxml.jackson.annotation.JsonProperty("isActive")
+    @get:com.fasterxml.jackson.annotation.JsonProperty("isActive")
+    @field:com.fasterxml.jackson.annotation.JsonProperty("isActive")
     val isActive: Boolean,
     val imageUrl: String?,
     val isBeta: Boolean,
