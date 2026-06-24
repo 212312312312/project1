@@ -22,6 +22,8 @@ import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import org.springframework.data.redis.core.RedisTemplate
+import org.springframework.data.geo.Point
 import java.time.LocalDateTime
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -39,7 +41,8 @@ class DriverService(
     private val driverCardRepository: com.taxiapp.server.repository.DriverCardRepository,
     // Находим конструктор DriverService и добавляем туда:
     private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository,
-    private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate, // ДОБАВЛЕНО
+    private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate,
+    private val redisTemplateAny: RedisTemplate<String, Any> // ДОБАВЛЕНО
 ) {
 
 
@@ -137,6 +140,7 @@ class DriverService(
     }
 
     // --- ОБНОВЛЕНИЕ СТАТУСА (ОНЛАЙН/ОФФЛАЙН) ---
+    // --- ОБНОВЛЕНИЕ СТАТУСА (ОНЛАЙН/ОФФЛАЙН) ---
     @Transactional
     fun updateDriverStatus(driver: Driver, request: UpdateDriverStatusRequest): DriverDto {
         if (request.isOnline) {
@@ -162,7 +166,6 @@ class DriverService(
 
             driver.isOnline = false
             
-            // ИСПРАВЛЕНО ТУТ: Вместо OFFLINE переводим в MANUAL, чтобы UI приложения сбрасывал кнопку поиска
             if (driver.searchMode == DriverSearchMode.CHAIN || driver.searchMode == DriverSearchMode.HOME) {
                 driver.searchMode = DriverSearchMode.MANUAL
             }
@@ -170,6 +173,46 @@ class DriverService(
         
         val updatedDriver = driverRepository.save(driver)
         val driverDto = DriverDto(updatedDriver)
+
+        // 🔥 СИНХРОНИЗАЦИЯ С REAL-TIME КЭШЕМ REDIS
+        val driverIdStr = updatedDriver.id.toString()
+        val metaKey = "drivers:meta"
+        val geoKey = "drivers:geo"
+
+        if (updatedDriver.isOnline) {
+            val existingMeta = redisTemplateAny.opsForHash<String, Any>().get(metaKey, driverIdStr) as? Map<*, *>
+            val fullName = updatedDriver.fullName ?: "Водій"
+            val carModel = updatedDriver.car?.model ?: "Не вказано"
+            val carColor = updatedDriver.car?.color ?: ""
+            val searchMode = updatedDriver.searchMode.name
+
+            val updatedMeta = mapOf(
+                "fullName" to fullName,
+                "carModel" to carModel,
+                "carColor" to carColor,
+                "status" to searchMode,
+                "isOnline" to "true",
+                "lat" to (updatedDriver.latitude?.toString() ?: existingMeta?.get("lat")?.toString() ?: "0.0"),
+                "lng" to (updatedDriver.longitude?.toString() ?: existingMeta?.get("lng")?.toString() ?: "0.0"),
+                "bearing" to (existingMeta?.get("bearing")?.toString() ?: "0.0")
+            )
+            redisTemplateAny.opsForHash<String, Any>().put(metaKey, driverIdStr, updatedMeta)
+            
+            if (updatedDriver.longitude != null && updatedDriver.latitude != null) {
+                redisTemplateAny.opsForGeo().add(geoKey, Point(updatedDriver.longitude!!, updatedDriver.latitude!!), driverIdStr)
+            }
+        } else {
+            // СТД: Оставляем водителя в GEO-индексе, чтобы планировщик его видел, но меняем статус в мете на false
+            val existingMeta = redisTemplateAny.opsForHash<String, Any>().get(metaKey, driverIdStr) as? Map<*, *>
+            val updatedMeta = (existingMeta?.toMutableMap() ?: mutableMapOf()).apply {
+                this["fullName"] = updatedDriver.fullName ?: "Водій"
+                this["carModel"] = updatedDriver.car?.model ?: "Не вказано"
+                this["carColor"] = updatedDriver.car?.color ?: ""
+                this["status"] = updatedDriver.searchMode.name
+                this["isOnline"] = "false"
+            }
+            redisTemplateAny.opsForHash<String, Any>().put(metaKey, driverIdStr, updatedMeta)
+        }
 
         messagingTemplate.convertAndSend("/topic/admin/drivers", driverDto)
         return driverDto
