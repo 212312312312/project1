@@ -112,9 +112,8 @@ class ClientAppController(
             smsCodeRepository.delete(it) 
         }
 
-        // 5. Удаляем токены
-        val userTokens = refreshTokenRepository.findAll().filter { it.user.id == user.id }
-        refreshTokenRepository.deleteAll(userTokens)
+        // 5. Удаляем токены (Оптимизировано: фильтрация и удаление перенесены на уровень БД)
+        refreshTokenRepository.deleteByUser(user)
 
         // 6. УДАЛЯЕМ ОЦЕНКИ (РЕЙТИНГ) - ИСПРАВЛЕНИЕ ОШИБКИ
         val ratings = orderRatingRepository.findAllByTargetUserId(user.id)
