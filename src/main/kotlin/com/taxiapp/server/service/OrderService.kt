@@ -640,13 +640,21 @@ class OrderService(
         if (expiredIds.isEmpty()) return
 
         for (idStr in expiredIds) {
-            // 🛠️ ФИКС: Принудительно вызываем toString(), чтобы у компилятора не было receiver type mismatch
-            val orderId = idStr.toString().toLongOrNull() ?: continue
+            val idClean = idStr.toString()
+            
+            // 🚀 ВНЕДРЕНО: Атомарный перехват для горизонтального масштабирования (кластера)
+            // Тот инстанс сервера, который первым удалит ID из Redis ZSET, получает эксклюзивное право на обработку.
+            val removedCount = redisTemplate.opsForZSet().remove("orders:expired_offers", idClean)
+            if (removedCount == null || removedCount <= 0L) {
+                continue // Если 0 или null, значит другой инстанс сервера уже перехватил этот заказ. Идем дальше.
+            }
+
+            val orderId = idClean.toLongOrNull() ?: continue
             val order = orderRepository.findById(orderId).orElse(null) ?: continue
             
             // Если заказ всё еще ждет этого водителя — наказываем и возвращаем в эфир
             if (order.status == OrderStatus.OFFERING) {
-                logger.info("Час пропозиції замовлення ${order.id} вичерпано (Redis ZSET). Штраф і перехід в Ефір.")
+                logger.info("Час пропозиції замовлення ${order.id} вичерпано (Redis ZSET). Штраф і переход в Ефір.")
                 
                 order.offeredDriver?.let { 
                      driverActivityService.updateScore(it, -50, "Пропущено замовлення #${order.id}")
@@ -660,9 +668,6 @@ class OrderService(
                 val saved = orderRepository.save(order)
                 broadcastOrderChange(saved, "ADD")
             }
-            
-            // Обязательно вычищаем обработанный ID из Redis Sorted Set
-            redisTemplate.opsForZSet().remove("orders:expired_offers", idStr)
         }
     }
     
@@ -1525,44 +1530,53 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     }
 
     private fun getEnrichedNearbyDrivers(pickupLat: Double, pickupLng: Double, maxRadiusKm: Double = 10.0): List<Driver> {
-    val circle = org.springframework.data.geo.Circle(
-        org.springframework.data.geo.Point(pickupLng, pickupLat), 
-        org.springframework.data.geo.Distance(maxRadiusKm, org.springframework.data.geo.Metrics.KILOMETERS)
-    )
-    val args = org.springframework.data.redis.connection.RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
-        .includeCoordinates().sortAscending()
+        val circle = org.springframework.data.geo.Circle(
+            org.springframework.data.geo.Point(pickupLng, pickupLat), 
+            org.springframework.data.geo.Distance(maxRadiusKm, org.springframework.data.geo.Metrics.KILOMETERS)
+        )
+        val args = org.springframework.data.redis.connection.RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
+            .includeCoordinates().sortAscending()
+            
+        val geoResults = redisTemplate.opsForGeo().radius("drivers:geo", circle, args) ?: return emptyList()
         
-    val geoResults = redisTemplate.opsForGeo().radius("drivers:geo", circle, args) ?: return emptyList()
-    
-    // 🔥 ФИКС: Строковый шаблон гарантирует компилятору тип String
-    val driverIds = geoResults.content.mapNotNull { "${it.content.name}".toLongOrNull() }
-    if (driverIds.isEmpty()) return emptyList()
+        // 🔥 ФИКС: Строковый шаблон гарантирует компилятору тип String
+        val driverIds = geoResults.content.mapNotNull { "${it.content.name}".toLongOrNull() }
+        if (driverIds.isEmpty()) return emptyList()
 
-    val driversFromDb = driverRepository.findAllById(driverIds).associateBy { it.id }
+        // 🚀 ВНЕДРЕНО: Собираем ID всех водителей, которые прямо сейчас рассматривают предложение (OFFERING)
+        // Это исключает накладывание скрытых таймеров на одного человека.
+        val driversWithActiveOffers = orderRepository.findAllByStatus(OrderStatus.OFFERING)
+            .mapNotNull { it.offeredDriver?.id }
+            .toSet()
 
-    return geoResults.content.mapNotNull { result ->
-        // 🔥 ФИКС: И здесь тоже убираем receiver type mismatch
-        val id = "${result.content.name}".toLongOrNull() ?: return@mapNotNull null
-        val driver = driversFromDb[id] ?: return@mapNotNull null
-        
-        if (driver.isBlocked) return@mapNotNull null
+        val driversFromDb = driverRepository.findAllById(driverIds).associateBy { it.id }
 
-        val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", id.toString()) as? Map<*, *>
-        if (meta != null) {
-            val isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false
-            if (!isOnline) return@mapNotNull null
+        return geoResults.content.mapNotNull { result ->
+            // 🔥 ФИКС: И здесь тоже убираем receiver type mismatch
+            val id = "${result.content.name}".toLongOrNull() ?: return@mapNotNull null
+            
+            // 🚀 ВНЕДРЕНО: Guard-clause. Если водитель занят просмотром другого заказа, пропускаем его
+            if (driversWithActiveOffers.contains(id)) return@mapNotNull null
+            
+            val driver = driversFromDb[id] ?: return@mapNotNull null
+            if (driver.isBlocked) return@mapNotNull null
 
-            driver.isOnline = true
-            driver.latitude = result.content.point.y
-            driver.longitude = result.content.point.x
-            driver.bearing = (meta["bearing"] as? String)?.toFloat() ?: 0f
-            driver.searchMode = com.taxiapp.server.model.enums.DriverSearchMode.valueOf(meta["status"] as? String ?: "MANUAL")
-        } else {
-            return@mapNotNull null
+            val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", id.toString()) as? Map<*, *>
+            if (meta != null) {
+                val isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false
+                if (!isOnline) return@mapNotNull null
+
+                driver.isOnline = true
+                driver.latitude = result.content.point.y
+                driver.longitude = result.content.point.x
+                driver.bearing = (meta["bearing"] as? String)?.toFloat() ?: 0f
+                driver.searchMode = com.taxiapp.server.model.enums.DriverSearchMode.valueOf(meta["status"] as? String ?: "MANUAL")
+            } else {
+                return@mapNotNull null
+            }
+            driver
         }
-        driver
     }
-}
 
 // Вспомогательная утилита для распаковки координат
 private fun blockCoordinateRounding(v: Double): Double = v

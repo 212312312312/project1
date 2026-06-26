@@ -6,6 +6,8 @@ import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.services.TaxiServiceEntity
 import jakarta.persistence.*
+import org.hibernate.annotations.Fetch
+import org.hibernate.annotations.FetchMode
 import org.hibernate.annotations.CreationTimestamp
 import java.time.LocalDateTime
 import java.util.UUID // <-- ДОБАВИЛИ ИМПОРТ
@@ -158,6 +160,7 @@ class TaxiOrder(
     var isRatedByDriver: Boolean = false,
 
     @ManyToMany(fetch = FetchType.EAGER)
+    @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
     @JoinTable(
         name = "order_services_link",
         joinColumns = [JoinColumn(name = "order_id")],
@@ -166,6 +169,7 @@ class TaxiOrder(
     val selectedServices: MutableList<TaxiServiceEntity> = mutableListOf()
 ) {
     @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
+    @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
     var stops: MutableList<OrderStop> = mutableListOf()
     
     @Column(name = "current_stop_order", nullable = false, columnDefinition = "integer default 0")
