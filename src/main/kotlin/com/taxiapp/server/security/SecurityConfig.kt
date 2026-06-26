@@ -82,17 +82,17 @@ class SecurityConfig(
 
                     // 3. Доступ по ролям
                     .requestMatchers("/api/v1/payments/**").hasAnyAuthority(
-                        "ROLE_DRIVER", "DRIVER", "ROLE_ADMINISTRATOR", "ADMINISTRATOR", "ROLE_CLIENT", "CLIENT"
-                    )
-                    .requestMatchers("/api/v1/admin/**").hasAnyAuthority(
-                        "ROLE_ADMINISTRATOR", "ADMINISTRATOR", "ROLE_DISPATCHER", "DISPATCHER", "ROLE_ADMIN", "ADMIN"
-                    )
-                    // Убедись, что строка роли водителя перекрывает этот эндпоинт (она уже перекрывает весь корень /driver/**, поэтому никаких действий больше не требуется):
-                    .requestMatchers("/api/v1/driver/**").hasAnyAuthority("ROLE_DRIVER", "DRIVER", "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
-                    )
-                    .requestMatchers("/api/v1/client/**").hasAnyAuthority(
-                        "ROLE_CLIENT", "CLIENT", "ROLE_ADMINISTRATOR", "ADMINISTRATOR"
-                    )
+    "ROLE_DRIVER", "ROLE_ADMINISTRATOR", "ROLE_CLIENT"
+)
+.requestMatchers("/api/v1/admin/**").hasAnyAuthority(
+    "ROLE_ADMINISTRATOR", "ROLE_DISPATCHER"
+)
+.requestMatchers("/api/v1/driver/**").hasAnyAuthority(
+    "ROLE_DRIVER", "ROLE_ADMINISTRATOR"
+)
+.requestMatchers("/api/v1/client/**").hasAnyAuthority(
+    "ROLE_CLIENT", "ROLE_ADMINISTRATOR"
+)
 
                     // 4. Все остальные
                     .anyRequest().authenticated()

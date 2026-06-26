@@ -23,21 +23,33 @@ class JwtAuthFilter(
         response: HttpServletResponse,
         filterChain: FilterChain
     ) {
-        val authHeader: String? = request.getHeader("Authorization")
+        var jwtToken: String? = null
 
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+        // 1. Пытаемся достать токен из HttpOnly Cookie (для Диспетчерской)
+        val cookies = request.cookies
+        if (cookies != null) {
+            val accessCookie = cookies.find { it.name == "accessToken" }
+            if (accessCookie != null) {
+                jwtToken = accessCookie.value
+            }
+        }
+
+        // 2. Если в куках пусто, ищем в заголовке Authorization (для мобильных приложений)
+        if (jwtToken == null) {
+            val authHeader: String? = request.getHeader("Authorization")
+            if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                jwtToken = authHeader.substring(7).trim()
+            }
+        }
+
+        // Если токена нет вообще — просто идем к следующему фильтру
+        if (jwtToken.isNullOrEmpty()) {
             filterChain.doFilter(request, response)
             return
         }
 
-        val jwtToken = authHeader.substring(7).trim()
-
+        // Тот самый пропущенный try {, который собирает ошибки валидации токена
         try {
-            if (jwtToken.isEmpty()) {
-                filterChain.doFilter(request, response)
-                return
-            }
-
             val username = jwtUtils.extractUsername(jwtToken)
 
             if (username != null && SecurityContextHolder.getContext().authentication == null) {
@@ -54,18 +66,16 @@ class JwtAuthFilter(
                 }
             }
         } catch (e: ExpiredJwtException) {
-            // --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
             println(">>> JWT FILTER: Token EXPIRED for: ${request.requestURI}")
             response.status = HttpServletResponse.SC_UNAUTHORIZED 
-            response.setHeader("WWW-Authenticate", "Bearer") // <--- ДОБАВИТЬ ЭТУ СТРОКУ
+            response.setHeader("WWW-Authenticate", "Bearer")
             response.contentType = "application/json;charset=UTF-8"
             response.writer.write("""{"error": "TOKEN_EXPIRED", "message": "Access token is expired"}""")
             return 
         } catch (e: Exception) {
-            // --- И ЗДЕСЬ ---
             println(">>> JWT FILTER: Error parsing token: ${e.message}")
             response.status = HttpServletResponse.SC_UNAUTHORIZED 
-            response.setHeader("WWW-Authenticate", "Bearer") // <--- ДОБАВИТЬ ЭТУ СТРОКУ
+            response.setHeader("WWW-Authenticate", "Bearer")
             response.contentType = "application/json;charset=UTF-8"
             response.writer.write("""{"error": "INVALID_TOKEN", "message": "Invalid access token"}""")
             return 

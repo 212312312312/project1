@@ -523,40 +523,105 @@ val email: String = payload.email
 
     @Transactional
     fun refreshToken(request: TokenRefreshRequest): LoginResponse {
-        val oldRefreshToken = refreshTokenRepository.findByToken(request.refreshToken)
-            .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Недійсний Refresh Token") }
-
-        if (oldRefreshToken.expiryDate < java.time.Instant.now()) {
-            refreshTokenRepository.delete(oldRefreshToken)
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Refresh Token прострочений. Авторизуйтесь знову.")
+        val cacheKey = "refresh_grace:${request.refreshToken}"
+        
+        // 1. Быстрая проверка: не обновлял ли параллельный запрос этот токен секунду назад?
+        val cachedResponseStr = redisTemplate.opsForValue().get(cacheKey)
+        if (!cachedResponseStr.isNullOrEmpty()) {
+            val parts = cachedResponseStr.split("|||")
+            if (parts.size >= 6) {
+                return LoginResponse(
+                    token = parts[0],
+                    refreshToken = parts[1],
+                    userId = parts[2].toLong(),
+                    phoneNumber = parts[3],
+                    fullName = parts[4],
+                    role = parts[5],
+                    isNewUser = false,
+                    isPendingDeletion = parts.getOrNull(6)?.toBoolean() ?: false
+                )
+            }
         }
 
-        val user = oldRefreshToken.user
-        if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+        // 2. Блокировка для предотвращения Race Condition между потоками на сервере
+        synchronized(this) {
+            // Повторный чек кэша внутри синхронизированного блока
+            val cachedAgain = redisTemplate.opsForValue().get(cacheKey)
+            if (!cachedAgain.isNullOrEmpty()) {
+                val parts = cachedAgain.split("|||")
+                if (parts.size >= 6) {
+                    return LoginResponse(
+                        token = parts[0],
+                        refreshToken = parts[1],
+                        userId = parts[2].toLong(),
+                        phoneNumber = parts[3],
+                        fullName = parts[4],
+                        role = parts[5],
+                        isNewUser = false,
+                        isPendingDeletion = parts.getOrNull(6)?.toBoolean() ?: false
+                    )
+                }
+            }
 
-        // ==========================================
-        // ИЗМЕНЕНИЕ: ИДЕАЛЬНАЯ РОТАЦИЯ (Rotation)
-        // 1. Удаляем ИСПОЛЬЗОВАННЫЙ рефреш токен (исключает перехват и повторное использование)
-        // ==========================================
-        refreshTokenRepository.delete(oldRefreshToken)
-        refreshTokenRepository.flush()
-        
-        // 2. Генерируем новый
-        val newRefreshToken = createRefreshToken(user.id)
+            // Твой оригинальный код верификации рефреш-токена
+            val oldRefreshToken = refreshTokenRepository.findByToken(request.refreshToken)
+                .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Недійсний Refresh Token") }
 
-        val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.userPhone!!)
-        val newAccessToken = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
-        val isPending = user.deletionRequestedAt != null
-        
-        return LoginResponse(
-            token = newAccessToken, 
-            refreshToken = newRefreshToken.token,
-            userId = user.id, 
-            phoneNumber = user.userPhone ?: "", 
-            fullName = user.fullName ?: "Користувач", 
-            role = user.role.name, 
-            isNewUser = false, 
-            isPendingDeletion = isPending
-        )
+            if (oldRefreshToken.expiryDate < java.time.Instant.now()) {
+                refreshTokenRepository.delete(oldRefreshToken)
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, "Refresh Token прострочений. Авторизуйтесь знову.")
+            }
+
+            val user = oldRefreshToken.user
+            if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+
+            // Удаляем старый токен из базы данных
+            refreshTokenRepository.delete(oldRefreshToken)
+            try {
+                refreshTokenRepository.flush()
+            } catch (e: Exception) {
+                // Если параллельная транзакция успела закоммитить удаление раньше
+                val cachedPostFlush = redisTemplate.opsForValue().get(cacheKey)
+                if (!cachedPostFlush.isNullOrEmpty()) {
+                    val parts = cachedPostFlush.split("|||")
+                    if (parts.size >= 6) {
+                        return LoginResponse(
+                            token = parts[0],
+                            refreshToken = parts[1],
+                            userId = parts[2].toLong(),
+                            phoneNumber = parts[3],
+                            fullName = parts[4],
+                            role = parts[5],
+                            isNewUser = false,
+                            isPendingDeletion = parts.getOrNull(6)?.toBoolean() ?: false
+                        )
+                    }
+                }
+                throw e
+            }
+            
+            // Генерируем новую пару токенов (Ротация)
+            val newRefreshToken = createRefreshToken(user.id)
+            val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.userPhone!!)
+            val newAccessToken = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
+            val isPending = user.deletionRequestedAt != null
+            
+            val loginResponse = LoginResponse(
+                token = newAccessToken, 
+                refreshToken = newRefreshToken.token,
+                userId = user.id, 
+                phoneNumber = user.userPhone ?: "", 
+                fullName = user.fullName ?: "Користувач", 
+                role = user.role.name, 
+                isNewUser = false, 
+                isPendingDeletion = isPending
+            )
+
+            // Сохраняем результат в Redis на 10 секунд (Grace Period для параллельных вкладок веба)
+            val valueToCache = "${loginResponse.token}|||${loginResponse.refreshToken}|||${loginResponse.userId}|||${loginResponse.phoneNumber}|||${loginResponse.fullName}|||${loginResponse.role}|||${loginResponse.isPendingDeletion}"
+            redisTemplate.opsForValue().set(cacheKey, valueToCache, 10, java.util.concurrent.TimeUnit.SECONDS)
+
+            return loginResponse
+        }
     }
 }

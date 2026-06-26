@@ -15,6 +15,8 @@ import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
 import java.security.Principal
 
 @RestController
@@ -25,14 +27,47 @@ class AuthController(
 
     // --- ВХІД (Пароль) ---
     @PostMapping("/login")
-    fun login(@RequestBody request: LoginRequest): LoginResponse {
-        return authService.login(request)
+    fun login(
+        @RequestBody request: LoginRequest, 
+        response: HttpServletResponse
+    ): ResponseEntity<LoginResponse> {
+        val loginResponse = authService.login(request)
+        
+        // Прописываем HttpOnly куки в ответ браузера
+        response.addHeader("Set-Cookie", "accessToken=${loginResponse.token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=900")
+        response.addHeader("Set-Cookie", "refreshToken=${loginResponse.refreshToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=15552000")
+        
+        return ResponseEntity.ok(loginResponse)
     }
 
     // --- ОНОВЛЕННЯ ТОКЕНУ ---
     @PostMapping("/refresh")
-    fun refreshToken(@Valid @RequestBody request: TokenRefreshRequest): LoginResponse {
-        return authService.refreshToken(request)
+    fun refreshToken(
+        request: HttpServletRequest,
+        @Valid @RequestBody(required = false) body: TokenRefreshRequest?,
+        response: HttpServletResponse
+    ): ResponseEntity<LoginResponse> {
+        // Пытаемся взять токен из body (для мобилок), либо из кук (для веба)
+        var tokenString = body?.refreshToken
+        if (tokenString.isNullOrEmpty()) {
+            val cookies = request.cookies
+            val refreshCookie = cookies?.find { it.name == "refreshToken" }
+            tokenString = refreshCookie?.value
+        }
+
+        if (tokenString.isNullOrEmpty()) {
+            throw org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.BAD_REQUEST, "Refresh token is missing"
+            )
+        }
+
+        val loginResponse = authService.refreshToken(TokenRefreshRequest(tokenString))
+        
+        // Обновляем куки новыми ротированными токенами
+        response.addHeader("Set-Cookie", "accessToken=${loginResponse.token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=900")
+        response.addHeader("Set-Cookie", "refreshToken=${loginResponse.refreshToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=15552000")
+        
+        return ResponseEntity.ok(loginResponse)
     }
 
     // --- ВОДІЙ: Вхід через SMS (НОВЕ) ---
