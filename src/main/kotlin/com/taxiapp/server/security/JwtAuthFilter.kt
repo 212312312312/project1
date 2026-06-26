@@ -42,8 +42,7 @@ class JwtAuthFilter(
             }
         }
 
-        // Если токена нет вообще — просто идем к следующему фильтру
-        if (jwtToken.isNullOrEmpty()) {
+        if (jwtToken.isNullOrEmpty() || jwtToken == "null" || jwtToken == "undefined") {
             filterChain.doFilter(request, response)
             return
         }
