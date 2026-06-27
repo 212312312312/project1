@@ -6,6 +6,8 @@ import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.OrderService
 import org.springframework.http.HttpStatus
+import org.springframework.security.access.prepost.PreAuthorize
+import com.taxiapp.server.model.enums.OrderStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
@@ -13,6 +15,7 @@ import java.security.Principal
 
 @RestController
 @RequestMapping("/api/v1/driver/orders")
+@PreAuthorize("hasAuthority('ROLE_DRIVER')")
 class DriverOrderController(
     private val orderService: OrderService,
     private val driverRepository: DriverRepository,
@@ -92,28 +95,20 @@ class DriverOrderController(
     // ДОБАВЬ ЭТОТ НОВЫЙ ЭНДПОИНТ В DriverOrderController.kt
 
     @GetMapping("/{id}")
-    fun getOrderById(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
-        // Проверяем авторизацию и блокировку водителя
-        getDriverFromPrincipal(principal)
-        
-        // Превращаем строковый UUID во внутренний Long ID
-        val internalId = getInternalId(id)
-        
-        // Получаем заказ из сервиса и отдаем на мобилку
-        val order = orderService.getOrderById(internalId)
-        return ResponseEntity.ok(order)
-    }
+fun getOrderById(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    val driver = getDriverFromPrincipal(principal)
+    val internalId = getInternalId(id)
+    
+    val order = orderService.getOrderById(internalId)
+    
+    // 🔄 ЗАМЕНИ СТРОКУ С ПРОВЕРКОЙ IF НА ЭТУ:
 
-    // ДОБАВЬ ЭТОТ НОВЫЙ ЭНДПОИНТ В КЛАСС DriverOrderController
-    @GetMapping("/by-internal-id/{id}")
-    fun getOrderByInternalId(@PathVariable id: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
-        // Проверяем авторизацию водителя
-        getDriverFromPrincipal(principal)
-        
-        // Прямо запрашиваем заказ по его Long ID из сервиса
-        val order = orderService.getOrderById(id)
-        return ResponseEntity.ok(order)
-    }
+if (order.driver?.id != driver.id && order.status == OrderStatus.ACCEPTED) {
+    throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ к чужому замовленню заборонено")
+}
+    
+    return ResponseEntity.ok(order)
+}
 
     @PostMapping("/{id}/waypoint/arrive")
     fun arriveAtWaypoint(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {

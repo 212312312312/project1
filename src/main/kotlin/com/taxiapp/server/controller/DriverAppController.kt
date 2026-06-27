@@ -14,6 +14,7 @@ import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.CarRepository
+import org.springframework.security.access.prepost.PreAuthorize
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.service.DriverLocationService
 import com.taxiapp.server.service.DriverService
@@ -85,6 +86,7 @@ data class AddCardRequest(
 
 @RestController
 @RequestMapping("/api/v1/driver")
+@PreAuthorize("hasAuthority('ROLE_DRIVER')")
 class DriverAppController(
     private val driverService: DriverService,
     private val driverLocationService: DriverLocationService,
@@ -143,21 +145,15 @@ class DriverAppController(
 
     @PostMapping("/location")
 fun updateLocation(
-    @RequestBody request: UpdateLocationRequest,
-    servletRequest: HttpServletRequest
+    @AuthenticationPrincipal user: User,
+    @RequestBody request: UpdateLocationRequest
 ): ResponseEntity<Void> {
-    val authHeader = servletRequest.getHeader("Authorization")
-    if (authHeader != null && authHeader.startsWith("Bearer ")) {
-        val token = authHeader.substring(7)
-        try {
-            // Извлекаем строковый UUID вместо Long ID
-            val driverUuid = jwtUtils.extractUserUuid(token)
-            driverLocationService.updateLocation(driverUuid, request)
-        } catch (e: Exception) {
-            // Теперь мы увидим реальную причину в логах сервера, если передача упадет
-            println(">>> КРИТИЧЕСКАЯ ОШИБКА ОБНОВЛЕНИЯ ЛОКАЦИИ: ${e.message}")
-            e.printStackTrace()
-        }
+    if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+    
+    try {
+        driverLocationService.updateLocation(user.uuid, request)
+    } catch (e: Exception) {
+        println(">>> ОШИБКА ОБНОВЛЕНИЯ ЛОКАЦИИ ВОДИТЕЛЯ ${user.id}: ${e.message}")
     }
     return ResponseEntity.ok().build()
 }
@@ -265,24 +261,28 @@ fun updateLocation(
         ))
     }
 
-    @PostMapping("/sos")
-    fun sendSosSignal(
-        @RequestBody loc: UpdateLocationRequest, 
-        @AuthenticationPrincipal userDetails: UserDetails
-    ): ResponseEntity<String> {
-        val driver = getDriverFromUser(userDetails)
-        val sosDto = SosSignalDto(
-            driverId = driver.id!!, 
-            driverName = driver.fullName ?: "Водій",
-            phone = driver.userPhone ?: "Не вказано", 
-            carNumber = driver.car?.plateNumber ?: "Без авто",
-            lat = loc.lat,
-            lng = loc.lng,
-            timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
-        )
-        messagingTemplate.convertAndSend("/topic/admin/sos", sosDto)
-        return ResponseEntity.ok("SOS Sent")
-    }
+    // 3. Замени метод sendSosSignal на чистый:
+@PostMapping("/sos")
+fun sendSosSignal(
+    @RequestBody loc: UpdateLocationRequest, 
+    @AuthenticationPrincipal userDetails: UserDetails
+): ResponseEntity<String> {
+    val driver = getDriverFromUser(userDetails)
+    val verifiedLocation = driverLocationService.getDriverLocation(driver.id!!) ?: loc
+    
+    val sosDto = SosSignalDto(
+        driverId = driver.id!!, 
+        driverName = driver.fullName ?: "Водій",
+        phone = driver.userPhone ?: "Не вказано", 
+        carNumber = driver.car?.plateNumber ?: "Без авто",
+        lat = verifiedLocation.lat, 
+        lng = verifiedLocation.lng, 
+        timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+    )
+    messagingTemplate.convertAndSend("/topic/admin/sos", sosDto)
+    return ResponseEntity.ok("SOS Sent")
+}
+
 
     @GetMapping("/me")
     fun getDriverProfile(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverDto> {
@@ -366,16 +366,10 @@ fun updateLocation(
     }
 
     @DeleteMapping("/location")
-fun logoutFromMap(servletRequest: HttpServletRequest): ResponseEntity<Void> {
-    val authHeader = servletRequest.getHeader("Authorization")
-    if (authHeader != null && authHeader.startsWith("Bearer ")) {
-        val token = authHeader.substring(7)
-        // Извлекаем UUID и находим водителя, чтобы получить его внутренний Long ID для очистки
-        val driverUuid = jwtUtils.extractUserUuid(token)
-        val driver = driverRepository.findByUuid(driverUuid)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений") }
-        driverLocationService.clearLocation(driver.id)
-    }
+fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
+    if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+    
+    driverLocationService.clearLocation(user.id!!)
     return ResponseEntity.ok().build()
 }
 

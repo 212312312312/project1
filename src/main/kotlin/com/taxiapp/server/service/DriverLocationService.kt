@@ -196,4 +196,19 @@ class DriverLocationService(
             )
         }
     }
+
+
+    // Добавь этот метод в самый конец класса DriverLocationService (перед последней закрывающей фигурной скобкой):
+
+fun getDriverLocation(driverId: Long): UpdateLocationRequest? {
+    val meta = redisTemplate.opsForHash<String, Any>().get(META_KEY, driverId.toString()) as? Map<*, *> ?: return null
+    val latStr = meta["lat"] as? String ?: return null
+    val lngStr = meta["lng"] as? String ?: return null
+    val bearingStr = meta["bearing"] as? String
+    return UpdateLocationRequest(
+        lat = latStr.toDouble(),
+        lng = lngStr.toDouble(),
+        bearing = bearingStr?.toFloat()
+    )
+}
 }
