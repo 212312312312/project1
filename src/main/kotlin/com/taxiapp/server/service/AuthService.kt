@@ -265,8 +265,6 @@ val email: String = payload.email
     }
 
     fun checkDriverSmsCode(phone: String, code: String) {
-    // Безопасный универсальный код для тестов (перенесен сюда из SmsService под строгий учет попыток)
-    if (code == "000000") return 
 
     val attemptsKey = "sms:attempts:$phone"
     val attemptsStr = redisTemplate.opsForValue().get(attemptsKey)

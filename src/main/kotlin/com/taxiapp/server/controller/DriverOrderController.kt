@@ -95,20 +95,32 @@ class DriverOrderController(
     // ДОБАВЬ ЭТОТ НОВЫЙ ЭНДПОИНТ В DriverOrderController.kt
 
     @GetMapping("/{id}")
-fun getOrderById(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
-    val driver = getDriverFromPrincipal(principal)
-    val internalId = getInternalId(id)
-    
-    val order = orderService.getOrderById(internalId)
-    
-    // 🔄 ЗАМЕНИ СТРОКУ С ПРОВЕРКОЙ IF НА ЭТУ:
+    fun getOrderById(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        val internalId = getInternalId(id)
+        
+        val order = orderService.getOrderById(internalId)
+        
+        // 🛡️ СТРОГАЯ ЗАЩИТА (IDOR): Запрещаем любой доступ, если ID водителя не совпадает
+        if (order.driver?.id != driver.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ до чужого замовлення заборонено")
+        }
+        
+        return ResponseEntity.ok(order)
+    }
 
-if (order.driver?.id != driver.id && order.status == OrderStatus.ACCEPTED) {
-    throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ к чужому замовленню заборонено")
-}
-    
-    return ResponseEntity.ok(order)
-}
+    @GetMapping("/by-internal-id/{internalId}")
+    fun getOrderByInternalId(@PathVariable internalId: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val driver = getDriverFromPrincipal(principal)
+        val order = orderService.getOrderById(internalId)
+        
+        // 🛡️ СТРОГАЯ ЗАЩИТА (IDOR): Жестко блокируем попытки перебора чужих ID
+        if (order.driver?.id != driver.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ до чужого замовлення заборонено")
+        }
+        
+        return ResponseEntity.ok(order)
+    }
 
     @PostMapping("/{id}/waypoint/arrive")
     fun arriveAtWaypoint(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {

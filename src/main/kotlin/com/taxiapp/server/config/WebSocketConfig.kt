@@ -53,17 +53,20 @@ class WebSocketConfig(
                             if (username != null) {
                                 val userDetails = userDetailsService.loadUserByUsername(username)
                                 if (jwtUtils.validateToken(token, userDetails)) {
-                                    // Успешно авторизуем сокет-сессию внутри Spring Messaging
                                     val authentication = UsernamePasswordAuthenticationToken(
                                         userDetails, null, userDetails.authorities
                                     )
                                     accessor.user = authentication
+                                    return message // Успешная авторизация
                                 }
                             }
                         } catch (e: Exception) {
-                            // Токен невалиден — сессия останется неавторизованной и сбросится
+                            // Токен невалиден
+                            throw org.springframework.messaging.MessageDeliveryException("Invalid Token")
                         }
                     }
+                    // Если дошли сюда, значит токена нет или он кривой
+                    throw org.springframework.messaging.MessageDeliveryException("Unauthorized: Access Denied")
                 }
                 return message
             }
