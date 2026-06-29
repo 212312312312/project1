@@ -107,6 +107,19 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         @Param("statuses") statuses: List<OrderStatus>,
         pageable: org.springframework.data.domain.Pageable
     ): List<TaxiOrder>
+
+
+    @Query("SELECT AVG(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
+fun calculateAverageOrderValue(): Double?
+
+@Query("SELECT SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
+fun calculateTotalRevenue(): Double?
+
+@Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
+fun getTariffAnalytics(): List<Array<Any>>
+
+@Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o")
+fun countUniqueClientsWithOrders(): Long
 }
 
 
