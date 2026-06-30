@@ -115,12 +115,26 @@ fun calculateAverageOrderValue(): Double?
 @Query("SELECT SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
 fun calculateTotalRevenue(): Double?
 
+ fun countByStatus(status: OrderStatus): Long
+    
 @Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
 fun getTariffAnalytics(): List<Array<Any>>
 
 @Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o")
 fun countUniqueClientsWithOrders(): Long
+
+@Query("""
+        SELECT o.cancellationReason AS reason, COUNT(o.id) AS count 
+        FROM TaxiOrder o 
+        WHERE o.status = 'CANCELLED' 
+          AND o.cancellationReason IS NOT NULL 
+          AND o.cancellationReason IN (SELECT cr.reasonText FROM CancellationReason cr WHERE cr.target = 'CLIENT')
+        GROUP BY o.cancellationReason 
+        ORDER BY count DESC
+    """)
+    fun getClientCancellationStats(): List<CancellationStatProjection>
 }
+
 
 
 interface CancellationStatProjection {

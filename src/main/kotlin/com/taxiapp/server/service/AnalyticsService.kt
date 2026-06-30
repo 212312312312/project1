@@ -29,6 +29,13 @@ class AnalyticsService(
             (uniqueClientsWithOrders.toDouble() / totalClientsCount.toDouble()) * 100.0
         } else 0.0
 
+        val totalOrders = taxiOrderRepository.count()
+        val completedOrders = taxiOrderRepository.countByStatus(com.taxiapp.server.model.enums.OrderStatus.COMPLETED)
+        
+        val fulfillmentRate = if (totalOrders > 0) {
+            Math.round((completedOrders.toDouble() / totalOrders.toDouble() * 100.0) * 10.0) / 10.0
+        } else 0.0
+
         // 3. Средний LTV на одного платящего клиента
         val averageLtv = if (uniqueClientsWithOrders > 0) {
             totalLtvSum / uniqueClientsWithOrders
@@ -72,15 +79,33 @@ class AnalyticsService(
             )
         }
 
+       val clientCancellationsRaw = taxiOrderRepository.getClientCancellationStats()
+        val totalClientCancellations = clientCancellationsRaw.sumOf { it.count }.toDouble()
+
+        val clientCancellationStats = clientCancellationsRaw.map { row ->
+            val count = row.count
+            val percentage = if (totalClientCancellations > 0) {
+                Math.round((count.toDouble() / totalClientCancellations * 100.0) * 10.0) / 10.0
+            } else 0.0
+            ClientCancellationStatDto(
+                reason = row.reason,
+                count = count,
+                percentage = percentage
+            )
+        }
+
+        // 2. ОБНОВИ return БЛОК (добавь поле в самый конец аргументов):
         return GeneralAnalyticsResponse(
             averageOrderValue = averageOrderValue,
             totalLtvSum = totalLtvSum,
             averageLtv = averageLtv,
             conversionRate = conversionRate,
+            fulfillmentRate = fulfillmentRate, // <-- ПЕРЕДАЕМ СЮДА
             tariffStats = tariffStats,
             screenStats = screenStats,
             trafficStats = trafficStats,
-            actionStats = actionStats
+            actionStats = actionStats,
+            clientCancellationStats = clientCancellationStats
         )
     }
 

@@ -90,7 +90,8 @@ class DriverLocationService(
         )
         redisTemplate.opsForHash<String, Any>().put(META_KEY, driverId.toString(), updatedMeta)
 
-        // 3. Ретрансляция (Tracking) для активного заказа клиента
+        // === ЗАМЕНИ ТОЛЬКО ЭТОТ БЛОК (Пункт 3) ===
+        // 3. Ретрансляция (Tracking) для активного заказа клиента + Логирование реального трека
         val orderUuidStr = redisTemplate.opsForHash<String, Any>().get("orders:active_drivers", driverId.toString())?.toString()
         
         if (!orderUuidStr.isNullOrEmpty()) {
@@ -101,6 +102,15 @@ class DriverLocationService(
             )
             // Пушим координаты напрямую в сокет-канал конкретной поездки пассажира
             messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingDto)
+
+            // 🔥 РЕАЛЬНЫЙ ТРЕКИНГ: Записываем физическую координату машины в список Redis
+            val trackKey = "orders:track-history:$orderUuidStr"
+            val timestamp = java.time.Instant.now().toString() // Точное серверное ISO время точки
+            val trackPoint = "${request.lat},${request.lng},$timestamp"
+            
+            redisTemplate.opsForList().rightPush(trackKey, trackPoint)
+            // Устанавливаем TTL на 7 дней, чтобы треки старых поездок автоматически стирались и не забивали оперативку
+            redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
         }
 
         // 4. Трансляция координат на общую веб-карту для диспетчера
