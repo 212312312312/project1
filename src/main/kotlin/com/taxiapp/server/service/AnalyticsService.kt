@@ -6,12 +6,14 @@ import com.taxiapp.server.repository.*
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
+import com.taxiapp.server.model.analytics.ClientAppAction
 
 @Service
 class AnalyticsService(
     private val taxiOrderRepository: TaxiOrderRepository,
     private val clientRepository: ClientRepository,
-    private val clientAppEventRepository: ClientAppEventRepository
+    private val clientAppEventRepository: ClientAppEventRepository,
+    private val clientAppActionRepository: ClientAppActionRepository // Добавили новый репо
 ) {
 
     @Transactional(readOnly = true)
@@ -43,18 +45,30 @@ class AnalyticsService(
 
         // 1. Среднее время и статистика по экранам дропа
         val screenStats = clientAppEventRepository.getScreenStats().map { row ->
+            val avgSeconds = row[2] as? Double ?: 0.0
             ScreenStatDto(
                 screenName = row[0] as String,
                 visitCount = row[1] as Long,
-                averageDurationSeconds = row[2] as Double
+                averageDurationSeconds = Math.round(avgSeconds * 10.0) / 10.0
             )
         }
 
-        // 2. Источники трафика (UTM)
+        // 2. Джерела трафіку (UTM + Маркетингова атрибуція)
         val trafficStats = clientRepository.getTrafficSourceStats().map { row ->
+            val rawSource = row[0] as? String
             TrafficSourceStatDto(
-                source = row[0] as? String ?: "Органічний трафік (Пряме встановлення)",
-                userCount = row[1] as Long
+                source = rawSource ?: "Органічний трафік (Пряме встановлення)",
+                medium = row[1] as? String ?: (if (rawSource == null) "organic" else "not_set"),
+                campaign = row[2] as? String ?: (if (rawSource == null) "Прямий візит" else "not_set"),
+                userCount = row[3] as Long
+            )
+        }
+
+        val actionStats = clientAppActionRepository.getActionStats().map { row ->
+            ActionStatDto(
+                actionName = row[0] as String,
+                actionValue = row[1] as? String,
+                count = row[2] as Long
             )
         }
 
@@ -65,7 +79,8 @@ class AnalyticsService(
             conversionRate = conversionRate,
             tariffStats = tariffStats,
             screenStats = screenStats,
-            trafficStats = trafficStats
+            trafficStats = trafficStats,
+            actionStats = actionStats
         )
     }
 
@@ -93,5 +108,20 @@ class AnalyticsService(
             )
         }
         clientAppEventRepository.saveAll(entities)
+
+        // Пакетное сохранение кастомных действий (кликов) из приложения
+        if (!request.customEvents.isNullOrEmpty()) {
+            val actionEntities = request.customEvents.map { actionDto ->
+                ClientAppAction(
+                    clientId = client.id!!,
+                    actionName = actionDto.eventName,
+                    actionValue = actionDto.eventValue,
+                    sessionId = request.sessionId,
+                    createdAt = LocalDateTime.now()
+                )
+            }
+            clientAppActionRepository.saveAll(actionEntities)
+        }
     }
-}
+
+  }

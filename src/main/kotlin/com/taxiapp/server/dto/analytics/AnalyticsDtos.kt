@@ -6,9 +6,19 @@ data class ClientEventBatchRequest(
     val utmSource: String?,
     val utmMedium: String?,
     val utmCampaign: String?,
-    val events: List<ScreenEventDto>
+    val events: List<ScreenEventDto>,
+    val customEvents: List<CustomEventDto> = emptyList() // Добавили поле для кликов
+)
+data class CustomEventDto(
+    val eventName: String,
+    val eventValue: String?
 )
 
+data class ActionStatDto(
+    val actionName: String,
+    val actionValue: String?,
+    val count: Long
+)
 data class ScreenEventDto(
     val screenName: String,
     val durationSeconds: Long
@@ -22,7 +32,8 @@ data class GeneralAnalyticsResponse(
     val conversionRate: Double,
     val tariffStats: List<TariffStatDto>,
     val screenStats: List<ScreenStatDto>,
-    val trafficStats: List<TrafficSourceStatDto>
+    val trafficStats: List<TrafficSourceStatDto>,
+    val actionStats: List<ActionStatDto> // Добавили поле со статистикой кликов диспетчеру
 )
 
 data class TariffStatDto(
@@ -39,5 +50,7 @@ data class ScreenStatDto(
 
 data class TrafficSourceStatDto(
     val source: String,
+    val medium: String,
+    val campaign: String,
     val userCount: Long
 )

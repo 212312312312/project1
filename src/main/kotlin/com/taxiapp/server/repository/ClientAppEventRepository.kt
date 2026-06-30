@@ -8,6 +8,11 @@ import org.springframework.stereotype.Repository
 @Repository
 interface ClientAppEventRepository : JpaRepository<ClientAppEvent, Long> {
 
-    @Query("SELECT e.screenName, COUNT(e), AVG(e.durationSeconds) FROM ClientAppEvent e GROUP BY e.screenName")
+   @Query("""
+        SELECT e.screenName, COUNT(e), AVG(e.durationSeconds) 
+        FROM ClientAppEvent e 
+        WHERE e.durationSeconds <= 900 
+        GROUP BY e.screenName
+    """)
     fun getScreenStats(): List<Array<Any>>
 }

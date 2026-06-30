@@ -15,6 +15,14 @@ interface ClientRepository : JpaRepository<Client, Long> {
     // Поиск по части номера (для админки)
     fun findByUserPhoneContaining(userPhone: String): List<Client>
 
-    @Query("SELECT c.utmSource, COUNT(c) FROM Client c GROUP BY c.utmSource")
-fun getTrafficSourceStats(): List<Array<Any>>
+    @Query("""
+        SELECT 
+            COALESCE(c.utmSource, c.acquisitionSource), 
+            c.utmMedium, 
+            c.utmCampaign, 
+            COUNT(c) 
+        FROM Client c 
+        GROUP BY COALESCE(c.utmSource, c.acquisitionSource), c.utmMedium, c.utmCampaign
+    """)
+    fun getTrafficSourceStats(): List<Array<Any>>
 }
