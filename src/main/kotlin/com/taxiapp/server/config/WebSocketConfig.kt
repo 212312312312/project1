@@ -44,7 +44,17 @@ class WebSocketConfig(
                 val accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor::class.java)
                 
                 if (accessor != null && StompCommand.CONNECT == accessor.command) {
-                    val authHeader = accessor.getFirstNativeHeader("Authorization")
+                    val user = accessor.user
+                    // 1. Если юзер уже успешно авторизован через куки на этапе Handshake (веб-диспетчерская), пропускаем
+                    if (user is org.springframework.security.core.Authentication && user.isAuthenticated) {
+                        return message
+                    }
+
+                    // 2. Ищем заголовок токена (сначала стандартный, затем в нижнем регистре для мобилок)
+                    var authHeader = accessor.getFirstNativeHeader("Authorization")
+                    if (authHeader == null) {
+                        authHeader = accessor.getFirstNativeHeader("authorization")
+                    }
                     
                     if (authHeader != null && authHeader.startsWith("Bearer ")) {
                         val token = authHeader.substring(7).trim()
@@ -57,15 +67,14 @@ class WebSocketConfig(
                                         userDetails, null, userDetails.authorities
                                     )
                                     accessor.user = authentication
-                                    return message // Успешная авторизация
+                                    return message // Успешная авторизация для мобильных приложений
                                 }
                             }
                         } catch (e: Exception) {
-                            // Токен невалиден
                             throw org.springframework.messaging.MessageDeliveryException("Invalid Token")
                         }
                     }
-                    // Если дошли сюда, значит токена нет или он кривой
+                    // Если дошли сюда и нет сессии из кук или валидного Bearer токена
                     throw org.springframework.messaging.MessageDeliveryException("Unauthorized: Access Denied")
                 }
                 return message

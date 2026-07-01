@@ -971,20 +971,20 @@ if (assignedDriver != null && (
     notificationService.sendOrderCancelToDriver(assignedDriver, order)
 }
 
-        // НОВЕ: Зберігаємо причину скасування
         if (reasonText != null) {
             order.cancellationReason = reasonText
         }
 
         order.status = OrderStatus.CANCELLED
+        order.completedAt = LocalDateTime.now() // 👈 ФИКС: Задаем точное время отмены для архива
         redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
-        val saved = orderRepository.save(order)
+        
+        val saved = orderRepository.save(order) // 👈 Объявляем ровно ОДИН раз
         broadcastOrderChange(saved, "ADD")
-
-        // (інший код методу залишається без змін)
         
         chatService.clearChatForOrder(orderId) 
         broadcastOrderChange(saved, "REMOVE")
+        
         return TaxiOrderDto(saved)
     }
 
@@ -1044,6 +1044,7 @@ fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrder
         redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
 
         order.status = OrderStatus.CANCELLED
+        order.completedAt = LocalDateTime.now() // 👈 ФИКС: Фиксируем время отмены водителем
         val saved = orderRepository.save(order)
 
         // <--- ОЧИСТКА ЧАТА --->
@@ -1436,6 +1437,7 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
             if (order.scheduledAt!!.isBefore(now.minusHours(1))) {
                 logger.warn("Scheduled order ${order.id} expired. Cancelling.")
                 order.status = OrderStatus.CANCELLED
+                order.completedAt = now // 👈 ФИКС: Фиксируем время авто-отмены предзаказа
                 redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
                 orderRepository.save(order)
                 
