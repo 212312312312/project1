@@ -14,48 +14,44 @@ open class User : UserDetails {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long = 0
+    open val id: Long = 0
 
-    // Добавь это поле сразу после объявления val id: Long = 0
     @Column(unique = true, nullable = false, updatable = false)
-    val uuid: String = java.util.UUID.randomUUID().toString()   
+    open val uuid: String = java.util.UUID.randomUUID().toString()   
 
     @Column(unique = true, nullable = true)
-    var userLogin: String? = null 
+    open var userLogin: String? = null 
 
     @Column(unique = true, nullable = true)
-    var userPhone: String? = null
+    open var userPhone: String? = null
 
-    // --- НОВЕ ПОЛЕ: EMAIL ---
     @Column(unique = true, nullable = true)
-    var email: String? = null
+    open var email: String? = null
 
     @Column(nullable = true)
-    var passwordHash: String? = null
+    open var passwordHash: String? = null
 
     @Column(nullable = false)
-    lateinit var fullName: String
+    open lateinit var fullName: String
 
     @Column(name = "deletion_requested_at")
-    var deletionRequestedAt: LocalDateTime? = null
+    open var deletionRequestedAt: LocalDateTime? = null
 
-    // --- НОВЕ ПОЛЕ ДЛЯ АНАЛІТИКИ МАРКЕТИНГУ ---
     @Column(name = "acquisition_source", nullable = true)
-    var acquisitionSource: String? = null
+    open var acquisitionSource: String? = null
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    lateinit var role: Role
+    open lateinit var role: Role
 
     @Column(nullable = false)
-    var isBlocked: Boolean = false
+    open var isBlocked: Boolean = false
 
     @Column(name = "fcm_token")
-    var fcmToken: String? = null
+    open var fcmToken: String? = null
 
-    // Зберігає дату реєстрації.
     @Column(name = "created_at")
-    var createdAt: LocalDateTime? = LocalDateTime.now()
+    open var createdAt: LocalDateTime? = LocalDateTime.now()
 
     // --- Реализация UserDetails ---
 
@@ -72,5 +68,6 @@ open class User : UserDetails {
     open override fun isAccountNonLocked(): Boolean = !isBlocked 
     
     override fun isCredentialsNonExpired(): Boolean = true
+    
     override fun isEnabled(): Boolean = true
 }
