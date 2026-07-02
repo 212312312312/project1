@@ -12,7 +12,8 @@ class OrderAdminController(
     private val orderAdminService: OrderAdminService,
     private val orderService: OrderService,
     private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository,
-    private val redisTemplate: org.springframework.data.redis.core.RedisTemplate<String, Any> // <--- ДОБАВИЛИ ДЛЯ ЧТЕНИЯ РЕАЛЬНОГО ТРЕКА
+    private val redisTemplate: org.springframework.data.redis.core.RedisTemplate<String, Any>,
+    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository // 👈 ДОБАВЛЕНО
 ) {
 
     // "Активные заказы" (Real-time update 10 сек)
@@ -48,6 +49,20 @@ class OrderAdminController(
         @RequestParam driverId: Long 
     ): ResponseEntity<TaxiOrderDto> {
         return ResponseEntity.ok(orderAdminService.assignDriverToOrder(id, driverId))
+    }
+
+    // 🔥 НОВЫЙ ЭНДПОИНТ: Выборка истории перемещений из Postgres
+    @GetMapping("/{id}/track")
+    fun getOrderTrackFromDb(@PathVariable id: Long): ResponseEntity<List<Map<String, Any>>> {
+        val tracks = taxiOrderTrackRepository.findByOrderIdOrderByTimestampAsc(id)
+        val result = tracks.map {
+            mapOf(
+                "lat" to it.latitude,
+                "lng" to it.longitude,
+                "timestamp" to it.timestamp.toString()
+            )
+        }
+        return ResponseEntity.ok(result)
     }
 
    @GetMapping("/{id}/track-history")

@@ -16,12 +16,13 @@ import org.springframework.data.geo.Distance
 import org.springframework.data.geo.Metrics
 import org.springframework.data.redis.connection.RedisGeoCommands
 
-@Service
+@Service // 👈 ВОТ ЭТА АННОТАЦИЯ ОБЯЗАТЕЛЬНО ДОЛЖНА БЫТЬ ТУТ
 class DriverLocationService(
     private val driverRepository: DriverRepository,
     private val orderRepository: TaxiOrderRepository,
     private val messagingTemplate: SimpMessagingTemplate,
-    private val redisTemplate: RedisTemplate<String, Any> // <-- Инжектим Redis
+    private val redisTemplate: RedisTemplate<String, Any>,
+    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository
 ) {
     // Ключи для Redis
     private val GEO_KEY = "drivers:geo"
@@ -111,6 +112,24 @@ class DriverLocationService(
             redisTemplate.opsForList().rightPush(trackKey, trackPoint)
             // Устанавливаем TTL на 7 дней, чтобы треки старых поездок автоматически стирались и не забивали оперативку
             redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
+
+            // 🔥 НАШ ДОВЕСОК ДЛЯ ПЕРСИСТЕНТНОГО ТРЕКА В POSTGRES
+            try {
+                orderRepository.findActiveOrderByDriverId(driverId).ifPresent { order ->
+                    val statusStr = order.status.name
+                    // Добавили ACCEPTED, чтобы трек писался сразу, как только водитель принял заказ и едет к клиенту
+                    if (statusStr == "ACCEPTED" || statusStr == "IN_PROGRESS" || statusStr == "DRIVER_ARRIVED" || statusStr == "ARRIVED") { // 👈 ИЗМЕНЕНО
+                        val dbTrack = com.taxiapp.server.model.order.TaxiOrderTrack(
+                            orderId = order.id!!,
+                            latitude = request.lat,
+                            longitude = request.lng
+                        )
+                        taxiOrderTrackRepository.save(dbTrack)
+                    }
+                }
+            } catch (e: Exception) {
+                println(">>> ОШИБКА СОХРАНЕНИЯ ТРЕКА В POSTGRES: ${e.message}")
+            }
         }
 
         // 4. Трансляция координат на общую веб-карту для диспетчера
