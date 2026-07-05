@@ -13,24 +13,25 @@ class FirebaseConfig {
 
     @Bean
     fun firebaseApp(): FirebaseApp {
-        // Перевіряємо, чи вже ініціалізовано, щоб не було помилок при перезавантаженні контексту
         if (FirebaseApp.getApps().isEmpty()) {
             try {
                 val resource = ClassPathResource("serviceAccountKey.json")
-                // Перевірка на існування файлу, щоб не впало з незрозумілою помилкою
-                if (!resource.exists()) {
-                    throw RuntimeException("Файл serviceAccountKey.json не знайдено в resources!")
-                }
                 
-                val serviceAccount = resource.inputStream
+                // Если файл ключа физически есть в ресурсах — берем его (для локального запуска).
+                // Если файла нет — переключаемся на автоматические права среды Google Cloud (для Cloud Run).
+                val credentials = if (resource.exists()) {
+                    GoogleCredentials.fromStream(resource.inputStream)
+                } else {
+                    GoogleCredentials.getApplicationDefault()
+                }
 
                 val options = FirebaseOptions.builder()
-                    .setCredentials(GoogleCredentials.fromStream(serviceAccount))
+                    .setCredentials(credentials)
                     .build()
 
                 return FirebaseApp.initializeApp(options)
             } catch (e: IOException) {
-                throw RuntimeException("Помилка читання serviceAccountKey.json: ${e.message}")
+                throw RuntimeException("Помилка ініціалізації Firebase: ${e.message}")
             }
         }
         return FirebaseApp.getInstance()
