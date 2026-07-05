@@ -17,7 +17,14 @@ import org.springframework.web.multipart.MultipartFile
 class TariffAdminController(
     private val tariffAdminService: TariffAdminService
 ) {
-
+    @PostMapping("/{id}/reorder")
+    fun reorderTariff(
+        @PathVariable id: Long,
+        @RequestParam direction: String // "UP" или "DOWN"
+    ): ResponseEntity<List<CarTariffDto>> {
+        val updatedTariffs = tariffAdminService.reorderTariff(id, direction)
+        return ResponseEntity.ok(updatedTariffs)
+    }
     @GetMapping
     fun getAllTariffs(): ResponseEntity<List<CarTariffDto>> {
         return ResponseEntity.ok(tariffAdminService.getAllTariffs())

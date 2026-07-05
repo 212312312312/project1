@@ -7,6 +7,7 @@ data class CarTariffDto(
     val name: String,
     val basePrice: Double,
     val pricePerKm: Double,
+    val sortOrder: Int = 0,
     val pricePerKmOutCity: Double,
     val freeWaitingMinutes: Int,
     val pricePerWaitingMinute: Double,

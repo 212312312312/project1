@@ -15,6 +15,7 @@ data class CarTariff(
 
     @Column(nullable = false)
     var basePrice: Double,
+    
 
     @Column(nullable = false)
     var isBeta: Boolean = false,
@@ -39,8 +40,11 @@ data class CarTariff(
     @Column(nullable = false)
     var pricePerWaitingMinute: Double = 2.0,
 
-    @Column(nullable = false)
+    @Column(name = "is_active", nullable = false)
     var isActive: Boolean = true,
+
+    @Column(name = "sort_order", nullable = false, columnDefinition = "integer default 0")
+    var sortOrder: Int = 0,
 
     @Column(nullable = true)
     var imageUrl: String? = null,

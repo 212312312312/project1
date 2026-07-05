@@ -18,17 +18,13 @@ class TariffAdminService(
     private val tariffRepository: CarTariffRepository,
     private val fileStorageService: FileStorageService,
     private val objectMapper: ObjectMapper,
-    private val redisTemplate: RedisTemplate<String, Any> // <-- Инжектим Redis
+    private val redisTemplate: RedisTemplate<String, Any>
 ) {
-    private val CACHE_KEY = "tariffs:all" // Ключ кэша в Redis
+    private val CACHE_KEY = "tariffs:all"
 
-    // Вспомогательная функция для построения полного URL
     private fun buildImageUrl(filename: String?): String? {
         if (filename.isNullOrBlank()) return null
-        return ServletUriComponentsBuilder.fromCurrentContextPath()
-            .path("/images/")
-            .path(filename)
-            .toUriString()
+        return "/images/$filename"
     }
     
     // Вспомогательная функция для конвертации DTO
@@ -38,34 +34,70 @@ class TariffAdminService(
             name = tariff.name,
             basePrice = tariff.basePrice,
             pricePerKm = tariff.pricePerKm,
+            sortOrder = tariff.sortOrder, // 👈 ИСПРАВЛЕНО: Передаем поле в DTO
             pricePerKmOutCity = tariff.pricePerKmOutCity,
             extraWaypointPrice = tariff.extraWaypointPrice,
             freeWaitingMinutes = tariff.freeWaitingMinutes,
             pricePerWaitingMinute = tariff.pricePerWaitingMinute,
             isActive = tariff.isActive,
-            isBeta = tariff.isBeta,               // <--- ДОБАВЛЕНО
+            isBeta = tariff.isBeta,
             isUnavailable = tariff.isUnavailable,
             imageUrl = buildImageUrl(tariff.imageUrl)
         )
     }
+    
+    @Transactional
+    fun reorderTariff(id: Long, direction: String): List<CarTariffDto> {
+        // Получаем текущий список
+        val tariffs = tariffRepository.findAllByIsActiveTrueOrderBySortOrderAsc()
+        val currentIndex = tariffs.indexOfFirst { it.id == id }
+        
+        if (currentIndex == -1) {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено")
+        }
 
-    // (Read) Отримати всі тарифи — ТЕПЕР ИЗ КЭША!
+        val targetIndex = if (direction.uppercase() == "UP") currentIndex - 1 else currentIndex + 1
+
+        if (targetIndex in tariffs.indices) {
+            val currentTariff = tariffs[currentIndex]
+            val targetTariff = tariffs[targetIndex]
+
+            // 🔥 ФИКС: Если индексы совпали (например, после миграции все равны 0),
+            // автоматически переиндексируем весь список по порядку (0, 1, 2, 3...)
+            if (currentTariff.sortOrder == targetTariff.sortOrder) {
+                tariffs.forEachIndexed { index, t ->
+                    t.sortOrder = index
+                }
+            }
+
+            // Теперь значения гарантированно разные — спокойно поочередно меняем их местами
+            val tempOrder = currentTariff.sortOrder
+            currentTariff.sortOrder = targetTariff.sortOrder
+            targetTariff.sortOrder = tempOrder
+
+            // Сохраняем весь список тарифов с обновленной индексацией
+            tariffRepository.saveAll(tariffs)
+            
+            redisTemplate.delete(CACHE_KEY) // Чистим кэш Redis
+        }
+        
+        return tariffRepository.findAllByIsActiveTrueOrderBySortOrderAsc().map { toDto(it) }
+    }
+
+    // (Read) Отримати всі тарифи
     @Transactional(readOnly = true)
     fun getAllTariffs(): List<CarTariffDto> {
-        // Проверяем наличие в Redis
         val cached = redisTemplate.opsForValue().get(CACHE_KEY) as? List<*>
         if (cached != null) {
-            // Безопасно приводим типы через objectMapper, защищаясь от ошибок каста Jackson
             return cached.map { objectMapper.convertValue(it, CarTariffDto::class.java) }
         }
 
-        // Если в кэше пусто — берем из БД и сохраняем в Redis
-        val tariffs = tariffRepository.findAll().map { toDto(it) }
+        // 👈 ИСПРАВЛЕНО: Используем метод с сортировкой, чтобы в приложении тоже был верный порядок
+        val tariffs = tariffRepository.findAllByIsActiveTrueOrderBySortOrderAsc().map { toDto(it) }
         redisTemplate.opsForValue().set(CACHE_KEY, tariffs)
         return tariffs
     }
 
-    // (Create) Створити новий тариф — Сбрасываем кэш
     @Transactional
     fun createTariff(requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
@@ -85,15 +117,15 @@ class TariffAdminService(
             isActive = request.isActive,
             isBeta = request.isBeta,
             isUnavailable = request.isUnavailable,
-            imageUrl = filename
+            imageUrl = filename,
+            sortOrder = tariffRepository.findAll().size // Авто-выставление порядка в конец списка
         )
         val savedTariff = tariffRepository.save(newTariff)
         
-        redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша
+        redisTemplate.delete(CACHE_KEY)
         return toDto(savedTariff)
     }
 
-    // (Update) Оновити існуючий тариф — Сбрасываем кэш
     @Transactional
     fun updateTariff(tariffId: Long, requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
@@ -122,21 +154,19 @@ class TariffAdminService(
 
         val updatedTariff = tariffRepository.save(tariff)
         
-        redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша
+        redisTemplate.delete(CACHE_KEY)
         return toDto(updatedTariff)
     }
     
-    // (Delete) Видалити тариф — Сбрасываем кэш
     @Transactional
-    fun deleteTariff(tariffId: Long) {
-         val tariff = tariffRepository.findById(tariffId)
-             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф з ID $tariffId не знайдено") }
-         
-         fileStorageService.delete(tariff.imageUrl)
-         
-         tariffRepository.delete(tariff)
-         
-         redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша
+    fun deleteTariff(id: Long) {
+        val tariff = tariffRepository.findById(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф з ID $id не знайдено") }
+        
+        tariff.isActive = false
+        tariffRepository.save(tariff)
+        
+        redisTemplate.delete(CACHE_KEY)
     }
 
     fun getTariffById(id: Long): CarTariffDto {

@@ -7,4 +7,6 @@ import org.springframework.stereotype.Repository
 @Repository
 interface CarTariffRepository : JpaRepository<CarTariff, Long> {
     // Тут можна додати специфічні методи пошуку, якщо знадобляться
+    // Выбираем только активные тарифы и сортируем их от меньшего sortOrder к большему
+    fun findAllByIsActiveTrueOrderBySortOrderAsc(): List<CarTariff>
 }
