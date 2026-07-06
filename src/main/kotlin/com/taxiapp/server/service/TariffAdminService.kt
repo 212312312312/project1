@@ -18,7 +18,8 @@ class TariffAdminService(
     private val tariffRepository: CarTariffRepository,
     private val fileStorageService: FileStorageService,
     private val objectMapper: ObjectMapper,
-    private val redisTemplate: RedisTemplate<String, Any>
+    private val redisTemplate: RedisTemplate<String, Any>,
+    private val appSettingRepository: com.taxiapp.server.repository.AppSettingRepository // <-- ДОБАВЛЕНО
 ) {
     private val CACHE_KEY = "tariffs:all"
 
@@ -173,5 +174,22 @@ class TariffAdminService(
         val tariff = tariffRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
         return toDto(tariff) 
+    }
+
+    @Transactional(readOnly = true)
+    fun getMinOrderDistance(): Double {
+        val setting = appSettingRepository.findById("min_order_distance").orElse(null)
+        return setting?.value?.toDoubleOrNull() ?: 3.0
+    }
+
+    @Transactional
+    fun updateMinOrderDistance(distance: Double) {
+        val setting = appSettingRepository.findById("min_order_distance")
+            .orElse(com.taxiapp.server.model.setting.AppSetting(key = "min_order_distance", value = "3.0"))
+        setting.value = distance.toString()
+        appSettingRepository.save(setting)
+        
+        // Сбрасываем оперативный кэш Redis, чтобы новые расчеты тарифов применились мгновенно
+        redisTemplate.delete(CACHE_KEY)
     }
 }

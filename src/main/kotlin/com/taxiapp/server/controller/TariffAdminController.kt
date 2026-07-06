@@ -69,4 +69,16 @@ class TariffAdminController(
         tariffAdminService.deleteTariff(id)
         return ResponseEntity.ok(MessageResponse("Тариф успішно видалено"))
     }
+
+    @GetMapping("/min-distance")
+    fun getMinDistance(): ResponseEntity<Map<String, Double>> {
+        val distance = tariffAdminService.getMinOrderDistance()
+        return ResponseEntity.ok(mapOf("minDistance" to distance))
+    }
+
+    @PutMapping("/min-distance")
+    fun updateMinDistance(@RequestParam distance: Double): ResponseEntity<MessageResponse> {
+        tariffAdminService.updateMinOrderDistance(distance)
+        return ResponseEntity.ok(MessageResponse("Мінімальний кілометраж успішно оновлено"))
+    }
 }

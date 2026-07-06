@@ -106,8 +106,9 @@ class OrderService(
         val totalKmCity = finalMetersCity / 1000.0
         val totalKmOutCity = finalMetersOutCity / 1000.0
 
-        // 4. Бесплатные километры (твоя логика про 3 км)
-        val INCLUDED_KM = 3.0 
+        // 4. Бесплатные километры (динамическое получение из глобальных настроек агрегатора Unit)
+        val minDistanceSetting = appSettingRepository.findById("min_order_distance").orElse(null)
+        val INCLUDED_KM = minDistanceSetting?.value?.toDoubleOrNull() ?: 3.0 
         var remainingIncluded = INCLUDED_KM
         var billableKmCity = 0.0
         if (totalKmCity > remainingIncluded) {
