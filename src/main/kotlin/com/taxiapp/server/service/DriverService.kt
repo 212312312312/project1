@@ -455,4 +455,26 @@ class DriverService(
     fun resetAllDailyLimits() {
         // Можно реализовать массовый сброс, если нужно
     }
+
+    @Transactional
+fun updateSelectedTariffs(driverId: Long, selectedTariffIds: Set<Long>): DriverDto {
+    // 🛡️ ДОБАВЛЕНО: Водитель обязан выбрать хотя бы один тариф
+    if (selectedTariffIds.isEmpty()) {
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно вибрати хоча б один тариф")
+    }
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений") }
+
+        // 🛡️ ЗАЩИТА: водитель может выбрать только те тарифы, которые ему одобрил диспетчер (allowedTariffs)
+        val allowedTariffsMap = driver.allowedTariffs.associateBy { it.id }
+        
+        // Фильтруем присланные мобилкой ID, отсекая любые неразрешенные
+        val newSelectedTariffs = selectedTariffIds.mapNotNull { allowedTariffsMap[it] }.toMutableSet()
+
+        driver.selectedTariffs.clear()
+        driver.selectedTariffs.addAll(newSelectedTariffs)
+        
+        val updatedDriver = driverRepository.save(driver)
+        return DriverDto(updatedDriver)
+    }
 }

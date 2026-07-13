@@ -143,6 +143,20 @@ class DriverAppController(
         return ResponseEntity.ok(driverDto)
     }
 
+    @PutMapping("/profile/tariffs")
+    fun updateSelectedTariffs(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestBody selectedIds: Set<Long>
+    ): ResponseEntity<DriverDto> {
+        val driver = getDriverFromUser(userDetails)
+        if (!driver.isAccountNonLocked) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблокований")
+        }
+        
+        val updatedDriverDto = driverService.updateSelectedTariffs(driver.id!!, selectedIds)
+        return ResponseEntity.ok(updatedDriverDto)
+    }
+
     @PostMapping("/location")
 fun updateLocation(
     @AuthenticationPrincipal user: User,

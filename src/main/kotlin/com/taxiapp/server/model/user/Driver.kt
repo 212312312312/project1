@@ -98,6 +98,14 @@ class Driver : User() {
     )
     var allowedTariffs: MutableSet<CarTariff> = mutableSetOf()
 
+    @ManyToMany(fetch = FetchType.LAZY)
+@JoinTable(
+    name = "driver_selected_tariffs",
+    joinColumns = [JoinColumn(name = "driver_id")],
+    inverseJoinColumns = [JoinColumn(name = "tariff_id")]
+)
+var selectedTariffs: MutableSet<CarTariff> = mutableSetOf()
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, columnDefinition = "varchar(20) default 'OFFLINE'")
     var searchMode: DriverSearchMode = DriverSearchMode.OFFLINE

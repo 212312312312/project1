@@ -457,12 +457,21 @@ class OrderService(
         val pickupLng = savedOrder.originLng ?: 0.0
 
         // 1. ЛАНЦЮГ (Chain)
-        val activeInProgressOrders = orderRepository.findAllByStatus(OrderStatus.IN_PROGRESS)
-        var chainDriver: Driver? = activeInProgressOrders.asSequence()
-            .mapNotNull { it.driver }
-            .filter { drv ->
-                if (rejectedIds.contains(drv.id)) return@filter false
-                val meta = redisTemplate.opsForHash<String, Any>().get("orders:active_drivers", drv.id.toString())
+val activeInProgressOrders = orderRepository.findAllByStatus(OrderStatus.IN_PROGRESS)
+var chainDriver: Driver? = activeInProgressOrders.asSequence()
+    .mapNotNull { it.driver }
+    .filter { drv ->
+        if (rejectedIds.contains(drv.id)) return@filter false
+
+        // 🛡️ ДОБАВЛЕНО: Проверка тарифа для цепочки
+        val isTariffActive = if (drv.selectedTariffs.isEmpty()) {
+            drv.allowedTariffs.contains(savedOrder.tariff)
+        } else {
+            drv.selectedTariffs.contains(savedOrder.tariff)
+        }
+        if (!isTariffActive) return@filter false
+
+        val meta = redisTemplate.opsForHash<String, Any>().get("orders:active_drivers", drv.id.toString())
                 if (meta == null) return@filter false 
                 
                 val currentOrder = activeInProgressOrders.firstOrNull { it.driver?.id == drv.id } ?: return@filter false
@@ -483,8 +492,8 @@ class OrderService(
             return TaxiOrderDto(savedOrder)
         }
 
-        // Подгружаем онлайн-водителей в радиусе 10км через Redis GEO
-        val nearbyDrivers = getEnrichedNearbyDrivers(pickupLat, pickupLng, maxRadiusKm = 10.0)
+        // Подгружаем онлайн-водителей в радиусе 10км через Redis GEO (Передаем тариф)
+val nearbyDrivers = getEnrichedNearbyDrivers(pickupLat, pickupLng, maxRadiusKm = 10.0, tariff = savedOrder.tariff)
 
         // 2. AUTO/CYCLE - УМНЫЙ ПОИСК
         val autoDriver = findDriverByAutoFilter(savedOrder, nearbyDrivers)
@@ -746,26 +755,34 @@ class OrderService(
     }
 
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
-        if (!driver.isOnline) return emptyList()
-        if (driver.activityScore <= 0) return emptyList()
+    if (!driver.isOnline) return emptyList()
+    if (driver.activityScore <= 0) return emptyList()
 
-        // --- ВИПРАВЛЕННЯ: Використовуємо новий метод, щоб приховати зайняті SCHEDULED ---
-        val allOrders = orderRepository.findAllAvailableForEther()
-        // -------------------------------------------------------------------------------
+    val allOrders = orderRepository.findAllAvailableForEther()
 
-        val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
-            .filter { it.isActive }
-
-        if (activeFilters.isEmpty()) {
-            return allOrders.map { TaxiOrderDto(it) }
+    // 🛡️ ДОБАВЛЕНО: Сначала жестко фильтруем заказы по активным тарифам водителя
+    val availableOrdersByTariff = allOrders.filter { order -> 
+        if (driver.selectedTariffs.isEmpty()) {
+            driver.allowedTariffs.contains(order.tariff)
+        } else {
+            driver.selectedTariffs.contains(order.tariff)
         }
-
-        val filtered = allOrders.filter { order ->
-            activeFilters.any { filter -> matchesFilter(order, filter, driver) }
-        }
-
-        return filtered.map { TaxiOrderDto(it) }
     }
+
+    val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
+        .filter { it.isActive }
+
+    if (activeFilters.isEmpty()) {
+        return availableOrdersByTariff.map { TaxiOrderDto(it) } // 👈 Поменяли на отфильтрованный список
+    }
+
+    // Применяем кастомные фильтры (радиусы/сектора) поверх валидных тарифов
+    val filtered = availableOrdersByTariff.filter { order ->
+        activeFilters.any { filter -> matchesFilter(order, filter, driver) }
+    }
+
+    return filtered.map { TaxiOrderDto(it) }
+}
 
     private fun matchesFilter(order: TaxiOrder, filter: DriverFilter, driver: Driver): Boolean {
         if (filter.fromType == "DISTANCE") {
@@ -1500,8 +1517,8 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
             else {
                 logger.info("Searching driver for scheduled order #${order.id}")
                 
-                // Ищем машины в радиусе 10км через Redis GEO
-                val scheduledNearby = getEnrichedNearbyDrivers(order.originLat ?: 0.0, order.originLng ?: 0.0, maxRadiusKm = 10.0)
+                // Ищем машины в радиусе 10км через Redis GEO (Передаем тариф)
+val scheduledNearby = getEnrichedNearbyDrivers(order.originLat ?: 0.0, order.originLng ?: 0.0, maxRadiusKm = 10.0, tariff = order.tariff)
                 
                 val bestDriver = scheduledNearby.filter { drv ->
                     !order.rejectedDriverIds.contains(drv.id) && drv.searchMode != com.taxiapp.server.model.enums.DriverSearchMode.OFFLINE
@@ -1532,7 +1549,12 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         }
     }
 
-    private fun getEnrichedNearbyDrivers(pickupLat: Double, pickupLng: Double, maxRadiusKm: Double = 10.0): List<Driver> {
+    private fun getEnrichedNearbyDrivers(
+    pickupLat: Double, 
+    pickupLng: Double, 
+    maxRadiusKm: Double = 10.0,
+    tariff: com.taxiapp.server.model.order.CarTariff? = null // 👈 ДОБАВЛЕНО СЮДА
+): List<Driver> {
         val circle = org.springframework.data.geo.Circle(
             org.springframework.data.geo.Point(pickupLng, pickupLat), 
             org.springframework.data.geo.Distance(maxRadiusKm, org.springframework.data.geo.Metrics.KILOMETERS)
@@ -1562,9 +1584,16 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
             if (driversWithActiveOffers.contains(id)) return@mapNotNull null
             
             val driver = driversFromDb[id] ?: return@mapNotNull null
-            if (driver.isBlocked) return@mapNotNull null
+    if (driver.isBlocked) return@mapNotNull null
 
-            val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", id.toString()) as? Map<*, *>
+    val isTariffActive = if (driver.selectedTariffs.isEmpty()) {
+            driver.allowedTariffs.contains(tariff)
+        } else {
+            driver.selectedTariffs.contains(tariff)
+        }
+        if (tariff != null && !isTariffActive) return@mapNotNull null
+
+    val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", id.toString()) as? Map<*, *>
             if (meta != null) {
                 val isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false
                 if (!isOnline) return@mapNotNull null

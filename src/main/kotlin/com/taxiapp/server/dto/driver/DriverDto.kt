@@ -12,7 +12,7 @@ data class DriverDto(
     val email: String?,
     val rnokpp: String?,
     val driverLicense: String?,
-    
+    val selectedTariffIds: List<Long>,
     val driverLicenseFront: String?,
     val driverLicenseBack: String?,
 
@@ -76,7 +76,12 @@ data class DriverDto(
         cars = driver.cars.map { CarDto(it) },
 
         allowedTariffs = driver.allowedTariffs.map { CarTariffDto(it) },
-        
+        selectedTariffIds = if (driver.selectedTariffs.isEmpty()) {
+            // Если настроек нет — по умолчанию активны ВСЕ разрешенные диспетчером тарифы
+            driver.allowedTariffs.mapNotNull { it.id }
+        } else {
+            driver.selectedTariffs.mapNotNull { it.id }
+        }, // 👈 ВОТ СЮДА ДОБАВЬ ЗАПЯТУЮ!
         photoUrl = generateUrl(driver.photoUrl),
         
         activityScore = driver.activityScore,
