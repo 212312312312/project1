@@ -248,10 +248,39 @@ class OrderService(
         }
 
         // =====================================================================
-        // 🚀 ОПТИМІЗОВАНО: ПЕРЕВІРКА ЛІМІТУ ЗАМОВЛЕНЬ ЧЕРЕЗ REDIS SET (Замість SQL COUNT)
+        // 🚀 ОПТИМІЗОВАНО + ЗАХИСТ: АНТИСПАМ ЛОК ТА АВТОСИНХРОНІЗАЦІЯ КЕШУ
         // =====================================================================
+        // 1. Захист від подвійного кліку (Рейс-кондишн лок на 3 секунди для клієнта)
+        val lockKey = "lock:create_order:${client.id}"
+        val isLocked = redisTemplate.opsForValue().setIfAbsent(lockKey, "true", 3, java.util.concurrent.TimeUnit.SECONDS)
+        if (isLocked == false) {
+            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Будь ласка, зачекайте, ваше замовлення вже обробляється")
+        }
+
+        // 2. Перевірка ліміту активних замовлень із захистом від "мертвих душ"
         val clientActiveOrdersKey = "client:active_orders:${client.id}"
-        val activeOrdersCount = redisTemplate.opsForSet().size(clientActiveOrdersKey) ?: 0L
+        var activeOrdersCount = redisTemplate.opsForSet().size(clientActiveOrdersKey) ?: 0L
+
+        if (activeOrdersCount >= 3) {
+            // Лікуємо десинхронізацію кешу: звіряємо ID з реальною базою даних
+            val cachedIdsRaw = redisTemplate.opsForSet().members(clientActiveOrdersKey) ?: emptySet<Any>()
+            val cachedIds = cachedIdsRaw.mapNotNull { it.toString().toLongOrNull() }
+            if (cachedIds.isNotEmpty()) {
+                val realActiveOrders = orderRepository.findAllById(cachedIds).filter { 
+                    it.status != OrderStatus.COMPLETED && it.status != OrderStatus.CANCELLED 
+                }
+                // Якщо в базі активних менше, ніж думав Redis — повністю оновлюємо кеш
+                if (realActiveOrders.size < cachedIds.size) {
+                    redisTemplate.delete(clientActiveOrdersKey)
+                    if (realActiveOrders.isNotEmpty()) {
+                        val realIds = realActiveOrders.map { it.id.toString() }.toTypedArray()
+                        redisTemplate.opsForSet().add(clientActiveOrdersKey, *realIds)
+                    }
+                    activeOrdersCount = realActiveOrders.size.toLong()
+                }
+            }
+        }
+
         if (activeOrdersCount >= 3) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ви не можете мати більше 3 активних замовлень одночасно")
         }
