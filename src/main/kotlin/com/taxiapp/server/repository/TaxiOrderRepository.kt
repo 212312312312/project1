@@ -72,9 +72,13 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun countByClientIdAndStatusIn(clientId: Long, statuses: List<OrderStatus>): Int
 
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Transactional
-    @Query("UPDATE TaxiOrder o SET o.destinationSector = null WHERE o.destinationSector.id = :sectorId")
+    @Query("""
+        UPDATE TaxiOrder o 
+        SET o.destinationSector = null, o.originSector = null 
+        WHERE o.destinationSector.id = :sectorId OR o.originSector.id = :sectorId
+    """)
     fun clearSectorReference(@Param("sectorId") sectorId: Long)
 
     @Query("""

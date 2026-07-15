@@ -104,13 +104,26 @@ class SectorService(
 
         val driversWithSector = driverRepository.findAllByHomeSectorsId(id)
         for (driver in driversWithSector) {
-            driver.homeSectors.remove(sector)
+            // ФИКС: удаляем связь по ID, чтобы обойти баги сравнения Hibernate-прокси объектов
+            driver.homeSectors.removeIf { it.id == id }
             driverRepository.save(driver)
         }
 
         sectorRepository.delete(sector)
         
-        redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша секторов
+        redisTemplate.delete(CACHE_KEY) // Инвалидация кэша секторов
+    }
+
+    @Transactional
+    fun updateSectorName(id: Long, newName: String): SectorDto {
+        val sector = sectorRepository.findById(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Сектор не знайдено") }
+        
+        sector.name = newName
+        val saved = sectorRepository.save(sector)
+        
+        redisTemplate.delete(CACHE_KEY) // Инвалидация кэша секторов, чтобы диспетчерская сразу увидела апдейт
+        return mapToDto(saved)
     }
 
     private fun mapToDto(sector: Sector): SectorDto {

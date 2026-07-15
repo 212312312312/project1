@@ -3,13 +3,14 @@ package com.taxiapp.server.controller
 import com.taxiapp.server.dto.auth.MessageResponse
 import com.taxiapp.server.dto.sector.CreateSectorRequest
 import com.taxiapp.server.dto.sector.SectorDto
-import com.taxiapp.server.service.SectorService // Імпортуємо правильний сервіс
+import com.taxiapp.server.dto.sector.UpdateSectorNameRequest
+import com.taxiapp.server.service.SectorService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
 @RestController
 @RequestMapping("/api/v1/admin/sectors")
-class SectorAdminController(private val sectorService: SectorService) { // Тут теж змінюємо тип на SectorService
+class SectorAdminController(private val sectorService: SectorService) {
 
     @GetMapping
     fun getList(): ResponseEntity<List<SectorDto>> = ResponseEntity.ok(sectorService.getAllSectors())
@@ -17,6 +18,14 @@ class SectorAdminController(private val sectorService: SectorService) { // Ту�
     @PostMapping
     fun create(@RequestBody request: CreateSectorRequest): ResponseEntity<SectorDto> = 
         ResponseEntity.ok(sectorService.createSector(request))
+
+    // Новый эндпоинт для изменения названия сектора
+    @PutMapping("/{id}/name")
+    fun updateName(
+        @PathVariable id: Long,
+        @RequestBody request: UpdateSectorNameRequest
+    ): ResponseEntity<SectorDto> =
+        ResponseEntity.ok(sectorService.updateSectorName(id, request.name))
 
     @DeleteMapping("/{id}")
     fun delete(@PathVariable id: Long): ResponseEntity<MessageResponse> {
