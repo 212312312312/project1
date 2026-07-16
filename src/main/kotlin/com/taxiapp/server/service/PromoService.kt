@@ -11,6 +11,7 @@ import com.taxiapp.server.repository.ClientPromoProgressRepository
 import com.taxiapp.server.repository.PromoCodeRepository
 import com.taxiapp.server.repository.PromoTaskRepository
 import com.taxiapp.server.repository.PromoUsageRepository
+import com.taxiapp.server.repository.ClientRepository
 import com.taxiapp.server.repository.PromoPlanRepository
 import com.taxiapp.server.repository.ClientPromoPlanUsageRepository
 import org.springframework.stereotype.Service
@@ -24,7 +25,8 @@ class PromoService(
     private val promoUsageRepository: PromoUsageRepository,
     private val promoCodeRepository: PromoCodeRepository,
     private val promoPlanRepository: PromoPlanRepository,
-    private val clientPromoPlanUsageRepository: ClientPromoPlanUsageRepository
+    private val clientPromoPlanUsageRepository: ClientPromoPlanUsageRepository,
+    private val clientRepository: ClientRepository // <- ДОБАВЛЕНО ТУТ
 ) {
 
     @Transactional
@@ -61,7 +63,18 @@ class PromoService(
         val now = LocalDateTime.now()
         val plan = promoPlanRepository.findFirstByIsActiveTrueAndStartDateBeforeAndEndDateAfter(now, now).orElse(null) ?: return null
         val alreadyUsed = clientPromoPlanUsageRepository.existsByClientAndPromoPlanId(client, plan.id)
-        return if (alreadyUsed) null else plan
+        if (alreadyUsed) return null
+        
+        // НОВОЕ: проверка глобального лимита плана
+        if (plan.maxUses != null) {
+            // Предполагаем, что в clientPromoPlanUsageRepository есть стандартный countByPromoPlanId
+            val currentUsages = clientPromoPlanUsageRepository.countByPromoPlanId(plan.id)
+            if (currentUsages >= plan.maxUses!!) {
+                return null
+            }
+        }
+        
+        return plan
     }
 
     @Transactional
@@ -81,6 +94,16 @@ class PromoService(
         val activeTasks = promoTaskRepository.findAllByIsActiveTrue()
 
         for (task in activeTasks) {
+            val progressOpt = progressRepository.findByClientIdAndPromoTaskId(client.id, task.id)
+            
+            if (!progressOpt.isPresent && task.maxAllocations != null) {
+                val alreadyAllocated = progressRepository.countByPromoTaskId(task.id)
+                val slotsLeft = task.maxAllocations!! - alreadyAllocated // <- ИСПРАВЛЕНО НА !!
+                if (slotsLeft <= 0) continue
+                
+                val eligibleIds = clientRepository.findTopEligibleClientIdsForTask(task.id, slotsLeft)
+                if (!eligibleIds.contains(client.id)) continue
+            }
             val progress = progressRepository.findByClientIdAndPromoTaskId(client.id, task.id)
                 .orElseGet {
                     ClientPromoProgress(client = client, promoTask = task)
@@ -188,8 +211,23 @@ class PromoService(
         val allTasks = promoTaskRepository.findAllByIsActiveTrue()
         
         val taskProgresses = allTasks.mapNotNull { task ->
-            val progress = progressRepository.findByClientIdAndPromoTaskId(client.id, task.id)
-                .orElse(ClientPromoProgress(client = client, promoTask = task, currentRidesCount = 0))
+            val progressOpt = progressRepository.findByClientIdAndPromoTaskId(client.id, task.id)
+            
+            val progress = if (progressOpt.isPresent) {
+                progressOpt.get()
+            } else {
+                // НОВОЕ: Проверка лимита распределения по приоритетам для новых участников
+                if (task.maxAllocations != null) {
+                    val alreadyAllocated = progressRepository.countByPromoTaskId(task.id)
+                    val slotsLeft = task.maxAllocations!! - alreadyAllocated // <- ИСПРАВЛЕНО НА !!
+                    if (slotsLeft <= 0) return@mapNotNull null
+                    
+                    // Проверяем, входит ли текущий клиент в топ по приоритетам (ОЧИЩЕНО ОТ .let)
+                    val eligibleIds = clientRepository.findTopEligibleClientIdsForTask(task.id, slotsLeft)
+                    if (!eligibleIds.contains(client.id)) return@mapNotNull null
+                }
+                ClientPromoProgress(client = client, promoTask = task, currentRidesCount = 0)
+            }
 
             if (task.isOneTime && progress.completedCount > 0) {
                 return@mapNotNull null

@@ -42,5 +42,8 @@ data class PromoTask(
     var maxDiscountAmount: Double? = null,
 
     @Column(name = "active_days_duration")
-    var activeDaysDuration: Int? = null
+    var activeDaysDuration: Int? = null,
+    
+    @Column(name = "max_allocations")
+    var maxAllocations: Int? = null
 )

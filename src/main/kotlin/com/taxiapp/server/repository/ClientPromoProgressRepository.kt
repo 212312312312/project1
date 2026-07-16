@@ -13,4 +13,6 @@ interface ClientPromoProgressRepository : JpaRepository<ClientPromoProgress, Lon
     
     // Знайти активну нагороду (знижку), якщо вона є
     fun findFirstByClientIdAndIsRewardAvailableTrue(clientId: Long): Optional<ClientPromoProgress>
+
+    fun countByPromoTaskId(promoTaskId: Long): Int
 }

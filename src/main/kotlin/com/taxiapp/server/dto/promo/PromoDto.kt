@@ -12,7 +12,8 @@ data class PromoTaskDto(
     val isActive: Boolean,
     val requiredTariffName: String?,
     val isOneTime: Boolean,
-    val activeDaysDuration: Int?
+    val activeDaysDuration: Int?,
+    val maxAllocations: Int? // <- ДОБАВЛЕНО для вывода лимита в JSON
 )
 
 // DTO для мобільного додатку (прогрес клієнта)

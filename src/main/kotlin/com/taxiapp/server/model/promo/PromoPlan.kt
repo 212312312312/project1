@@ -16,6 +16,9 @@ data class PromoPlan(
     @Column(length = 1000)
     val description: String?,
 
+    @Column(name = "max_uses")
+    var maxUses: Int? = null,
+
     @Column(name = "start_date", nullable = false)
     val startDate: LocalDateTime,
 

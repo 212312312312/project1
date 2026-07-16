@@ -10,4 +10,6 @@ interface ClientPromoPlanUsageRepository : JpaRepository<ClientPromoPlanUsage, L
     
     // Возвращает true, если клиент уже совершил успешную поездку по этой акции
     fun existsByClientAndPromoPlanId(client: Client, promoPlanId: Long): Boolean
+
+    fun countByPromoPlanId(promoPlanId: Long): Int
 }

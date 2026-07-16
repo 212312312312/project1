@@ -64,7 +64,8 @@ class PromoAdminController(
             isOneTime = request.isOneTime,
             maxDiscountAmount = request.maxDiscountAmount,
             requiredDistanceMeters = distMeters,
-            activeDaysDuration = request.activeDaysDuration
+            activeDaysDuration = request.activeDaysDuration,
+            maxAllocations = request.maxAllocations // <- ИСПРАВЛЕНО: Передаем лимит в конструктор модели
         )
         
         println(">>> ADMIN: Створено акцію '${task.title}'. Дистанція: $distMeters м, Поїздок: $finalRequiredRides")

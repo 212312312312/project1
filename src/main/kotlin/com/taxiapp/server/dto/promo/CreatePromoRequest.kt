@@ -26,5 +26,8 @@ data class CreatePromoRequest(
     @field:Min(0)
     val requiredDistanceKm: Double = 0.0,
 
-    val activeDaysDuration: Int? = null
+    val activeDaysDuration: Int? = null,
+    
+    @field:Min(1)
+    val maxAllocations: Int? = null
 )
