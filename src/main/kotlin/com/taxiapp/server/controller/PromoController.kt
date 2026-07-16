@@ -5,14 +5,13 @@ import com.taxiapp.server.dto.promo.ClientPromoProgressDto
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.repository.UserRepository
 import com.taxiapp.server.service.PromoService
-import com.taxiapp.server.dto.auth.MessageResponse // Переконайся, що цей DTO імпортовано
+import com.taxiapp.server.dto.auth.MessageResponse
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
 
-// DTO для запиту
 data class ApplyPromoRequest(val code: String)
 
 @RestController
@@ -50,15 +49,32 @@ class PromoController(
                 requiredTariffName = p.promoTask.requiredTariff?.name,
                 isFullyCompleted = p.isFullyCompleted,
                 maxDiscountAmount = p.promoTask.maxDiscountAmount,
-                
-                // Передаємо нові поля, якщо вони є в DTO
                 requiredDistanceMeters = p.promoTask.requiredDistanceMeters,
                 currentDistanceMeters = p.currentDistanceMeters,
                 rewardExpiresAt = p.rewardExpiresAt?.toString() 
             )
         }
         
-        return ResponseEntity.ok(dtos)
+        val activePlan = promoService.findActiveFreeMinPlan(user)
+        val finalDtos = if (activePlan != null) {
+            dtos + ClientPromoProgressDto(
+                id = -9999L, 
+                title = activePlan.title,
+                description = activePlan.description ?: "Мінімалка 0 грн! Плати тільки за кілометри.",
+                requiredRides = 1,
+                currentRides = 0,
+                discountPercent = 100.0,
+                isRewardAvailable = true,
+                requiredTariffName = null,
+                isFullyCompleted = false,
+                maxDiscountAmount = null,
+                requiredDistanceMeters = 0L, 
+                currentDistanceMeters = 0L,  
+                rewardExpiresAt = activePlan.endDate.toString()
+            )
+        } else dtos
+
+        return ResponseEntity.ok(finalDtos)
     }
 
     @GetMapping("/discount")
@@ -74,14 +90,12 @@ class PromoController(
              return ResponseEntity.ok(ActiveDiscountDto(0.0))
         }
         
-        // Оновлена логіка: беремо найкращу знижку (завдання або промокод)
         val percent = promoService.getActiveDiscountPercent(user)
         val maxAmount = promoService.getActiveMaxDiscountAmount(user)
         
         return ResponseEntity.ok(ActiveDiscountDto(percent, maxAmount))
     }
 
-    // --- НОВИЙ МЕТОД: Активація промокоду ---
     @PostMapping("/apply")
     fun applyPromo(
         principal: Principal,

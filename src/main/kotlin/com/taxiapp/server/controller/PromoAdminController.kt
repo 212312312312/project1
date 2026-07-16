@@ -2,8 +2,10 @@ package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.promo.CreatePromoRequest
 import com.taxiapp.server.model.promo.PromoTask
+import com.taxiapp.server.model.promo.PromoPlan
 import com.taxiapp.server.repository.CarTariffRepository
 import com.taxiapp.server.repository.PromoTaskRepository
+import com.taxiapp.server.repository.PromoPlanRepository
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
@@ -11,7 +13,8 @@ import org.springframework.web.bind.annotation.*
 @RequestMapping("/api/v1/admin/promos")
 class PromoAdminController(
     private val promoRepository: PromoTaskRepository,
-    private val tariffRepository: CarTariffRepository
+    private val tariffRepository: CarTariffRepository,
+    private val promoPlanRepository: PromoPlanRepository
 ) {
 
     @GetMapping
@@ -19,18 +22,36 @@ class PromoAdminController(
         return ResponseEntity.ok(promoRepository.findAll())
     }
 
+    @GetMapping("/plans")
+    fun getAllPlans(): ResponseEntity<List<PromoPlan>> {
+        return ResponseEntity.ok(promoPlanRepository.findAll())
+    }
+
+    @PostMapping("/plans")
+    fun createPlan(@RequestBody plan: PromoPlan): ResponseEntity<PromoPlan> {
+        return ResponseEntity.ok(promoPlanRepository.save(plan))
+    }
+
+    @DeleteMapping("/plans/{id}")
+    fun deletePlan(@PathVariable id: Long): ResponseEntity<Void> {
+        promoPlanRepository.deleteById(id)
+        return ResponseEntity.ok().build()
+    }
+
+    @PostMapping("/plans/{id}/toggle")
+    fun togglePlan(@PathVariable id: Long, @RequestParam active: Boolean): ResponseEntity<PromoPlan> {
+        val plan = promoPlanRepository.findById(id).orElseThrow { RuntimeException("Plan not found") }
+        plan.isActive = active
+        return ResponseEntity.ok(promoPlanRepository.save(plan))
+    }
+
     @PostMapping
     fun createPromo(@RequestBody request: CreatePromoRequest): ResponseEntity<PromoTask> {
-        
         val tariff = request.requiredTariffId?.let { 
             tariffRepository.findById(it).orElse(null) 
         }
 
-        // Конвертація КМ -> Метри (50 км -> 50000 м)
         val distMeters = (request.requiredDistanceKm * 1000).toLong()
-        
-        // ЗАХИСТ: Якщо задана дистанція, примусово ставимо requiredRides = 0,
-        // щоб завдання не виконалось випадково після 1 поїздки.
         val finalRequiredRides = if (distMeters > 0) 0 else request.requiredRides
 
         val task = PromoTask(

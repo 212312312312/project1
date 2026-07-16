@@ -159,6 +159,9 @@ class TaxiOrder(
     @Column(nullable = false)
     var isRatedByDriver: Boolean = false,
 
+    @Column(name = "promo_plan_id")
+    var promoPlanId: Long? = null,
+
     @ManyToMany(fetch = FetchType.EAGER)
     @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
     @JoinTable(

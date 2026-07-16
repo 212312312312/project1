@@ -277,11 +277,14 @@ class LiqPayService(
             val responseBody = responseEntity.body
 
             if (responseBody != null) {
-                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
-                val status = responseMap["status"]?.toString()
-                logger.info(">>> LIQPAY HOLD RESPONSE: status=$status")
-                status == "success" || status == "sandbox" || status == "auth_wait" || status == "wait_accept"
-            } else false
+        val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+        val status = responseMap["status"]?.toString()
+        val errCode = responseMap["err_code"]?.toString()
+        val errDesc = responseMap["err_description"]?.toString()
+        
+        logger.info(">>> LIQPAY HOLD RESPONSE: status=$status, code=$errCode, desc=$errDesc")
+        status == "success" || status == "sandbox" || status == "auth_wait" || status == "wait_accept"
+    } else false
         } catch (e: Exception) {
             logger.error(">>> Error during holdWithToken API call", e)
             false

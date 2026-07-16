@@ -3,12 +3,16 @@ package com.taxiapp.server.service
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.promo.ClientPromoProgress
 import com.taxiapp.server.model.promo.PromoTask
-import com.taxiapp.server.model.promo.PromoUsage // <-- Припускаємо, що цей клас існує
+import com.taxiapp.server.model.promo.PromoUsage
+import com.taxiapp.server.model.promo.PromoPlan
+import com.taxiapp.server.model.promo.ClientPromoPlanUsage
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.repository.ClientPromoProgressRepository
-import com.taxiapp.server.repository.PromoCodeRepository // <-- Додано
+import com.taxiapp.server.repository.PromoCodeRepository
 import com.taxiapp.server.repository.PromoTaskRepository
 import com.taxiapp.server.repository.PromoUsageRepository
+import com.taxiapp.server.repository.PromoPlanRepository
+import com.taxiapp.server.repository.ClientPromoPlanUsageRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
@@ -18,17 +22,16 @@ class PromoService(
     private val promoTaskRepository: PromoTaskRepository,
     private val progressRepository: ClientPromoProgressRepository,
     private val promoUsageRepository: PromoUsageRepository,
-    private val promoCodeRepository: PromoCodeRepository // <-- Додано репозиторій кодів
+    private val promoCodeRepository: PromoCodeRepository,
+    private val promoPlanRepository: PromoPlanRepository,
+    private val clientPromoPlanUsageRepository: ClientPromoPlanUsageRepository
 ) {
 
-    // --- ЛОГІКА АКТИВАЦІЇ ПРОМОКОДУ ---
     @Transactional
     fun activatePromoCode(client: Client, codeString: String) {
-        // 1. Шукаємо код
         val promoCode = promoCodeRepository.findByCode(codeString)
             .orElseThrow { RuntimeException("Промокод не знайдено") }
 
-        // 2. Валідація самого коду
         if (promoCode.expiresAt != null && LocalDateTime.now().isAfter(promoCode.expiresAt)) {
             throw RuntimeException("Термін дії промокоду вичерпано")
         }
@@ -36,8 +39,6 @@ class PromoService(
             throw RuntimeException("Ліміт використань цього коду вичерпано")
         }
 
-        // 3. Перевіряємо, чи клієнт вже використовував цей код (або має його активним)
-        // Припускаємо, що в PromoUsageRepository є метод або ми перевіряємо вручну:
         val existingUsage = promoUsageRepository.findAllByClient(client)
             .any { it.promoCode.id == promoCode.id }
         
@@ -45,7 +46,6 @@ class PromoService(
             throw RuntimeException("Ви вже активували цей промокод")
         }
 
-        // 4. Створюємо використання (знижка стає доступною)
         val usage = PromoUsage(
             client = client,
             promoCode = promoCode,
@@ -57,9 +57,23 @@ class PromoService(
         promoUsageRepository.save(usage)
     }
 
+    fun findActiveFreeMinPlan(client: Client): PromoPlan? {
+        val now = LocalDateTime.now()
+        val plan = promoPlanRepository.findFirstByIsActiveTrueAndStartDateBeforeAndEndDateAfter(now, now).orElse(null) ?: return null
+        val alreadyUsed = clientPromoPlanUsageRepository.existsByClientAndPromoPlanId(client, plan.id)
+        return if (alreadyUsed) null else plan
+    }
+
+    @Transactional
+    fun markPromoPlanAsUsed(client: Client, planId: Long) {
+        val plan = promoPlanRepository.findById(planId).orElse(null) ?: return
+        if (!clientPromoPlanUsageRepository.existsByClientAndPromoPlanId(client, planId)) {
+            clientPromoPlanUsageRepository.save(ClientPromoPlanUsage(client = client, promoPlan = plan))
+        }
+    }
+
     @Transactional
     fun updateProgressOnRideCompletion(client: Client, order: TaxiOrder? = null) { 
-        // 1. Якщо поїздка була зі знижкою — прогрес не нараховуємо
         if (order != null && order.appliedDiscount > 0.0) {
             return
         }
@@ -72,24 +86,21 @@ class PromoService(
                     ClientPromoProgress(client = client, promoTask = task)
                 }
             
-            // Якщо акція одноразова і вже виконана — пропускаємо
             if (task.isOneTime && progress.completedCount > 0) {
                 continue 
             }
 
-            // Якщо нагорода ще не отримана
             if (!progress.isRewardAvailable) {
                 progress.currentRidesCount++
 
                 if (progress.currentRidesCount >= task.requiredRides) {
-                    // --- МОМЕНТ ЗАВЕРШЕННЯ ЗАВДАННЯ ---
                     progress.isRewardAvailable = true
                     progress.currentRidesCount = task.requiredRides 
                     
                     if (task.activeDaysDuration != null && task.activeDaysDuration!! > 0) {
                         progress.rewardExpiresAt = LocalDateTime.now().plusDays(task.activeDaysDuration!!.toLong())
                     } else {
-                        progress.rewardExpiresAt = null // Безстроково
+                        progress.rewardExpiresAt = null
                     }
                 }
                 
@@ -98,16 +109,11 @@ class PromoService(
         }
     }
 
-    // --- ПОШУК НАЙКРАЩОЇ ЗНИЖКИ (ЗАВДАННЯ vs ПРОМОКОД) ---
-    
-    // 1. Знайти активну нагороду за завдання
     private fun findActiveTaskReward(client: Client): ClientPromoProgress? {
         val rewardOpt = progressRepository.findFirstByClientIdAndIsRewardAvailableTrue(client.id)
         if (rewardOpt.isPresent) {
             val reward = rewardOpt.get()
-            // Перевірка терміну дії
             if (reward.rewardExpiresAt != null && LocalDateTime.now().isAfter(reward.rewardExpiresAt)) {
-                // Анулюємо прострочену
                 reward.isRewardAvailable = false
                 progressRepository.save(reward)
                 return null
@@ -117,16 +123,13 @@ class PromoService(
         return null
     }
 
-    // 2. Знайти активний промокод
     private fun findActivePromoUsage(client: Client): PromoUsage? {
         val usages = promoUsageRepository.findAllByClientAndIsUsedFalse(client)
-        // Беремо перший валідний (можна додати сортування за відсотком)
         return usages.firstOrNull { usage ->
             usage.expiresAt == null || LocalDateTime.now().isBefore(usage.expiresAt)
         }
     }
 
-    // 3. Публічний метод для отримання відсотка знижки
     fun getActiveDiscountPercent(client: Client): Double {
         val taskReward = findActiveTaskReward(client)
         val codeReward = findActivePromoUsage(client)
@@ -134,11 +137,9 @@ class PromoService(
         val taskPercent = taskReward?.promoTask?.discountPercent ?: 0.0
         val codePercent = codeReward?.promoCode?.discountPercent ?: 0.0
 
-        // Повертаємо найбільшу знижку
         return maxOf(taskPercent, codePercent)
     }
     
-    // Метод для отримання макс. суми знижки (якщо треба в контролері)
     fun getActiveMaxDiscountAmount(client: Client): Double? {
         val taskReward = findActiveTaskReward(client)
         val codeReward = findActivePromoUsage(client)
@@ -155,7 +156,6 @@ class PromoService(
 
     @Transactional
     fun markRewardAsUsed(client: Client) {
-        // Ми повинні "спалити" ту знижку, яка є максимальною
         val taskReward = findActiveTaskReward(client)
         val codeReward = findActivePromoUsage(client)
 
@@ -164,7 +164,6 @@ class PromoService(
 
         if (taskPercent > 0 || codePercent > 0) {
             if (taskPercent >= codePercent) {
-                // Використовуємо завдання
                 taskReward?.let {
                     it.isRewardAvailable = false
                     it.currentRidesCount = 0 
@@ -173,13 +172,10 @@ class PromoService(
                     progressRepository.save(it)
                 }
             } else {
-                // Використовуємо промокод
                 codeReward?.let {
                     it.isUsed = true
-                    it.usedAt = LocalDateTime.now() // Якщо є таке поле
                     promoUsageRepository.save(it)
                     
-                    // Збільшуємо лічильник використання в самому коді
                     val code = it.promoCode
                     code.usedCount++
                     promoCodeRepository.save(code)
@@ -188,7 +184,6 @@ class PromoService(
         }
     }
 
-    // Отримання списку для програми клієнта (Ваш старий код адаптований)
     fun getClientPromos(client: Client): List<ClientPromoProgress> {
         val allTasks = promoTaskRepository.findAllByIsActiveTrue()
         
@@ -200,7 +195,6 @@ class PromoService(
                 return@mapNotNull null
             }
             
-            // Lazy Cleanup
             if (progress.isRewardAvailable && 
                 progress.rewardExpiresAt != null && 
                 LocalDateTime.now().isAfter(progress.rewardExpiresAt)) {
@@ -213,15 +207,13 @@ class PromoService(
             progress
         }.toMutableList()
 
-        // Текстові промокоди
         val activeUsages = promoUsageRepository.findAllByClientAndIsUsedFalse(client)
         val usageProgresses = activeUsages.mapNotNull { usage ->
             if (usage.expiresAt != null && LocalDateTime.now().isAfter(usage.expiresAt)) {
                 return@mapNotNull null
             }
-            // Створюємо "фейкове" завдання для відображення в списку
             val fakeTask = PromoTask(
-                id = -usage.id, // Мінусовий ID, щоб не конфліктувати
+                id = -usage.id,
                 title = usage.promoCode.code, 
                 description = "Промокод: ${usage.promoCode.discountPercent.toInt()}%",
                 discountPercent = usage.promoCode.discountPercent,
@@ -244,7 +236,6 @@ class PromoService(
         return taskProgresses
     }
     
-    // Для сумісності, якщо старий метод десь викликається напряму
     fun findActiveReward(client: Client): ClientPromoProgress? {
         return findActiveTaskReward(client)
     }
