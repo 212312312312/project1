@@ -1,5 +1,6 @@
 package com.taxiapp.server.service
 
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.io.Resource
 import org.springframework.core.io.UrlResource
 import org.springframework.stereotype.Service
@@ -13,6 +14,10 @@ import java.util.UUID
 
 @Service
 class FileStorageService {
+
+    // Считываем URL сервера из application.properties (по умолчанию http://localhost:8080)
+    @Value("\${app.server.url:http://localhost:8080}")
+    private lateinit var serverUrl: String
 
     // Жестко привязываем путь к папке uploads в корне проекта
     private val rootLocation: Path = Paths.get(System.getProperty("user.dir"), "uploads")
@@ -67,6 +72,28 @@ class FileStorageService {
         return storeFile(file)
     }
     // ---------------------------------------------
+
+    /**
+     * Формирует полный абсолютный URL для отдачи внешним клиентам (React / Mobile Apps)
+     */
+    fun buildFullUrl(filename: String?): String? {
+        if (filename.isNullOrBlank()) return null
+        
+        // Если имя файла уже является готовым внешним URL или base64 — не трогаем
+        if (filename.startsWith("http://") || filename.startsWith("https://") || filename.startsWith("data:")) {
+            return filename
+        }
+
+        val baseUrl = serverUrl.trimEnd('/')
+        val cleanFilename = filename.trimStart('/')
+
+        // Если путь уже содержит /uploads/ или /images/
+        return if (cleanFilename.startsWith("uploads/") || cleanFilename.startsWith("images/")) {
+            "$baseUrl/$cleanFilename"
+        } else {
+            "$baseUrl/uploads/$cleanFilename"
+        }
+    }
 
     /**
      * Загружает файл как "Ресурс" для раздачи

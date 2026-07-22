@@ -20,6 +20,8 @@ data class AdminRatingDto(
     val score: Int,
     val comment: String?,
     val orderId: Long,
+    val driverId: Long?, // ID водителя для перехода
+    val clientId: Long?, // ID клиента для перехода
     val driverName: String?,
     val clientName: String?,
     val date: String?
@@ -47,7 +49,7 @@ class RatingController(
         return ResponseEntity.ok(MessageResponse("Оцінка збережена"))
     }
 
-    // 3. Админ: Получить все оценки
+    // 3. Админ / Диспетчер: Получить все оценки
     @GetMapping("/admin/ratings")
     @PreAuthorize("hasAnyAuthority('ROLE_ADMINISTRATOR', 'ROLE_DISPATCHER')")
     fun getAllRatings(): ResponseEntity<List<AdminRatingDto>> {
@@ -55,14 +57,14 @@ class RatingController(
 
         val dtos = ratings.map { rating ->
             
-            // Безопасное получение имени водителя
+            // Безопасное получение ID и имени водителя
+            val driverId = try { rating.order.driver?.id } catch (e: Exception) { null }
             val driverName = try { 
                 rating.order.driver?.fullName ?: "Не призначено" 
             } catch (e: Exception) { "---" }
             
-            // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-            // Было: rating.order.client?.toString()
-            // Стало: rating.order.client?.fullName
+            // Безопасное получение ID и имени клиента
+            val clientId = try { rating.order.client?.id } catch (e: Exception) { null }
             val clientInfo = try { 
                  rating.order.client?.fullName ?: rating.order.client?.userPhone ?: "Клієнт"
             } catch (e: Exception) { "Клієнт" }
@@ -77,8 +79,10 @@ class RatingController(
                 score = rating.score,
                 comment = rating.comment,
                 orderId = rating.order.id ?: 0L,
+                driverId = driverId,
+                clientId = clientId,
                 driverName = driverName,
-                clientName = clientInfo, // Теперь тут будет Имя Фамилия
+                clientName = clientInfo,
                 date = formattedDate
             )
         }

@@ -196,13 +196,12 @@ class LiqPayService(
     // Генерация ссылки для ПРИВЯЗКИ КАРТЫ
     fun generateBindCardUrl(clientId: Long): String {
         val callbackUrl = "$serverUrl/api/v1/payments/callback"
-        // Генерируем специальный ID, по которому поймем, что это привязка
         val orderId = "bind_card_${clientId}_${System.currentTimeMillis()}"
         logger.info(">>> GENERATING LIQPAY BIND CARD LINK. Callback URL: $callbackUrl")
 
         val params = mapOf(
-            "action" to "auth", // "auth" означает холдирование (проверка карты без списания)
-            "amount" to 1.0, // Минимальная сумма для проверки
+            "action" to "auth", 
+            "amount" to 1.0, 
             "currency" to "UAH",
             "description" to "Прив'язка картки для клієнта ID $clientId",
             "order_id" to orderId,
@@ -210,7 +209,8 @@ class LiqPayService(
             "public_key" to publicKey,
             "language" to "uk",
             "server_url" to callbackUrl,
-            "result_url" to "$serverUrl/payment-success.html"
+            "result_url" to "$serverUrl/payment-success.html",
+            "recurringbytoken" to "1" // ВНЕДРЕНО: Явное требование выпустить card_token в ответе
         )
 
         val json = objectMapper.writeValueAsString(params)
@@ -220,14 +220,14 @@ class LiqPayService(
         return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
     }
 
+    // Телевизор ссылки для ПРИВЯЗКИ КАРТЫ ВОДИТЕЛЯ
     fun generateDriverBindCardUrl(driverId: Long): String {
         val callbackUrl = "$serverUrl/api/v1/payments/callback"
-        // Префикс bind_driver_card для однозначной идентификации в коллбэке
         val orderId = "bind_driver_card_${driverId}_${System.currentTimeMillis()}"
         logger.info(">>> GENERATING LIQPAY DRIVER BIND CARD LINK. Callback URL: $callbackUrl")
 
         val params = mapOf(
-            "action" to "auth", // Блокировка 1 грн для верификации и выпуска токена
+            "action" to "auth", 
             "amount" to 1.0,
             "currency" to "UAH",
             "description" to "Прив'язка картки для виплат водія ID $driverId",
@@ -236,7 +236,8 @@ class LiqPayService(
             "public_key" to publicKey,
             "language" to "uk",
             "server_url" to callbackUrl,
-            "result_url" to "$serverUrl/payment-success.html"
+            "result_url" to "$serverUrl/payment-success.html",
+            "recurringbytoken" to "1" // ВНЕДРЕНО: Явное требование выпустить card_token в ответе
         )
 
         val json = objectMapper.writeValueAsString(params)
@@ -246,17 +247,16 @@ class LiqPayService(
         return "https://www.liqpay.ua/api/3/checkout?data=$data&signature=$signature"
     }
 
-    // 1. Двухстадийный платёж: Блокировка (холд) средств на карте клиента
     fun holdWithToken(orderId: String, amount: Double, cardToken: String, description: String): Boolean {
         logger.info(">>> HOLDING FUNDS: Order $orderId, Amount: $amount")
         
         val params = mapOf(
-            "action" to "auth", // Важно: auth означает холдирование средств
+            "action" to "hold", 
             "amount" to amount,
             "currency" to "UAH",
             "description" to description,
             "order_id" to orderId,
-            "version" to "3",
+            "version" to "3", // ИСПРАВЛЕНО: возвращаем 3, чтобы подпись SHA-1 подходила
             "public_key" to publicKey,
             "card_token" to cardToken
         )
@@ -277,30 +277,30 @@ class LiqPayService(
             val responseBody = responseEntity.body
 
             if (responseBody != null) {
-        val responseMap = objectMapper.readValue(responseBody, Map::class.java)
-        val status = responseMap["status"]?.toString()
-        val errCode = responseMap["err_code"]?.toString()
-        val errDesc = responseMap["err_description"]?.toString()
-        
-        logger.info(">>> LIQPAY HOLD RESPONSE: status=$status, code=$errCode, desc=$errDesc")
-        status == "success" || status == "sandbox" || status == "auth_wait" || status == "wait_accept"
-    } else false
+                val responseMap = objectMapper.readValue(responseBody, Map::class.java)
+                val status = responseMap["status"]?.toString()
+                val errCode = responseMap["err_code"]?.toString()
+                val errDesc = responseMap["err_description"]?.toString()
+                
+                logger.info(">>> LIQPAY HOLD RESPONSE: status=$status, code=$errCode, desc=$errDesc")
+                status == "success" || status == "sandbox" || status == "auth_wait" || status == "wait_accept"
+            } else false
         } catch (e: Exception) {
             logger.error(">>> Error during holdWithToken API call", e)
             false
         }
     }
 
-    // 2. Подтверждение списания (Capture) — полного или частичного
+    // 2. Подтверждение списания (Hold Completion)
     fun captureFunds(orderId: String, amount: Double): Boolean {
-        logger.info(">>> CAPTURING FUNDS: Order $orderId, Amount: $amount")
+        logger.info(">>> CAPTURING FUNDS (HOLD COMPLETION): Order $orderId, Amount: $amount")
         
         val params = mapOf(
-            "action" to "capture", // Подтверждение заблокированной суммы
+            "action" to "hold_completion", 
             "amount" to amount,
             "currency" to "UAH",
             "order_id" to orderId,
-            "version" to "3",
+            "version" to "3", // ИСПРАВЛЕНО: возвращаем 3 для совместимости с SHA-1
             "public_key" to publicKey
         )
 
@@ -336,9 +336,9 @@ class LiqPayService(
         logger.info(">>> VOIDING/RELEASING FUNDS: Order $orderId")
         
         val params = mapOf(
-            "action" to "void", // Полная отмена блокировки средств
+            "action" to "void", 
             "order_id" to orderId,
-            "version" to "3",
+            "version" to "3", // ИСПРАВЛЕНО: возвращаем 3 для совместимости с SHA-1
             "public_key" to publicKey
         )
 
@@ -369,7 +369,6 @@ class LiqPayService(
         }
     }
 
-    // Проверка статуса (Server-to-Server)
     fun getStatus(orderId: String): String {
         val params = mapOf(
             "action" to "status",
@@ -386,7 +385,12 @@ class LiqPayService(
         val requestBody = "data=$data&signature=$signature"
 
         try {
-            val responseEntity = restTemplate.postForEntity(url, requestBody, String::class.java)
+            // ИСПРАВЛЕНО: Добавляем обязательные заголовки FORM_URLENCODED, как и в других S2S методах
+            val headers = HttpHeaders()
+            headers.contentType = MediaType.APPLICATION_FORM_URLENCODED
+            val entity = HttpEntity(requestBody, headers)
+
+            val responseEntity = restTemplate.postForEntity(url, entity, String::class.java)
             val responseBody = responseEntity.body
 
             if (responseBody != null) {
@@ -394,7 +398,7 @@ class LiqPayService(
                 return responseMap["status"]?.toString() ?: "error"
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            logger.error(">>> Error during LiqPay getStatus call", e)
         }
         return "error"
     }
@@ -405,8 +409,9 @@ class LiqPayService(
 
     private fun createSignature(data: String): String {
         val signString = privateKey + data + privateKey
-        val sha1 = MessageDigest.getInstance("SHA-1")
-        val hash = sha1.digest(signString.toByteArray(StandardCharsets.UTF_8))
+        // ИСПРАВЛЕНО: Переход с SHA-1 на SHA3-256 строго по спецификации версии 7
+        val sha3 = MessageDigest.getInstance("SHA3-256")
+        val hash = sha3.digest(signString.toByteArray(StandardCharsets.UTF_8))
         return Base64.getEncoder().encodeToString(hash)
     }
 }

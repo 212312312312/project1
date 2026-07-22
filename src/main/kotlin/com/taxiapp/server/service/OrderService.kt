@@ -1352,10 +1352,13 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
                     order.paymentMethod = "CASH"
                     order.price = delta 
                     orderRepository.save(order)
-                    broadcastOrderChange(order, "UPDATE")
-                    
-                    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Основна сума списана, але на карті немає грошей за простій. Візьміть з клієнта готівкою: $delta UAH та завершіть ще раз.")
-                }
+                    order.comment = (order.comment ?: "") + " [Несписана доплата готівкою: $delta UAH]"
+    orderRepository.save(order)
+    
+    broadcastOrderChange(order, "UPDATE")
+    
+    throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Основна сума списана з картки, але на ній немає грошей за простій. Візьміть з клієнта готівкою: $delta UAH та завершіть поїздку ще раз.")
+}
                 logger.info(">>> SUCCESS: Hold captured and excess delta ($delta UAH) charged successfully!")
             }
         }

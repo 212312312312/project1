@@ -20,27 +20,26 @@ data class CarTariffDto(
     val isUnavailable: Boolean,
     
     // --- НОВІ ПОЛЯ ДЛЯ SMART PRICING ---
-    // Вони можуть бути null, якщо ми просто переглядаємо список тарифів в адмінці
     var calculatedPrice: Double? = null,
     val description: String? = null,
     var oldPrice: Double? = null
 ) {
-    // Конструктор для конвертації з Entity (БД)
-    constructor(tariff: CarTariff) : this(
+    // Вторинний конструктор із параметром fullImageUrl за замовчуванням (null)
+    constructor(tariff: CarTariff, fullImageUrl: String? = null) : this(
         id = tariff.id,
         name = tariff.name,
         basePrice = tariff.basePrice,
         pricePerKm = tariff.pricePerKm,
+        sortOrder = tariff.sortOrder,
         pricePerKmOutCity = tariff.pricePerKmOutCity,
         freeWaitingMinutes = tariff.freeWaitingMinutes,
         extraWaypointPrice = tariff.extraWaypointPrice,
-        isBeta = tariff.isBeta,               // Маппинг
+        isBeta = tariff.isBeta,
         isUnavailable = tariff.isUnavailable,
         pricePerWaitingMinute = tariff.pricePerWaitingMinute,
         isActive = tariff.isActive,
-        imageUrl = tariff.imageUrl,
+        imageUrl = fullImageUrl ?: tariff.imageUrl,
         
-        // За замовчуванням ціна не порахована
         calculatedPrice = null,
         description = null,
         oldPrice = null
