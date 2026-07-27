@@ -39,6 +39,9 @@ class Driver : User() {
     @Column(nullable = false)
     var completedRides: Int = 0
 
+    @Column(name = "city")
+    var city: String? = null
+
     @Column(name = "rnokpp")
     var rnokpp: String? = null
 

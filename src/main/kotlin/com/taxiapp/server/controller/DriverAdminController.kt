@@ -41,7 +41,6 @@ class DriverAdminController(
         return ResponseEntity.ok(drivers)
     }
 
-
     // CREATE
     @PostMapping(consumes = ["multipart/form-data"])
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
@@ -121,8 +120,6 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.blockDriverTemporarily(id, request))
     }
 
-
-    
     @PatchMapping("/{id}/block")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun blockDriverPerm(@PathVariable id: Long): ResponseEntity<DriverDto> {
@@ -135,12 +132,23 @@ class DriverAdminController(
         return ResponseEntity.ok(driverAdminService.unblockDriver(id))
     }
 
+    // ЄДИНИЙ ТА УНІВЕРСАЛЬНИЙ ЕНДПОІНТ ДЛЯ СХВАЛЕННЯ РЕЄСТРАЦІЇ
+    @PostMapping("/{id}/approve-registration")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR', 'DISPATCHER', 'ROLE_DISPATCHER')")
+    fun approveDriver(
+        @PathVariable id: Long, 
+        @RequestBody(required = false) tariffIds: List<Long>?
+    ): ResponseEntity<Void> {
+        driverAdminService.approveDriverRegistration(id, tariffIds ?: emptyList())
+        return ResponseEntity.ok().build()
+    }
+
     @PostMapping("/{id}/activity")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun updateActivity(@PathVariable id: Long, @RequestBody request: ChangeActivityRequest): ResponseEntity<DriverDto> {
         return ResponseEntity.ok(driverAdminService.updateDriverActivity(id, request.points, request.reason))
     }
-
+    
     // --- РОБОТА З АВТОМОБІЛЯМИ ---
 
     @GetMapping("/cars/pending")
@@ -168,56 +176,41 @@ class DriverAdminController(
         return ResponseEntity.ok(mapOf("message" to "Дані авто оновлено"))
     }
 
-    // --- НОВА ЛОГІКА РЕЄСТРАЦІЇ ---
+    // --- РОБОТА З ЧЕРГОЮ РЕЄСТРАЦІЙ ---
 
     @GetMapping("/pending-registration")
-    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR', 'DISPATCHER', 'ROLE_DISPATCHER')")
     fun getPendingDrivers(): List<DriverDto> {
         return driverRepository.findAllByRegistrationStatus(RegistrationStatus.PENDING)
             .map { DriverDto(it) }
     }
 
-    @PostMapping("/{id}/approve-registration")
-    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
-    fun approveDriver(
-        @PathVariable id: Long, 
-        @RequestBody tariffIds: List<Long>
-    ): ResponseEntity<Void> {
-        driverAdminService.approveDriverRegistration(id, tariffIds)
-        return ResponseEntity.ok().build()
-    }
-
     @PostMapping("/{id}/reject-registration")
-    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR', 'DISPATCHER', 'ROLE_DISPATCHER')")
     fun rejectDriver(@PathVariable id: Long, @RequestBody reason: String): ResponseEntity<Void> {
         driverAdminService.rejectDriverRegistration(id, reason)
         return ResponseEntity.ok().build()
     }
 
     // =========================================================================
-    // 💰 ФІНАНСОВІ ЕНДПОІНТИ (ВИПРАВЛЕНІ)
+    // 💰 ФІНАНСОВІ ЕНДПОІНТИ
     // =========================================================================
 
     @GetMapping("/{id}/transactions")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun getDriverTransactions(@PathVariable id: Long): ResponseEntity<List<Map<String, Any>>> {
-        // 1. Отримуємо список
         val transactions = driverAdminService.getDriverTransactions(id)
-        
-        // 2. ВРУЧНУ перетворюємо в DTO, щоб розірвати цикл (Driver -> Transaction -> Driver)
-        // Це вирішує проблему StackOverflowError
         val dtos = transactions.map { tx ->
             mapOf(
                 "id" to (tx.id ?: 0L),
                 "amount" to tx.amount,
                 "operationType" to tx.operationType,
                 "description" to (tx.description ?: ""),
-                "createdAt" to tx.createdAt.toString() // String
+                "createdAt" to tx.createdAt.toString()
             )
         }
         return ResponseEntity.ok(dtos)
     }
-    
 
     data class BalanceUpdateRequest(val amount: Double, val description: String)
 

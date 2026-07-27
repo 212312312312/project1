@@ -1,6 +1,6 @@
 package com.taxiapp.server.repository
 
-import com.taxiapp.server.model.enums.Role // <-- НОВИЙ ІМПОРТ
+import com.taxiapp.server.model.enums.Role
 import com.taxiapp.server.model.user.User
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
@@ -12,9 +12,9 @@ interface UserRepository : JpaRepository<User, Long> {
     fun existsByUserPhone(userPhone: String): Boolean
     fun findByUserLogin(userLogin: String): Optional<User>
 
-    // --- НОВИЙ МЕТОД ---
-    // Знайти всіх користувачів з роллю DISPATCHER
     fun findAllByRole(role: Role): List<User>
-    fun findByEmail(email: String): User? // Или Optional<User>, как у тебя принято
+    fun findByEmail(email: String): User?
+    
+    // 👇 ДОДАЙ ЦЕЙ РЯДОК:
+    fun existsByEmail(email: String): Boolean
 }
-

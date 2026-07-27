@@ -15,7 +15,7 @@ data class DriverDto(
     val selectedTariffIds: List<Long>,
     val driverLicenseFront: String?,
     val driverLicenseBack: String?,
-
+    val city: String?,
     // --- НОВЫЕ ПОЛЯ (ИНВАЛИДНОСТЬ) ---
     val hasMovementIssue: Boolean,
     val hasHearingIssue: Boolean,
@@ -60,7 +60,7 @@ data class DriverDto(
         hasHearingIssue = driver.hasHearingIssue,
         isDeaf = driver.isDeaf,
         hasSpeechIssue = driver.hasSpeechIssue,
-
+        city = driver.city,
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
         tempBlockExpiresAt = driver.tempBlockExpiresAt,

@@ -1,9 +1,11 @@
 package com.taxiapp.server.dto.auth
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class RegisterDriverRequest(
     @field:NotBlank(message = "Номер телефону не може бути порожнім")
     val phoneNumber: String,
@@ -22,6 +24,9 @@ data class RegisterDriverRequest(
     val rnokpp: String? = null,
     val driverLicense: String? = null,
     
+    @field:NotBlank(message = "Місто не може бути порожнім")
+    val city: String,
+
     @field:NotBlank(message = "Марка авто не може бути порожньою")
     val make: String,
 
@@ -33,8 +38,6 @@ data class RegisterDriverRequest(
 
     @field:NotBlank(message = "Номер авто не може бути порожнім")
     val plateNumber: String,
-
-    // VIN ВИДАЛЕНО
 
     @field:Min(value = 1990, message = "Рік випуску повинен бути не раніше 1990")
     val year: Int,

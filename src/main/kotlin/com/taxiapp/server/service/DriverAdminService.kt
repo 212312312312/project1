@@ -12,6 +12,9 @@ import com.taxiapp.server.model.enums.TransactionType
 import com.taxiapp.server.model.finance.WalletTransaction
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
+import com.taxiapp.server.repository.CarBrandRepository
+import com.taxiapp.server.repository.CarModelRepository
+import com.taxiapp.server.service.CarClassifierService
 import com.taxiapp.server.repository.CarRepository
 import com.taxiapp.server.repository.CarTariffRepository
 import com.taxiapp.server.repository.DriverRepository
@@ -40,7 +43,11 @@ class DriverAdminService(
     private val driverActivityService: DriverActivityService,
     private val carRepository: CarRepository,
     private val messagingTemplate: SimpMessagingTemplate,
-    private val walletTransactionRepository: WalletTransactionRepository // <--- ДОДАНО
+    private val carClassifierService: CarClassifierService,
+private val carBrandRepository: CarBrandRepository,
+private val carModelRepository: CarModelRepository,
+    private val walletTransactionRepository: WalletTransactionRepository,
+    private val emailService: EmailService // <--- ДОДАНО
 ) {
 
     @Transactional(readOnly = true)
@@ -258,7 +265,14 @@ class DriverAdminService(
             }
         }
     }
-
+    @Transactional
+fun rejectDriverRegistration(driverId: Long, reason: String) {
+    val driver = driverRepository.findById(driverId)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+    
+    driver.registrationStatus = RegistrationStatus.REJECTED
+    driverRepository.save(driver)
+}
     @Transactional
     fun deleteDriver(driverId: Long): MessageResponse {
         val driver = driverRepository.findById(driverId)
@@ -363,31 +377,64 @@ class DriverAdminService(
     }
 
     @Transactional
-    fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>) {
-        val driver = driverRepository.findById(driverId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>? = null) {
+    val driver = driverRepository.findById(driverId)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
 
-        val tariffs = tariffRepository.findAllById(tariffIds).toMutableSet()
-        
-        if (tariffs.isEmpty()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно обрати хоча б один тариф!")
+    val tariffs = if (!tariffIds.isNullOrEmpty()) {
+        tariffRepository.findAllById(tariffIds).toMutableSet()
+    } else {
+        // АВТО-РАСЧЕТ ТАРИФОВ ПО КЛАССИФИКАТОРУ
+        val car = driver.car ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "У водія немає авто")
+        val cityName = driver.city ?: "Київ"
+
+        // Ищем модель в базе классификатора
+        val brand = carBrandRepository.findAll()
+    .find { it.name.equals(car.make, ignoreCase = true) }
+
+val model = brand?.let { b ->
+    carModelRepository.findAll()
+        .filter { it.brand.id == b.id }
+        .find { it.name.equals(car.model, ignoreCase = true) }
+}
+
+        if (model != null) {
+            val eval = carClassifierService.evaluateCar(
+                com.taxiapp.server.dto.classifier.EvaluateCarRequest(
+                    cityName = cityName,
+                    modelId = model.id,
+                    year = car.year
+                )
+            )
+
+            // Фильтруем тарифы из БД по разрешенным категориям (STANDARD, COMFORT, BUSINESS)
+            tariffRepository.findAll().filter { tariff ->
+                eval.allowedTariffs.any { allowed -> 
+                    tariff.name.contains(allowed, ignoreCase = true) || 
+                    (allowed == "STANDARD" && tariff.name.contains("Стандарт", ignoreCase = true)) ||
+                    (allowed == "COMFORT" && tariff.name.contains("Комфорт", ignoreCase = true)) ||
+                    (allowed == "BUSINESS" && tariff.name.contains("Бізнес", ignoreCase = true))
+                }
+            }.toMutableSet()
+        } else {
+            // Если модель не найдена в строгом классификаторе — по умолчанию даем "Стандарт"
+            tariffRepository.findAll().filter { 
+                it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true) 
+            }.toMutableSet()
         }
-
-        driver.registrationStatus = RegistrationStatus.APPROVED
-        driver.car?.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
-        driver.allowedTariffs = tariffs
-
-        driverRepository.save(driver)
     }
 
-    @Transactional
-    fun rejectDriverRegistration(driverId: Long, reason: String) {
-        val driver = driverRepository.findById(driverId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
-        
-        driver.registrationStatus = RegistrationStatus.REJECTED
-        driverRepository.save(driver)
+    val finalTariffs = if (tariffs.isEmpty()) tariffRepository.findAll().toSet() else tariffs
+
+    driver.registrationStatus = RegistrationStatus.APPROVED
+    driver.car?.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
+    driver.allowedTariffs = finalTariffs.toMutableSet()
+
+    driverRepository.save(driver)
+    if (!driver.email.isNullOrBlank()) {
+        emailService.sendDriverApprovalEmail(driver.email!!, driver.fullName ?: "Водій")
     }
+}
 
     // =========================================================================
     // 💰 НОВІ МЕТОДИ ДЛЯ ФІНАНСІВ (Баланс та Історія)

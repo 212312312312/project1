@@ -358,46 +358,52 @@ val email: String = payload.email
     }
 
     @Transactional
-    fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartFile>): MessageResponse {
-        val normalizedPhone = normalizePhone(request.phoneNumber) 
+fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartFile>): MessageResponse {
+    val normalizedPhone = normalizePhone(request.phoneNumber) 
 
-        if (userRepository.existsByUserPhone(normalizedPhone)) {
-            throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
-        }
+    if (userRepository.existsByUserPhone(normalizedPhone)) {
+        throw ResponseStatusException(HttpStatus.CONFLICT, "Цей номер вже зареєстрований")
+    }
 
-        checkDriverSmsCode(normalizedPhone, request.smsCode)
-        smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+    if (!request.email.isNullOrBlank() && userRepository.existsByEmail(request.email)) {
+        throw ResponseStatusException(HttpStatus.CONFLICT, "Користувач з таким Email вже зареєстрований")
+    }
 
-        val avatarUrl = files["avatar"]?.let { fileStorageService.storeFile(it) }
-        val licenseFrontUrl = files["driverLicenseFront"]?.let { fileStorageService.storeFile(it) }
-        val licenseBackUrl = files["driverLicenseBack"]?.let { fileStorageService.storeFile(it) }
-        val techFrontUrl = files["techPassportFront"]?.let { fileStorageService.storeFile(it) }
-        val techBackUrl = files["techPassportBack"]?.let { fileStorageService.storeFile(it) }
-        val insuranceUrl = files["insurance"]?.let { fileStorageService.storeFile(it) }
-        val carPhotoUrl = files["carPhoto"]?.let { fileStorageService.storeFile(it) }
-        val carFrontUrl = files["carFront"]?.let { fileStorageService.storeFile(it) }
-        val carBackUrl = files["carBack"]?.let { fileStorageService.storeFile(it) }
-        val carLeftUrl = files["carLeft"]?.let { fileStorageService.storeFile(it) }
-        val carRightUrl = files["carRight"]?.let { fileStorageService.storeFile(it) }
-        val carIntFrontUrl = files["carInteriorFront"]?.let { fileStorageService.storeFile(it) }
-        val carIntBackUrl = files["carInteriorBack"]?.let { fileStorageService.storeFile(it) }
+    checkDriverSmsCode(normalizedPhone, request.smsCode)
+    smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
 
-        val driver = Driver().apply {
-            fullName = request.fullName
-            userLogin = normalizedPhone 
-            userPhone = normalizedPhone 
-            passwordHash = passwordEncoder.encode(request.password)
-            this.email = request.email
-            this.rnokpp = request.rnokpp
-            this.driverLicense = request.driverLicense
-            this.photoUrl = avatarUrl 
-            this.driverLicenseFront = licenseFrontUrl
-            this.driverLicenseBack = licenseBackUrl
-            role = Role.DRIVER
-            isBlocked = false
-            isOnline = false
-            registrationStatus = RegistrationStatus.PENDING
-        }
+    // 📍 ОГОЛОШЕННЯ ЗМІННОЇ AVATARURL 📍
+    val avatarUrl = files["avatar"]?.let { fileStorageService.storeFile(it) }
+    val licenseFrontUrl = files["driverLicenseFront"]?.let { fileStorageService.storeFile(it) }
+    val licenseBackUrl = files["driverLicenseBack"]?.let { fileStorageService.storeFile(it) }
+    val techFrontUrl = files["techPassportFront"]?.let { fileStorageService.storeFile(it) }
+    val techBackUrl = files["techPassportBack"]?.let { fileStorageService.storeFile(it) }
+    val insuranceUrl = files["insurance"]?.let { fileStorageService.storeFile(it) }
+    val carPhotoUrl = files["carPhoto"]?.let { fileStorageService.storeFile(it) }
+    val carFrontUrl = files["carFront"]?.let { fileStorageService.storeFile(it) }
+    val carBackUrl = files["carBack"]?.let { fileStorageService.storeFile(it) }
+    val carLeftUrl = files["carLeft"]?.let { fileStorageService.storeFile(it) }
+    val carRightUrl = files["carRight"]?.let { fileStorageService.storeFile(it) }
+    val carIntFrontUrl = files["carInteriorFront"]?.let { fileStorageService.storeFile(it) }
+    val carIntBackUrl = files["carInteriorBack"]?.let { fileStorageService.storeFile(it) }
+
+    val driver = Driver().apply {
+        fullName = request.fullName
+        userLogin = normalizedPhone 
+        userPhone = normalizedPhone 
+        passwordHash = passwordEncoder.encode(request.password)
+        email = request.email
+        rnokpp = request.rnokpp
+        driverLicense = request.driverLicense
+        city = request.city ?: throw IllegalArgumentException("Місто обов'язкове для вибору")
+        photoUrl = avatarUrl 
+        driverLicenseFront = licenseFrontUrl
+        driverLicenseBack = licenseBackUrl
+        role = Role.DRIVER
+        isBlocked = false
+        isOnline = false
+        registrationStatus = RegistrationStatus.PENDING
+    }
 
         val car = Car(
             make = request.make,
