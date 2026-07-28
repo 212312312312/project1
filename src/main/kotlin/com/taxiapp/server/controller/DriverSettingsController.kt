@@ -26,18 +26,17 @@ class DriverSettingsController(
     @GetMapping("/search-settings")
     fun getSettings(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverSearchStateDto> {
         val driver = getDriver(userDetails)
-        // Используем метод из DriverService
         return ResponseEntity.ok(driverService.getSearchState(driver))
     }
 
-    @PostMapping("/search-settings")
+    // 🛠️ ФИКС: Принимаем и POST, и PUT запросы, чтобы исключить ошибку 405 Method Not Allowed
+    @RequestMapping(value = ["/search-settings"], method = [RequestMethod.POST, RequestMethod.PUT])
     fun updateSettings(
         @AuthenticationPrincipal userDetails: UserDetails,
         @RequestBody settings: DriverSearchSettingsDto
     ): ResponseEntity<DriverSearchStateDto> {
         val driver = getDriver(userDetails)
         try {
-            // Используем метод из DriverService
             val updatedState = driverService.updateSearchSettings(driver, settings)
             return ResponseEntity.ok(updatedState)
         } catch (e: IllegalArgumentException) {
