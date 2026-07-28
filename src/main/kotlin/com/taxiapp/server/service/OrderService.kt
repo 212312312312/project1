@@ -50,6 +50,7 @@ class OrderService(
     private val cancellationReasonRepository: CancellationReasonRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
     private val appSettingRepository: AppSettingRepository,
+    private val evoSService: EvoSService,
     private val liqPayService: LiqPayService,
     private val activityHistoryRepository: DriverActivityHistoryRepository,
     private val redisTemplate: org.springframework.data.redis.core.RedisTemplate<String, Any> // <-- ДОБАВЛЕНО
@@ -1143,7 +1144,12 @@ fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrder
         else if (order.status != OrderStatus.REQUESTED) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "Замовлення вже зайняте")
         }
-        
+        val evosUid = order.evosOrderUid
+if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
+    evoSService.cancelOrderInEvoS(evosUid)
+    order.isSentToEvos = false
+    order.evosOrderUid = null
+}
         // НАЗНАЧАЕМ ВОДИТЕЛЯ
         order.driver = driver
         order.offeredDriver = null

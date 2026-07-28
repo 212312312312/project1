@@ -35,6 +35,31 @@ class SettingsService(
         return setting?.value?.toDoubleOrNull() ?: 10.0
     }
 
+    // --- НАСТРОЙКИ ИНТЕГРАЦИИ С EVOS ---
+    fun isEvosEnabled(): Boolean {
+        return getSettingValue("evos_enabled")?.toBoolean() ?: false
+    }
+
+    fun getEvosDelaySeconds(): Long {
+        return getSettingValue("evos_delay_seconds")?.toLongOrNull() ?: 60L
+    }
+
+    fun getEvosUrl(): String {
+        return getSettingValue("evos_url") ?: "http://127.0.0.1:8080/api"
+    }
+
+    fun getEvosLogin(): String {
+        return getSettingValue("evos_login") ?: ""
+    }
+
+    fun getEvosPassword(): String {
+        return getSettingValue("evos_password") ?: ""
+    }
+
+    fun getEvosAppId(): String {
+        return getSettingValue("evos_app_id") ?: "UNIT_TAXI"
+    }
+
     fun uploadSettingImage(key: String, file: MultipartFile): String {
         val directory = File(uploadDir)
         if (!directory.exists()) {

@@ -161,6 +161,22 @@ class TaxiOrder(
 
     @Column(name = "promo_plan_id")
     var promoPlanId: Long? = null,
+    
+    // --- ПОЛЯ ИНТЕГРАЦИИ С EVOS (TaxiNavigator) ---
+    @Column(name = "evos_order_uid")
+    var evosOrderUid: String? = null,
+
+    @Column(name = "is_sent_to_evos", nullable = false)
+    var isSentToEvos: Boolean = false,
+
+    @Column(name = "is_evos_driver_assigned", nullable = false)
+    var isEvosDriverAssigned: Boolean = false,
+
+    @Column(name = "evos_driver_car_info")
+    var evosDriverCarInfo: String? = null,
+
+    @Column(name = "evos_driver_phone")
+    var evosDriverPhone: String? = null,
 
     @ManyToMany(fetch = FetchType.EAGER)
     @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
