@@ -6,17 +6,17 @@ import org.springframework.web.bind.annotation.RequestMapping
 @Controller
 class SpaController {
 
-    // Этот метод ловит все маршруты, которые НЕ являются API, и перенаправляет их на React
-    // Мы явно прописываем /driver-register, чтобы это точно сработало
+    // Ловит все клиентские веб-маршруты React и перенаправляет их на index.html
     @RequestMapping(value = [
         "/", 
         "/login", 
         "/driver-register", 
+        "/driver/**",
+        "/add-car/**",
         "/dashboard/**",
-        "/{path:[^\\.]*}" // Ловит все остальные пути без точки (не файлы)
+        "/{path:[^\\.]*}"
     ])
     fun forward(): String {
-        // "forward:/index.html" означает: "Отдай файл index.html из папки static"
         return "forward:/index.html"
     }
 }

@@ -42,12 +42,19 @@ class JwtAuthFilter(
             }
         }
 
+        // 3. 👈 ДОБАВЛЕНО: Достаем токен из параметра URL ?token=... (для WebView в мобильных приложениях)
+        if (jwtToken == null) {
+            val tokenParam = request.getParameter("token")
+            if (!tokenParam.isNullOrEmpty()) {
+                jwtToken = tokenParam.trim()
+            }
+        }
+
         if (jwtToken.isNullOrEmpty() || jwtToken == "null" || jwtToken == "undefined") {
             filterChain.doFilter(request, response)
             return
         }
 
-        // Тот самый пропущенный try {, который собирает ошибки валидации токена
         try {
             val username = jwtUtils.extractUsername(jwtToken)
 

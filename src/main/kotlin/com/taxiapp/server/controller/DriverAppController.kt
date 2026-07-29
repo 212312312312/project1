@@ -388,8 +388,9 @@ fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
 }
 
     @GetMapping("/forms/add-car")
+    @PreAuthorize("permitAll()")
     fun getAddCarForm(@RequestParam token: String): ResponseEntity<Void> {
-        val reactFormUrl = "/add-car/index.html?token=$token"
+        val reactFormUrl = "/add-car?token=$token"
         return ResponseEntity.status(HttpStatus.FOUND)
             .header("Location", reactFormUrl)
             .build()

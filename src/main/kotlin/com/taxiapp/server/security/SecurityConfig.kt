@@ -1,6 +1,6 @@
 package com.taxiapp.server.security
 
-import jakarta.servlet.http.HttpServletResponse // <-- ДОБАВЛЕН ЭТОТ ИМПОРТ
+import jakarta.servlet.http.HttpServletResponse
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.security.authentication.AuthenticationManager
@@ -48,16 +48,14 @@ class SecurityConfig(
             .cors { it.configurationSource(corsConfigurationSource()) }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             
-            // --- ДОБАВЛЕНО: Глобальный обработчик отсутствия прав ---
             .exceptionHandling { exceptions ->
                 exceptions.authenticationEntryPoint { request, response, authException ->
                     response.status = HttpServletResponse.SC_UNAUTHORIZED
-                    response.setHeader("WWW-Authenticate", "Bearer") // <--- ДОБАВИТЬ ЭТУ СТРОКУ
+                    response.setHeader("WWW-Authenticate", "Bearer")
                     response.contentType = "application/json;charset=UTF-8"
                     response.writer.write("""{"error": "UNAUTHORIZED", "message": "Authentication is required"}""")
                 }
             }
-            // ---------------------------------------------------------
             
             .authorizeHttpRequests { auth ->
                 auth
@@ -69,13 +67,13 @@ class SecurityConfig(
                         "/api/v1/payments/mock-gateway/**",
                         "/api/v1/payments/callback",
                         "/api/v1/driver/forms/**",
-                        "/api/v1/photo-control/driver/*/submit", // 👈 ДОБАВЛЕНО: для WebView водителя
+                        "/api/v1/photo-control/driver/*/submit",
                         "/error"
                     ).permitAll()
 
-                    // 2. Статические ресурсы (React build, файлы)
+                    // 2. Статические ресурсы и WebView-страницы (React build)
                     .requestMatchers(
-                        "/", "/index.html", "/driver-register", "/login", "/dashboard/**", 
+                        "/", "/index.html", "/driver-register", "/driver/**", "/login", "/dashboard/**", 
                         "/assets/**", "/favicon.ico", "/*.png", "/*.jpg", "/*.svg", 
                         "/*.json", "/*.js", "/*.css", "/images/**", "/uploads/**", "/add-car/**"
                     ).permitAll()
@@ -85,7 +83,7 @@ class SecurityConfig(
                         "ROLE_DRIVER", "ROLE_ADMINISTRATOR", "ROLE_CLIENT"
                     )
                     .requestMatchers("/api/v1/admin/**", "/api/v1/photo-control/admin/**", "/api/v1/photo-control/request").hasAnyAuthority(
-                        "ROLE_ADMINISTRATOR", "ROLE_DISPATCHER" // 👈 ДОБАВЛЕНЫ МАРШРУТЫ ФОТОКОНТРОЛЯ
+                        "ROLE_ADMINISTRATOR", "ROLE_DISPATCHER"
                     )
                     .requestMatchers("/api/v1/driver/**").hasAnyAuthority(
                         "ROLE_DRIVER", "ROLE_ADMINISTRATOR"
@@ -106,7 +104,6 @@ class SecurityConfig(
     @Bean
     fun corsConfigurationSource(): UrlBasedCorsConfigurationSource {
         val configuration = CorsConfiguration()
-        // Разрешаем все источники для удобства разработки
         configuration.allowedOriginPatterns = listOf("*")
         configuration.allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
         configuration.allowedHeaders = listOf("*")
