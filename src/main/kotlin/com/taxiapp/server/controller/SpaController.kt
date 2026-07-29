@@ -13,8 +13,11 @@ class SpaController {
         "/driver-register", 
         "/driver/**",
         "/add-car/**",
+        "/photo-control/**",
+        "/photo-upload/**",
         "/dashboard/**",
-        "/{path:[^\\.]*}"
+        "/{path:[^\\.]*}",
+        "/{path1:[^\\.]*}/{path2:[^\\.]*}"
     ])
     fun forward(): String {
         return "forward:/index.html"

@@ -75,7 +75,8 @@ class SecurityConfig(
                     .requestMatchers(
                         "/", "/index.html", "/driver-register", "/driver/**", "/login", "/dashboard/**", 
                         "/assets/**", "/favicon.ico", "/*.png", "/*.jpg", "/*.svg", 
-                        "/*.json", "/*.js", "/*.css", "/images/**", "/uploads/**", "/add-car/**"
+                        "/*.json", "/*.js", "/*.css", "/images/**", "/uploads/**", "/add-car/**",
+                        "/photo-control/**", "/photo-upload/**"
                     ).permitAll()
 
                     // 3. Доступ по ролям

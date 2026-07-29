@@ -45,9 +45,9 @@ class EvoSService(
         if (!settingsService.isEvosEnabled()) return null
 
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
-        val url = "$baseUrl/weborders"
+        val url = "$baseUrl/api/weborders"
 
-        // 1. Форматирование комментарий и логика скидки/доплаты
+        // 1. Форматирование комментария и логика скидки/доплаты
         val fullPrice = order.price // Полная стоимость для водителя EvoS
         val discount = order.appliedDiscount
         val clientPays = fullPrice - discount
@@ -124,7 +124,7 @@ class EvoSService(
     // --- ЗАПРОС СОСТОЯНИЯ ЗАКАЗА ---
     fun getOrderState(evosOrderUid: String): EvoSOrderStateResponseDto? {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
-        val url = "$baseUrl/weborders/$evosOrderUid"
+        val url = "$baseUrl/api/weborders/$evosOrderUid"
 
         return try {
             val requestEntity = HttpEntity<Void>(createHeaders())
@@ -139,7 +139,7 @@ class EvoSService(
     // --- ЗАПРОС GPS ПОЛОЖЕНИЯ МАШИНЫ ---
     fun getDriverPosition(evosOrderUid: String): EvoSDriverCarPositionDto? {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
-        val url = "$baseUrl/weborders/drivercarposition/$evosOrderUid"
+        val url = "$baseUrl/api/weborders/drivercarposition/$evosOrderUid"
 
         return try {
             val requestEntity = HttpEntity<Void>(createHeaders())
@@ -153,7 +153,7 @@ class EvoSService(
     // --- ЗАПРОС ОТМЕНЫ ЗАКАЗА ---
     fun cancelOrderInEvoS(evosOrderUid: String): Boolean {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
-        val url = "$baseUrl/weborders/cancel/$evosOrderUid"
+        val url = "$baseUrl/api/weborders/cancel/$evosOrderUid"
 
         return try {
             val requestEntity = HttpEntity<Void>(createHeaders())
