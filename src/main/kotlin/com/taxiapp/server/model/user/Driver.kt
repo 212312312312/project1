@@ -42,6 +42,11 @@ class Driver : User() {
     @Column(name = "city")
     var city: String? = null
 
+    @Column(nullable = false)
+    var photoControlRestricted: Boolean = false
+
+    var activePhotoControlId: Long? = null
+
     @Column(name = "rnokpp")
     var rnokpp: String? = null
 

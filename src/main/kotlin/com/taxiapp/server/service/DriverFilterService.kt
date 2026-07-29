@@ -49,13 +49,19 @@ class DriverFilterService(
     }
 
     @Transactional
-    fun createFilter(req: CreateFilterRequest): DriverFilterDto {
-        val driverId = getCurrentDriverId()
-        val driver = driverRepository.findById(driverId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
-        if (!driver.isOnline) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-        }
+fun createFilter(req: CreateFilterRequest): DriverFilterDto {
+    val driverId = getCurrentDriverId()
+    val driver = driverRepository.findById(driverId)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+
+    // ДОБАВЛЕНО: Запрет на работу с фильтрами при ограничении
+    if (driver.photoControlRestricted) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+    }
+
+    if (!driver.isOnline) {
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+    }
         // Визначаємо isActive: якщо хоч щось включено -> фільтр активний
         val isActive = req.isEther || req.isAuto || req.isCycle
         
@@ -89,26 +95,31 @@ class DriverFilterService(
     }
 
     @Transactional
-    fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
-        val filter = filterRepository.findById(id)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Фільтр не знайдено") }
+fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
+    val filter = filterRepository.findById(id)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Фільтр не знайдено") }
 
-        if (filter.driver.id != getCurrentDriverId()) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваш фільтр")
-        }
+    if (filter.driver.id != getCurrentDriverId()) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваш фільтр")
+    }
 
-        // 1. ВАЛИДАЦИЯ: Нельзя Auto и Cycle одновременно
-        if (req.isAuto && req.isCycle) {
-             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Авто і Цикл не можуть працювати разом")
-        }
+    // 1. ВАЛИДАЦИЯ: Нельзя Auto и Cycle одновременно
+    if (req.isAuto && req.isCycle) {
+         throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Авто і Цикл не можуть працювати разом")
+    }
 
-        // 2. ЛОГИКА: Вычисляем активность (строго ОДНО объявление переменной)
-        val shouldBeActive = req.isEther || req.isAuto || req.isCycle
+    // 2. ЛОГИКА: Вычисляем активность
+    val shouldBeActive = req.isEther || req.isAuto || req.isCycle
 
-        // 3. ПРОВЕРКА ОНЛАЙНА: Если фильтр пытаются включить в оффлайне — блокируем
-        if (shouldBeActive && !filter.driver.isOnline) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-        }
+    // ДОБАВЛЕНО: Если пытаются включить режим при ограничении
+    if (shouldBeActive && filter.driver.photoControlRestricted) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+    }
+
+    // 3. ПРОВЕРКА ОНЛАЙНА
+    if (shouldBeActive && !filter.driver.isOnline) {
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+    }
 
         // 4. ЛИМИТЫ: Если фильтр переходит из выключенного в активное состояние — проверяем лимит (макс 3)
         if (shouldBeActive && !filter.isActive) {
@@ -161,17 +172,22 @@ class DriverFilterService(
 
     // toggleFilter, disableAll, deleteFilter залишаються без змін...
     @Transactional
-    fun toggleFilter(id: Long) {
-        val filter = filterRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-        if (filter.driver.id != getCurrentDriverId()) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-        if (!filter.isActive && !filter.driver.isOnline) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-        }
-        if (!filter.isActive) checkActiveFiltersLimit(getCurrentDriverId(), id)
-        
-        filter.isActive = !filter.isActive
-        // При простому тогл (якщо такий буде) - режими не змінюємо
+fun toggleFilter(id: Long) {
+    val filter = filterRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+    if (filter.driver.id != getCurrentDriverId()) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+    
+    // ДОБАВЛЕНО: Запрет включать фильтр при ограничении
+    if (!filter.isActive && filter.driver.photoControlRestricted) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
     }
+
+    if (!filter.isActive && !filter.driver.isOnline) {
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+    }
+    if (!filter.isActive) checkActiveFiltersLimit(getCurrentDriverId(), id)
+    
+    filter.isActive = !filter.isActive
+}
     
     @Transactional
     fun disableAll() {

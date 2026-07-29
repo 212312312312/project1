@@ -1121,13 +1121,18 @@ fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrder
     }
     
     @Transactional
-    fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
-        if (!driver.isOnline) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-        }
-        if (driver.activityScore <= 0) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність.")
+fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+    // 1. ПРОВЕРКА ФОТОКОНТРОЛЯ (Блокировка приема заказов)
+    if (driver.photoControlRestricted) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+    }
 
-        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+    if (!driver.isOnline) {
+        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+    }
+    if (driver.activityScore <= 0) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність.")
+
+    val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
         
         // Логика для обычных предложений (OFFERING)
         if (order.status == OrderStatus.OFFERING) {

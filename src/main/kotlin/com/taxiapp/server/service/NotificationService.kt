@@ -5,6 +5,8 @@ import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.Notification
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Driver
 import org.slf4j.LoggerFactory
@@ -180,7 +182,59 @@ class NotificationService(
             e.printStackTrace()
         }
     }
+    fun sendPhotoControlRequestNotification(driver: Driver, deadlineAt: LocalDateTime?) {
+    val token = driver.fcmToken ?: run {
+        logger.warn("У водителя ID ${driver.id} отсутствует fcmToken!")
+        return
+    }
 
+    val timeStr = deadlineAt?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: ""
+
+    val message = com.google.firebase.messaging.Message.builder()
+        .setToken(token)
+        .putAllData(mapOf(
+            "type" to "PHOTO_CONTROL_REQUEST",
+            "title" to "Потрібно пройти фотоконтроль",
+            "body" to "Пройдіть фотоконтроль до $timeStr"
+        ))
+        .build()
+
+    try {
+        FirebaseMessaging.getInstance().send(message)
+        logger.info(">>> PUSH (PhotoControl) успешно отправлен водителю ID ${driver.id} на токен: $token")
+    } catch (e: Exception) {
+        logger.error("Ошибка отправки FCM PUSH фотоконтроля: ${e.message}")
+    }
+}
+
+    fun sendPhotoControlApprovedNotification(driver: Driver) {
+        saveAndSend(
+            driver,
+            "Фотоконтроль пройден",
+            "Все отлично! Ограничения сняты, вы можете принимать заказы.",
+            "PHOTO_CONTROL_APPROVED"
+        )
+    }
+
+    fun sendPhotoControlRejectedNotification(driver: Driver, reason: String?) {
+        val msg = if (!reason.isNullOrBlank()) "Причина: $reason. Пройдите повторный фотоконтроль." 
+                  else "Вы ограничены в работе до успешного фотоконтроля."
+        saveAndSend(
+            driver,
+            "Фотоконтроль отклонен",
+            msg,
+            "PHOTO_CONTROL_REJECTED"
+        )
+    }
+
+    fun sendPhotoControlExpiredNotification(driver: Driver) {
+        saveAndSend(
+            driver,
+            "Время фотоконтроля истекло",
+            "Вы ограничены в работе до следующего успешного фотоконтроля.",
+            "PHOTO_CONTROL_EXPIRED"
+        )
+    }
     /**
      * МЕТОД 6: Уведомления о новых сообщениях чата.
      */
