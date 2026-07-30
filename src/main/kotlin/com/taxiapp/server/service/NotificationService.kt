@@ -210,18 +210,18 @@ class NotificationService(
     fun sendPhotoControlApprovedNotification(driver: Driver) {
         saveAndSend(
             driver,
-            "Фотоконтроль пройден",
-            "Все отлично! Ограничения сняты, вы можете принимать заказы.",
+            "Фотоконтроль пройдено",
+            "Все чудово! Обмеження знято, ви можете приймати замовлення.",
             "PHOTO_CONTROL_APPROVED"
         )
     }
 
     fun sendPhotoControlRejectedNotification(driver: Driver, reason: String?) {
-        val msg = if (!reason.isNullOrBlank()) "Причина: $reason. Пройдите повторный фотоконтроль." 
-                  else "Вы ограничены в работе до успешного фотоконтроля."
+        val msg = if (!reason.isNullOrBlank()) "Причина: $reason. Пройдіть повторний фотоконтроль." 
+                  else "Вашу роботу обмежено до успішного проходження фотоконтролю."
         saveAndSend(
             driver,
-            "Фотоконтроль отклонен",
+            "Фотоконтроль відхилено",
             msg,
             "PHOTO_CONTROL_REJECTED"
         )
@@ -230,8 +230,8 @@ class NotificationService(
     fun sendPhotoControlExpiredNotification(driver: Driver) {
         saveAndSend(
             driver,
-            "Время фотоконтроля истекло",
-            "Вы ограничены в работе до следующего успешного фотоконтроля.",
+            "Час фотоконтролю вичерпано",
+            "Вашу роботу обмежено до успішного проходження фотоконтролю.",
             "PHOTO_CONTROL_EXPIRED"
         )
     }

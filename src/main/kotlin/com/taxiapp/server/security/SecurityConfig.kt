@@ -1,6 +1,7 @@
 package com.taxiapp.server.security
 
 import jakarta.servlet.http.HttpServletResponse
+import org.springframework.http.HttpMethod
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.security.authentication.AuthenticationManager
@@ -59,6 +60,9 @@ class SecurityConfig(
             
             .authorizeHttpRequests { auth ->
                 auth
+                    // Явно разрешаем все CORS-префлайты (OPTIONS)
+                    .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+
                     // 1. Публичные API (доступны всем)
                     .requestMatchers(
                         "/api/v1/auth/**",

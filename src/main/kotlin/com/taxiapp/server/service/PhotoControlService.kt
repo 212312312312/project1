@@ -13,7 +13,8 @@ import java.time.LocalDateTime
 class PhotoControlService(
     private val photoControlRepository: PhotoControlRepository,
     private val driverRepository: DriverRepository,
-    private val notificationService: NotificationService
+    private val notificationService: NotificationService,
+    private val fileStorageService: FileStorageService
 ) {
 
     @Transactional
@@ -80,6 +81,9 @@ class PhotoControlService(
         photoControl.reviewedAt = LocalDateTime.now()
         photoControl.reviewedByDispatcherId = dispatcherId
 
+        // Очищаем физические файлы с диска
+        deletePhotosFromStorage(photoControl)
+
         driverRepository.save(driver)
         return photoControlRepository.save(photoControl).toDto()
     }
@@ -95,18 +99,49 @@ class PhotoControlService(
     }
 
     @Transactional
-fun cancelPhotoControl(photoControlId: Long): PhotoControlStatusDto {
-    val photoControl = photoControlRepository.findById(photoControlId)
-        .orElseThrow { IllegalArgumentException("PhotoControl request not found") }
+    fun cancelPhotoControl(photoControlId: Long): PhotoControlStatusDto {
+        val photoControl = photoControlRepository.findById(photoControlId)
+            .orElseThrow { IllegalArgumentException("PhotoControl request not found") }
 
-    val driver = photoControl.driver
-    photoControl.status = PhotoControlStatus.CANCELLED
-    driver.activePhotoControlId = null
-    driver.photoControlRestricted = false
+        val driver = photoControl.driver
+        photoControl.status = PhotoControlStatus.CANCELLED
+        driver.activePhotoControlId = null
+        driver.photoControlRestricted = false
 
-    driverRepository.save(driver)
-    return photoControlRepository.save(photoControl).toDto()
-}
+        // Очищаем физические файлы с диска
+        deletePhotosFromStorage(photoControl)
+
+        driverRepository.save(driver)
+        return photoControlRepository.save(photoControl).toDto()
+    }
+
+    /**
+     * Удаляет физические файлы 6 фотографий с диска и обнуляет ссылки в БД
+     */
+    private fun deletePhotosFromStorage(photoControl: PhotoControl) {
+        val photos = listOfNotNull(
+            photoControl.frontUrl,
+            photoControl.backUrl,
+            photoControl.leftUrl,
+            photoControl.rightUrl,
+            photoControl.interiorFrontUrl,
+            photoControl.interiorBackUrl
+        )
+
+        photos.forEach { urlOrName ->
+            if (urlOrName.isNotBlank()) {
+                val fileName = urlOrName.substringAfterLast('/')
+                fileStorageService.delete(fileName)
+            }
+        }
+
+        photoControl.frontUrl = null
+        photoControl.backUrl = null
+        photoControl.leftUrl = null
+        photoControl.rightUrl = null
+        photoControl.interiorFrontUrl = null
+        photoControl.interiorBackUrl = null
+    }
 
     private fun PhotoControl.toDto() = PhotoControlStatusDto(
         id = this.id,
@@ -115,12 +150,12 @@ fun cancelPhotoControl(photoControlId: Long): PhotoControlStatusDto {
         status = this.status,
         deadlineAt = this.deadlineAt,
         photoControlRestricted = this.driver.photoControlRestricted,
-        frontUrl = this.frontUrl,
-        backUrl = this.backUrl,
-        leftUrl = this.leftUrl,
-        rightUrl = this.rightUrl,
-        interiorFrontUrl = this.interiorFrontUrl,
-        interiorBackUrl = this.interiorBackUrl,
+        frontUrl = fileStorageService.buildFullUrl(this.frontUrl),
+        backUrl = fileStorageService.buildFullUrl(this.backUrl),
+        leftUrl = fileStorageService.buildFullUrl(this.leftUrl),
+        rightUrl = fileStorageService.buildFullUrl(this.rightUrl),
+        interiorFrontUrl = fileStorageService.buildFullUrl(this.interiorFrontUrl),
+        interiorBackUrl = fileStorageService.buildFullUrl(this.interiorBackUrl),
         rejectReason = this.rejectReason
     )
 }

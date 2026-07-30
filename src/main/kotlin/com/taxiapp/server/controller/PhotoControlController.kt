@@ -6,6 +6,11 @@ import com.taxiapp.server.service.PhotoControlService
 import org.springframework.http.ResponseEntity
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.core.annotation.AuthenticationPrincipal
+import com.taxiapp.server.service.FileStorageService
+import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
+import org.springframework.web.multipart.MultipartHttpServletRequest
+import org.springframework.web.server.ResponseStatusException
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.web.bind.annotation.*
 
@@ -13,7 +18,8 @@ import org.springframework.web.bind.annotation.*
 @RequestMapping("/api/v1/photo-control")
 class PhotoControlController(
     private val photoControlService: PhotoControlService,
-    private val driverRepository: DriverRepository
+    private val driverRepository: DriverRepository,
+    private val fileStorageService: FileStorageService // 👈 Добавили FileStorageService
 ) {
 
     // Диспетчер: Запросить фотоконтроль
@@ -60,13 +66,37 @@ class PhotoControlController(
         return ResponseEntity.ok(photoControlService.cancelPhotoControl(id))
     }
 
-    // Водитель / WebView: Отправить 6 фото
-    @PostMapping("/driver/{id}/submit")
+    @PostMapping("/driver/{id}/submit", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
     fun submitPhotos(
         @PathVariable id: Long,
         @RequestParam driverId: Long,
-        @RequestBody dto: SubmitPhotoControlDto
+        request: MultipartHttpServletRequest
     ): ResponseEntity<PhotoControlStatusDto> {
+        val savedPhotos = mutableMapOf<String, String>()
+        val allowedExtensions = listOf("jpg", "jpeg", "png", "svg")
+
+        request.fileMap.forEach { (key, file) ->
+            if (!file.isEmpty) {
+                val originalFilename = file.originalFilename ?: "file"
+                val extension = originalFilename.substringAfterLast('.', "").lowercase()
+                
+                if (extension !in allowedExtensions) {
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимий тип файлу: .$extension")
+                }
+                
+                savedPhotos[key] = fileStorageService.storeFile(file)
+            }
+        }
+
+        val dto = SubmitPhotoControlDto(
+            frontUrl = savedPhotos["carFront"] ?: savedPhotos["front"] ?: "",
+            backUrl = savedPhotos["carBack"] ?: savedPhotos["back"] ?: "",
+            leftUrl = savedPhotos["carLeft"] ?: savedPhotos["left"] ?: "",
+            rightUrl = savedPhotos["carRight"] ?: savedPhotos["right"] ?: "",
+            interiorFrontUrl = savedPhotos["carInteriorFront"] ?: savedPhotos["interiorFront"] ?: "",
+            interiorBackUrl = savedPhotos["carInteriorBack"] ?: savedPhotos["interiorBack"] ?: ""
+        )
+
         return ResponseEntity.ok(photoControlService.submitPhotos(driverId, id, dto))
     }
 }

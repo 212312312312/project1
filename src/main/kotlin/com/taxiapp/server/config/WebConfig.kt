@@ -9,11 +9,13 @@ import java.nio.file.Paths
 class WebConfig : WebMvcConfigurer {
 
     override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
-        // Получаем абсолютный путь к папке uploads в корне проекта
         val uploadPath = Paths.get("uploads").toAbsolutePath().toUri().toString()
 
-        // Говорим серверу: "Если видишь ссылку /images/..., ищи файл в папке uploads"
         registry.addResourceHandler("/images/**")
+            .addResourceLocations(uploadPath)
+
+        // 👈 Добавили раздачу папки uploads
+        registry.addResourceHandler("/uploads/**")
             .addResourceLocations(uploadPath)
     }
 }
