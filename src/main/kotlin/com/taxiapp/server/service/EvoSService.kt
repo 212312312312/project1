@@ -40,86 +40,135 @@ class EvoSService(
         return headers
     }
 
-    // --- ОТПРАВКА ЗАКАЗА В EVOS ---
     fun sendOrderToEvoS(order: TaxiOrder): String? {
-        if (!settingsService.isEvosEnabled()) return null
+    if (!settingsService.isEvosEnabled()) return null
 
-        val baseUrl = settingsService.getEvosUrl().trimEnd('/')
-        val url = "$baseUrl/api/weborders"
+    val baseUrl = settingsService.getEvosUrl().trimEnd('/')
+    val url = "$baseUrl/api/weborders"
 
-        // 1. Форматирование комментария и логика скидки/доплаты
-        val fullPrice = order.price // Полная стоимость для водителя EvoS
-        val discount = order.appliedDiscount
-        val clientPays = fullPrice - discount
+    // 1. Имя и телефон клиента
+    val clientPhone = order.client.userPhone ?: "0000000000"
+    val clientName = if (order.client.fullName.isNotBlank()) order.client.fullName else "Пасажир"
 
-        val commentBuilder = StringBuilder()
-        if (discount > 0.0) {
-            commentBuilder.append("[Служба] Клієнт платить: ${clientPays.toInt()}грн, Доплата: ${discount.toInt()}грн.")
-        }
-        if (!order.comment.isNullOrBlank()) {
-            if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
-            commentBuilder.append(order.comment)
-        }
+    // 2. Тип оплаты (0 - Наличные, 1 - Безнал/Карта)
+    val pType = if (order.paymentMethod == "CARD") 1 else 0
 
-        // 2. Формирование маршрута
-        val routeList = mutableListOf<EvoSRoutePointDto>()
-        routeList.add(
-            EvoSRoutePointDto(
-                name = order.fromAddress,
-                lat = order.originLat,
-                lng = order.originLng
-            )
-        )
+    // 3. Предварительный заказ (Заказ на время)
+    val isReservation = order.scheduledAt != null
+    val formattedRequiredTime = order.scheduledAt?.let {
+        it.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+    }
 
-        // Промежуточные остановки
-        order.stops.sortedBy { it.stopOrder }.forEach { stop ->
-            routeList.add(
-                EvoSRoutePointDto(
-                    name = stop.address,
-                    lat = stop.lat,
-                    lng = stop.lng
-                )
-            )
-        }
+    var hasAnimal = false
+        var hasBaggage = false
+        var hasConditioner = false
+        var hasCourier = false
+        var hasWagon = false
 
-        routeList.add(
-            EvoSRoutePointDto(
-                name = order.toAddress,
-                lat = order.destLat,
-                lng = order.destLng
-            )
-        )
+        val extraServiceNames = mutableListOf<String>()
+        val extraCodesList = mutableListOf<String>()
 
-        val clientPhone = order.client.userPhone ?: "0000000000"
-        val clientName = if (order.client.fullName.isNotBlank()) order.client.fullName else "Клієнт"
+        order.selectedServices.forEach { service ->
+            extraServiceNames.add(service.name)
 
-        val body = EvoSCreateOrderRequestDto(
-            userFullName = if (clientName.isBlank()) "Пасажир" else clientName,
-            userPhone = clientPhone,
-            comment = commentBuilder.toString(),
-            addCost = 0.0,
-            route = routeList,
-            taxiColumnId = 0,
-            paymentType = 0 // Наличный расчёт для стороннего водителя
-        )
+            if (!service.evosCode.isNullOrBlank()) {
+                val code = service.evosCode!!
+                extraCodesList.add(code)
 
-        return try {
-            val requestEntity = HttpEntity(body, createHeaders())
-            val response = restTemplate.postForEntity(url, requestEntity, EvoSCreateOrderResponseDto::class.java)
-
-            if (response.statusCode == HttpStatus.OK && response.body != null) {
-                val uid = response.body!!.dispatchingOrderUid
-                logger.info(">>> [EvoS] Заказ #${order.id} успешно перекинут в EvoS. UID: $uid")
-                uid
-            } else {
-                logger.error(">>> [EvoS] Ошибка отправки заказа #${order.id}: ${response.statusCode}")
-                null
+                when (code) {
+                    "ANIMAL" -> hasAnimal = true
+                    "BAGGAGE" -> hasBaggage = true
+                    "CONDIT" -> hasConditioner = true
+                    "COURIER" -> hasCourier = true
+                    "WAGON" -> hasWagon = true
+                }
             }
-        } catch (e: Exception) {
-            logger.error(">>> [EvoS] Исключение при отправке заказа #${order.id} в EvoS: ${e.message}")
+        }
+
+    // 5. Формирование подробного комментария (Скидка + Список услуг + Текст клиента)
+    val fullPrice = order.price
+    val discount = order.appliedDiscount
+    val clientPays = fullPrice - discount
+
+    val commentBuilder = StringBuilder()
+    if (discount > 0.0) {
+        commentBuilder.append("[Служба] Клієнт платить: ${clientPays.toInt()}грн, Доплата: ${discount.toInt()}грн.")
+    }
+    if (extraServiceNames.isNotEmpty()) {
+        if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
+        commentBuilder.append("[Послуги: ${extraServiceNames.joinToString(", ")}].")
+    }
+    if (!order.comment.isNullOrBlank()) {
+        if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
+        commentBuilder.append(order.comment)
+    }
+
+    // 6. Формирование точки А, промежуточных и точки Б
+    val routeList = mutableListOf<EvoSRoutePointDto>()
+    routeList.add(
+        EvoSRoutePointDto(
+            name = order.fromAddress,
+            lat = order.originLat,
+            lng = order.originLng
+        )
+    )
+
+    order.stops.sortedBy { it.stopOrder }.forEach { stop ->
+        routeList.add(
+            EvoSRoutePointDto(
+                name = stop.address,
+                lat = stop.lat,
+                lng = stop.lng
+            )
+        )
+    }
+
+    routeList.add(
+        EvoSRoutePointDto(
+            name = order.toAddress,
+            lat = order.destLat,
+            lng = order.destLng
+        )
+    )
+
+    // 7. Сборка полного DTO
+    val body = EvoSCreateOrderRequestDto(
+        userFullName = clientName,
+        userPhone = clientPhone,
+        requiredTime = formattedRequiredTime,
+        reservation = isReservation,
+        comment = commentBuilder.toString(),
+        addCost = 0.0,
+        orderCost = order.price,
+        wagon = hasWagon,
+        animal = hasAnimal,
+        baggage = hasBaggage,
+        conditioner = hasConditioner,
+        courierDelivery = hasCourier,
+        extraChargeCodes = extraCodesList.ifEmpty { null },
+        route = routeList,
+        taxiColumnId = 0,
+        paymentType = pType
+    )
+
+    // 8. Отправка на бэкенд партнеров
+    return try {
+        val requestEntity = HttpEntity(body, createHeaders())
+        val response = restTemplate.postForEntity(url, requestEntity, EvoSCreateOrderResponseDto::class.java)
+
+        if (response.statusCode == HttpStatus.OK && response.body != null) {
+            val uid = response.body!!.dispatchingOrderUid
+            logger.info(">>> [EvoS] Заказ #${order.id} успешно перекинут в EvoS. UID: $uid")
+            uid
+        } else {
+            logger.error(">>> [EvoS] Ошибка отправки заказа #${order.id}: ${response.statusCode}")
             null
         }
+    } catch (e: Exception) {
+        logger.error(">>> [EvoS] Исключение при отправке заказа #${order.id} в EvoS: ${e.message}")
+        null
     }
+}
 
     // --- ЗАПРОС СОСТОЯНИЯ ЗАКАЗА ---
     fun getOrderState(evosOrderUid: String): EvoSOrderStateResponseDto? {

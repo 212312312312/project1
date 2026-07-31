@@ -72,6 +72,19 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun countByClientIdAndStatusIn(clientId: Long, statuses: List<OrderStatus>): Int
 
+    // Перевірка, чи є у клієнта активні (незавершені) замовлення зі знижкою
+    @Query("""
+        SELECT COUNT(o) > 0 
+        FROM TaxiOrder o 
+        WHERE o.client.id = :clientId 
+          AND o.status NOT IN (:closedStatuses) 
+          AND o.appliedDiscount > 0
+    """)
+    fun hasActiveOrderWithDiscount(
+        @Param("clientId") clientId: Long,
+        @Param("closedStatuses") closedStatuses: List<OrderStatus> = listOf(OrderStatus.COMPLETED, OrderStatus.CANCELLED)
+    ): Boolean
+
     @Modifying(clearAutomatically = true)
     @Transactional
     @Query("""

@@ -61,6 +61,11 @@ data class TaxiOrderDto(
     val transferToCard: Double?,
     
     // Новые поля (оставлены один раз с дефолтными значениями в конце)
+    val isSentToEvos: Boolean = false,
+    val isEvosDriverAssigned: Boolean = false,
+    val evosDriverCarInfo: String? = null,
+    val evosDriverPhone: String? = null,
+
     val currentStopOrder: Int = 0,
     val waypointArrivedAt: LocalDateTime? = null
 ) {
@@ -175,7 +180,11 @@ data class TaxiOrderDto(
         bankCommission = if (order.status == OrderStatus.COMPLETED && order.bankCommissionAmount > 0) order.bankCommissionAmount else null,
         transferToCard = if (order.status == OrderStatus.COMPLETED && order.payoutAmount > 0) order.payoutAmount else null,
 
-        // Передаем параметры ровно один раз
+        isSentToEvos = order.isSentToEvos,
+        isEvosDriverAssigned = order.isEvosDriverAssigned,
+        evosDriverCarInfo = order.evosDriverCarInfo,
+        evosDriverPhone = order.evosDriverPhone,
+
         currentStopOrder = order.currentStopOrder,
         waypointArrivedAt = order.waypointArrivedAt
     )

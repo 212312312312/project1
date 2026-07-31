@@ -4,19 +4,23 @@ import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
+import org.slf4j.LoggerFactory
+import org.springframework.context.annotation.Lazy
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
-import org.springframework.context.annotation.Lazy
 
 @Service
 class OrderAdminService(
     private val orderRepository: TaxiOrderRepository,
     private val driverRepository: DriverRepository,
-    @Lazy private val orderService: OrderService // Добавили @Lazy, чтобы избежать круговой зависимости
+    private val evoSService: EvoSService,
+    @Lazy private val orderService: OrderService
 ) {
+
+    private val logger = LoggerFactory.getLogger(OrderAdminService::class.java)
 
     @Transactional(readOnly = true)
     fun getActiveOrders(): List<TaxiOrderDto> {
@@ -40,6 +44,15 @@ class OrderAdminService(
         
         if (order.status == OrderStatus.COMPLETED) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Нельзя отменить уже выполненный заказ")
+        }
+
+        // Отмена заказа у партнеров (EvoS), если он туда транслировался
+        val evosUid = order.evosOrderUid
+        if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
+            val isCanceledInEvos = evoSService.cancelOrderInEvoS(evosUid)
+            logger.info(">>> [AdminCancel] Отмена заказа $orderId в EvoS (UID: $evosUid). Результат: $isCanceledInEvos")
+            order.isSentToEvos = false
+            order.evosOrderUid = null
         }
 
         order.status = OrderStatus.CANCELLED
@@ -73,6 +86,14 @@ class OrderAdminService(
         val existingOrder = orderRepository.findByDriverAndStatusIn(driver, activeStatuses)
         if (existingOrder != null) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Водитель (ID ${driver.id}) уже выполняет заказ (ID ${existingOrder.id})")
+        }
+
+        // Если диспетчер вручную назначает нашего водителя — снимаем заказ у партнеров
+        val evosUid = order.evosOrderUid
+        if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
+            evoSService.cancelOrderInEvoS(evosUid)
+            order.isSentToEvos = false
+            order.evosOrderUid = null
         }
 
         order.driver = driver

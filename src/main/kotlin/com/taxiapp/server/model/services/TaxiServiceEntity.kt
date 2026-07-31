@@ -10,9 +10,12 @@ class TaxiServiceEntity(
     val id: Long? = null,
 
     val name: String,
-
+    
     // Если 0.0, то бесплатно
     val price: Double = 0.0,
     
-    var isActive: Boolean = true
+    var isActive: Boolean = true,
+
+    @Column(name = "evos_code")
+    var evosCode: String? = null // Например: "ANIMAL", "CONDIT", "BAGGAGE", "COURIER", "BABY_SEAT" 
 )

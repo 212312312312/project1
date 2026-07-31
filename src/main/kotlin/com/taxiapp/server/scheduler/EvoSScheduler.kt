@@ -35,16 +35,21 @@ class EvoSScheduler(
         val delaySeconds = settingsService.getEvosDelaySeconds()
         val thresholdTime = LocalDateTime.now().minusSeconds(delaySeconds)
 
-        // Ищем заказы в поиске, которые еще не перекинуты в EvoS
+        // Раньше стояло filtering (it.scheduledAt == null), из-за чего заказы на время пропускались.
+        // Теперь отсылаем ВСЕ неперекинутые заказы.
         val candidateOrders = orderRepository.findAllByStatus(OrderStatus.REQUESTED)
-            .filter { !it.isSentToEvos && it.createdAt.isBefore(thresholdTime) && it.scheduledAt == null }
+            .filter { !it.isSentToEvos && it.createdAt.isBefore(thresholdTime) }
 
-        for (order in candidateOrders) {
+for (order in candidateOrders) {
             val evosUid = evoSService.sendOrderToEvoS(order)
             if (evosUid != null) {
                 order.evosOrderUid = evosUid
                 order.isSentToEvos = true
-                orderRepository.save(order)
+                val saved = orderRepository.save(order)
+                
+                // 🟢 Мгновенно уведомляем фронтенд, что заказ улетел в EvoS
+                orderService.broadcastOrderChange(saved, "UPDATE")
+
                 logger.info(">>> [EvoSScheduler] Заказ #${order.id} помечен как отправленный в EvoS (UID: $evosUid)")
             }
         }
@@ -63,31 +68,47 @@ class EvoSScheduler(
             val uid = order.evosOrderUid ?: continue
             val evosState = evoSService.getOrderState(uid) ?: continue
 
-            // --- А) Взятие заказа водителем из EvoS ---
-            val hasCarInfo = !evosState.orderCarInfo.isNullOrBlank()
-            val isCarFound = evosState.executionStatus in listOf("CarFound", "Running") || hasCarInfo
+            // --- А) Взятие и изменение статусов движения заказа из EvoS ---
+val hasCarInfo = !evosState.orderCarInfo.isNullOrBlank()
+val isCarFound = evosState.executionStatus in listOf("CarFound", "Running") || hasCarInfo
+val driverExecStatus = evosState.driverExecutionStatus ?: 0
 
-            if (isCarFound && !order.isEvosDriverAssigned) {
-                logger.info(">>> [EvoS] Водитель из EvoS взял заказ #${order.id}! Машина: ${evosState.orderCarInfo}")
-                order.isEvosDriverAssigned = true
-                order.evosDriverCarInfo = evosState.orderCarInfo
-                order.evosDriverPhone = evosState.driverPhone
-                order.status = OrderStatus.ACCEPTED
-                
-                val saved = orderRepository.save(order)
+if (isCarFound) {
+    var updatedStatus = order.status
 
-                // Уведомляем клиента и диспетчера через сокеты
-                orderService.broadcastOrderChange(saved, "UPDATE")
+    // Назначен водитель
+    if (!order.isEvosDriverAssigned) {
+        order.isEvosDriverAssigned = true
+        order.evosDriverCarInfo = evosState.orderCarInfo
+        order.evosDriverPhone = evosState.driverPhone
+        updatedStatus = OrderStatus.ACCEPTED
+    }
 
-                // Пушим уведомление клиенту
-                notificationService.sendOrderStatusToClient(
-                    token = saved.client.fcmToken,
-                    orderId = saved.id!!,
-                    status = saved.status.name,
-                    title = "Водій знайдений (Партнер)",
-                    body = "Замовлення прийнято водієм: ${evosState.orderCarInfo}"
-                )
-            }
+    // Машина подана на адрес (driverExecutionStatus == 2 "По адресу")
+    if (driverExecStatus == 2 && updatedStatus != OrderStatus.DRIVER_ARRIVED) {
+        updatedStatus = OrderStatus.DRIVER_ARRIVED
+    }
+
+    // Поездка началась (driverExecutionStatus == 5 "С пассажиром" или executionStatus == "Running")
+    if ((driverExecStatus == 5 || evosState.executionStatus == "Running") && 
+        updatedStatus != OrderStatus.IN_PROGRESS && updatedStatus != OrderStatus.DRIVER_ARRIVED) {
+        updatedStatus = OrderStatus.IN_PROGRESS
+    }
+
+    if (updatedStatus != order.status) {
+        order.status = updatedStatus
+        val saved = orderRepository.save(order)
+        orderService.broadcastOrderChange(saved, "UPDATE")
+
+        notificationService.sendOrderStatusToClient(
+            token = saved.client.fcmToken,
+            orderId = saved.id!!,
+            status = saved.status.name,
+            title = "Статус замовлення змінено",
+            body = "Поточний статус: ${saved.status.name} (${evosState.orderCarInfo ?: ""})"
+        )
+    }
+}
 
             // --- Б) Синхронизация GPS координат водителя EvoS ---
             val pos = evosState.drivercarPosition ?: evoSService.getDriverPosition(uid)
@@ -108,14 +129,25 @@ class EvoSScheduler(
             // --- В) Завершение или отмена заказа со стороны EvoS ---
             if (evosState.orderIsArchive == true || evosState.executionStatus == "Canceled" || (evosState.closeReason ?: -1) >= 0) {
                 val closeReason = evosState.closeReason ?: -1
-                if (closeReason == 0 || evosState.executionStatus == "Executed") {
-                    order.status = OrderStatus.COMPLETED
-                    order.completedAt = LocalDateTime.now()
-                } else if (closeReason in listOf(1, 2, 3, 4, 6, 7)) {
-                    order.status = OrderStatus.CANCELLED
-                    order.cancellationReason = "Отменено в партнерской сети EvoS (код: $closeReason)"
-                    order.completedAt = LocalDateTime.now()
-                }
+            val execStatus = evosState.executionStatus
+
+            // 1. Успешно выполненный заказ водителем партнеров
+            if (execStatus == "Executed") {
+                logger.info(">>> [EvoS] Заказ #${order.id} успешно выполнен водителем EvoS.")
+                order.status = OrderStatus.COMPLETED
+                order.completedAt = LocalDateTime.now()
+                val saved = orderRepository.save(order)
+                orderService.broadcastOrderChange(saved, "REMOVE")
+            } 
+            // 2. Отмена заказа у партнеров (согласно партнерскому протоколу: close_reason >= 0 или executionStatus == "Canceled")
+            else if (execStatus == "Canceled" || closeReason >= 0 || evosState.orderIsArchive == true) {
+                logger.info(">>> [EvoS] Заказ #${order.id} отменен в сеть EvoS (close_reason: $closeReason, status: $execStatus).")
+                order.status = OrderStatus.CANCELLED
+                order.cancellationReason = "Скасовано в партнерській мережі EvoS (код: $closeReason)"
+                order.completedAt = LocalDateTime.now()
+                val saved = orderRepository.save(order)
+                orderService.broadcastOrderChange(saved, "REMOVE")
+            }
                 val saved = orderRepository.save(order)
                 orderService.broadcastOrderChange(saved, "REMOVE")
             }

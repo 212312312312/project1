@@ -14,11 +14,12 @@ data class EvoSCreateOrderRequestDto(
     @JsonProperty("user_full_name") val userFullName: String,
     @JsonProperty("user_phone") val userPhone: String,
     @JsonProperty("client_sub_card") val clientSubCard: String? = null,
-    @JsonProperty("required_time") val requiredTime: String? = null,
-    @JsonProperty("reservation") val reservation: Boolean = false,
+    @JsonProperty("required_time") val requiredTime: String? = null, // ISO дата подачи
+    @JsonProperty("reservation") val reservation: Boolean = false,    // true для заказов на время
     @JsonProperty("route_address_entrance_from") val routeAddressEntranceFrom: String? = null,
     @JsonProperty("comment") val comment: String? = null,
     @JsonProperty("add_cost") val addCost: Double = 0.0,
+    @JsonProperty("order_cost") val orderCost: Double? = null,
     @JsonProperty("wagon") val wagon: Boolean = false,
     @JsonProperty("minibus") val minibus: Boolean = false,
     @JsonProperty("premium") val premium: Boolean = false,
@@ -30,9 +31,10 @@ data class EvoSCreateOrderRequestDto(
     @JsonProperty("route_undefined") val routeUndefined: Boolean = false,
     @JsonProperty("terminal") val terminal: Boolean = false,
     @JsonProperty("receipt") val receipt: Boolean = false,
+    @JsonProperty("extra_charge_codes") val extraChargeCodes: List<String>? = null,
     @JsonProperty("route") val route: List<EvoSRoutePointDto>,
     @JsonProperty("taxiColumnId") val taxiColumnId: Int = 0,
-    @JsonProperty("payment_type") val paymentType: Int? = 0
+    @JsonProperty("payment_type") val paymentType: Int? = 0 // 0 - Cash, 1 - Card
 )
 
 data class EvoSCreateOrderResponseDto(
@@ -57,11 +59,16 @@ data class EvoSOrderStateResponseDto(
     @JsonProperty("currency") val currency: String?,
     @JsonProperty("order_car_info") val orderCarInfo: String?,
     @JsonProperty("driver_phone") val driverPhone: String?,
+    @JsonProperty("required_time") val requiredTime: String?, // <-- ДОБАВЛЕНО
     @JsonProperty("close_reason") val closeReason: Int?,
+    @JsonProperty("cancel_reason_comment") val cancelReasonComment: String?, // <-- ДОБАВЛЕНО
     @JsonProperty("execution_status") val executionStatus: String?,
     @JsonProperty("driver_execution_status") val driverExecutionStatus: Int?,
     @JsonProperty("order_is_archive") val orderIsArchive: Boolean?,
-    @JsonProperty("drivercar_position") val drivercarPosition: EvoSDriverCarPositionDto?
+    @JsonProperty("drivercar_position") val drivercarPosition: EvoSDriverCarPositionDto?,
+    @JsonProperty("crew_average_rating") val crewAverageRating: Double?, // <-- ДОБАВЛЕНО
+    @JsonProperty("rating") val rating: Int?, // <-- ДОБАВЛЕНО
+    @JsonProperty("rating_comment") val ratingComment: String? // <-- ДОБАВЛЕНО
 )
 
 // --- ОТМЕНА ЗАКАЗА ---
