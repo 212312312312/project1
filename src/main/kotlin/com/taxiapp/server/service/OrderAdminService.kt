@@ -7,6 +7,7 @@ import com.taxiapp.server.repository.TaxiOrderRepository
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Lazy
 import org.springframework.http.HttpStatus
+import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
@@ -17,6 +18,8 @@ class OrderAdminService(
     private val orderRepository: TaxiOrderRepository,
     private val driverRepository: DriverRepository,
     private val evoSService: EvoSService,
+    private val notificationService: NotificationService,
+    private val messagingTemplate: SimpMessagingTemplate,
     @Lazy private val orderService: OrderService
 ) {
 
@@ -46,7 +49,7 @@ class OrderAdminService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Нельзя отменить уже выполненный заказ")
         }
 
-        // Отмена заказа у партнеров (EvoS), если он туда транслировался
+        // 1. Отмена заказа у партнеров (EvoS), если он туда транслировался
         val evosUid = order.evosOrderUid
         if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
             val isCanceledInEvos = evoSService.cancelOrderInEvoS(evosUid)
@@ -55,15 +58,32 @@ class OrderAdminService(
             order.evosOrderUid = null
         }
 
+        // 2. Обновляем статус заказа
         order.status = OrderStatus.CANCELLED
+        order.cancellationReason = "Скасовано диспетчером"
         order.completedAt = LocalDateTime.now() 
         
         val updatedOrder = orderRepository.save(order)
+        val dto = TaxiOrderDto(updatedOrder)
 
-        // Оповещаем водителей через WebSocket
+        // 3. 🟢 WEBSOCKET ПАССАЖИРУ: транслируем отмену на персональный топик заказа
+        messagingTemplate.convertAndSend("/topic/orders/${updatedOrder.id}", dto)
+
+        // 4. 🟢 WEBSOCKET ДИСПЕТЧЕРУ И ЭФИРУ: убираем из активных списков
         orderService.broadcastOrderChange(updatedOrder, "REMOVE")
 
-        return TaxiOrderDto(updatedOrder)
+        // 5. 🟢 FCM PUSH ПАССАЖИРУ: мгновенно закрывает UI приложения
+        if (!updatedOrder.client.fcmToken.isNullOrBlank()) {
+            notificationService.sendOrderStatusToClient(
+                token = updatedOrder.client.fcmToken,
+                orderId = updatedOrder.id!!,
+                status = OrderStatus.CANCELLED.name,
+                title = "Замовлення скасовано",
+                body = "Диспетчер скасував замовлення."
+            )
+        }
+
+        return dto
     }
 
     @Transactional
@@ -100,10 +120,25 @@ class OrderAdminService(
         order.status = OrderStatus.ACCEPTED 
 
         val updatedOrder = orderRepository.save(order)
-        
-        // Удаляем из общего эфира, так как водитель назначен
-        orderService.broadcastOrderChange(updatedOrder, "REMOVE")
+        val dto = TaxiOrderDto(updatedOrder)
 
-        return TaxiOrderDto(updatedOrder)
+        // 1. 🟢 WEBSOCKET ПАССАЖИРУ: обновляем состояние поездки на экране приложения
+        messagingTemplate.convertAndSend("/topic/orders/${updatedOrder.id}", dto)
+        
+        // 2. 🟢 WEBSOCKET ДИСПЕТЧЕРУ И ЭФИРУ
+        orderService.broadcastOrderChange(updatedOrder, "UPDATE")
+
+        // 3. 🟢 FCM PUSH ПАССАЖИРУ: оповещаем о назначении водителя
+        if (!updatedOrder.client.fcmToken.isNullOrBlank()) {
+            notificationService.sendOrderStatusToClient(
+                token = updatedOrder.client.fcmToken,
+                orderId = updatedOrder.id!!,
+                status = OrderStatus.ACCEPTED.name,
+                title = "Водія призначено",
+                body = "Диспетчер призначив водія ${driver.fullName}. Авто прямує до вас."
+            )
+        }
+
+        return dto
     }
 }

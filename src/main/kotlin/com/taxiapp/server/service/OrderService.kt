@@ -1019,21 +1019,24 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
     }
 
     @Transactional
-    fun cancelOrder(user: User, orderId: Long, reasonText: String? = null): TaxiOrderDto {
-        val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-        if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+fun cancelOrder(user: User, orderId: Long, reasonText: String? = null): TaxiOrderDto {
+    val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+    if (order.client.id != user.id) throw ResponseStatusException(HttpStatus.FORBIDDEN)
 
-        // 🟢 ДОБАВЛЕНО: Если заказ был перекинут партнерам, отменяем его на их бэкенде!
-        val evosUid = order.evosOrderUid
-        if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
-            evoSService.cancelOrderInEvoS(evosUid)
-            order.isSentToEvos = false
-            order.evosOrderUid = null
+    // 🟢 Если заказ был перекинут партнерам, отменяем его на их бэкенде через PUT /api/weborders/cancel/<uid>
+    val evosUid = order.evosOrderUid
+    if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
+        val cancelledInEvos = evoSService.cancelOrderInEvoS(evosUid)
+        if (!cancelledInEvos) {
+            logger.warn(">>> [EvoS] Партнер вернул 0 или ошибку при попытке отмены заказа $evosUid")
         }
+        order.isSentToEvos = false
+        order.evosOrderUid = null
+    }
 
-        order.driver?.let { drv ->
-            redisTemplate.opsForHash<String, Any>().delete("orders:active_drivers", drv.id.toString())
-        }
+    order.driver?.let { drv ->
+        redisTemplate.opsForHash<String, Any>().delete("orders:active_drivers", drv.id.toString())
+    }
 
         // --- ЛОГИКА РАЗМОРОЗКИ ИЛИ СНЯТИЯ МИНИМАЛКИ ПРИ ОТМЕНЕ КЛИЕНТОМ ---
         if (order.paymentMethod == "CARD" && order.authorizedAmount > 0.0) {
@@ -1172,76 +1175,80 @@ fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrder
     
     @Transactional
 fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
-    // 1. ПРОВЕРКА ФОТОКОНТРОЛЯ (Блокировка приема заказов)
+    // 1. ПРОВЕРКА ФОТОКОНТРОЛЯ И СОСТОЯНИЯ ВОДИТЕЛЯ
     if (driver.photoControlRestricted) {
         throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
     }
-
     if (!driver.isOnline) {
         throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
     }
-    if (driver.activityScore <= 0) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність.")
-
-    val order = orderRepository.findById(orderId).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-        
-        // Логика для обычных предложений (OFFERING)
-        if (order.status == OrderStatus.OFFERING) {
-            if (order.offeredDriver?.id != driver.id) throw ResponseStatusException(HttpStatus.CONFLICT, "Зайнято")
-            
-            // Очистка таймаута из Redis
-            redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
-        } 
-        // Логика для запланированных (SCHEDULED)
-        else if (order.status == OrderStatus.SCHEDULED) {
-            // Если у заказа уже есть водитель
-            if (order.driver != null) throw ResponseStatusException(HttpStatus.CONFLICT, "Вже має водія")
-        }
-        else if (order.status != OrderStatus.REQUESTED) {
-            throw ResponseStatusException(HttpStatus.CONFLICT, "Замовлення вже зайняте")
-        }
-        val evosUid = order.evosOrderUid
-if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
-    evoSService.cancelOrderInEvoS(evosUid)
-    order.isSentToEvos = false
-    order.evosOrderUid = null
-}
-        // НАЗНАЧАЕМ ВОДИТЕЛЯ
-        order.driver = driver
-        order.offeredDriver = null
-        order.acceptedAt = LocalDateTime.now()
-        
-        // Если это запланированный заказ -> статус НЕ меняем (остается SCHEDULED)
-        // Если это обычный заказ -> ставим ACCEPTED
-        if (order.status != OrderStatus.SCHEDULED) {
-            order.status = OrderStatus.ACCEPTED
-        } else {
-            logger.info("Driver ${driver.id} reserved scheduled order ${order.id}")
-        }
-        
-        // Списываем поездки "Домой" (если надо) ...
-        
-        val saved = orderRepository.save(order)
-
-        // 🔥 ВНЕДРЕНО: Якщо замовлення активне (не SCHEDULED), додаємо маппинг водія до Redis Hash для трекингу
-        if (saved.status != OrderStatus.SCHEDULED) {
-            redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), saved.uuid.toString())
-        }
-
-        broadcastOrderChange(saved, "ADD") // Обновляем диспетчера и водителя
-
-        // Отправка Push-уведомления клиенту при принятии заказа водителем
-        if (saved.status == OrderStatus.ACCEPTED) {
-            notificationService.sendOrderStatusToClient(
-                token = saved.client.fcmToken,
-                orderId = saved.id!!,
-                status = saved.status.name, // "ACCEPTED"
-                title = "Водій знайден",
-                body = "Водій прийняв ваше замовлення та прямує до вас."
-            )
-        }
-        
-        return TaxiOrderDto(saved)
+    if (driver.activityScore <= 0) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Низька активність.")
     }
+
+    val order = orderRepository.findById(orderId)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+    // 2. ПРОВЕРКА СТАТУСА И ДОСТУПНОСТИ ЗАКАЗА
+    if (order.status == OrderStatus.OFFERING) {
+        if (order.offeredDriver?.id != driver.id) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "Зайнято")
+        }
+        redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
+    } else if (order.status == OrderStatus.SCHEDULED) {
+        if (order.driver != null) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "Вже має водія")
+        }
+    } else if (order.status != OrderStatus.REQUESTED) {
+        throw ResponseStatusException(HttpStatus.CONFLICT, "Замовлення вже зайняте")
+    }
+
+    // 3. 🟢 ОТОЗВАТЬ ИЗ СЕТИ EVOS: наш водитель забрал заказ быстрее партнера
+    val evosUid = order.evosOrderUid
+    if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
+        logger.info(">>> [OrderService] Водитель #${driver.id} принимает заказ #${order.id}. Отзываем из EvoS (UID: $evosUid)...")
+        val cancelledInEvos = evoSService.cancelOrderInEvoS(evosUid)
+        if (!cancelledInEvos) {
+            logger.warn(">>> [OrderService] EvoS не подтвердил отмену $evosUid, но заказ перехвачен нашим водителем.")
+        }
+        order.isSentToEvos = false
+        order.evosOrderUid = null
+    }
+
+    // 4. НАЗНАЧАЕМ НАШЕГО ВОДИТЕЛЯ
+    order.driver = driver
+    order.offeredDriver = null
+    order.acceptedAt = LocalDateTime.now()
+
+    if (order.status != OrderStatus.SCHEDULED) {
+        order.status = OrderStatus.ACCEPTED
+    } else {
+        logger.info("Driver ${driver.id} reserved scheduled order ${order.id}")
+    }
+
+    val saved = orderRepository.save(order)
+
+    // 5. ДОБАВЛЯЕМ В REDIS ТРЕКИНГ ДЛЯ АКТИВНОГО ВОДИТЕЛЯ
+    if (saved.status != OrderStatus.SCHEDULED) {
+        redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), saved.uuid.toString())
+    }
+
+    // ТРАНСЛЯЦИЯ В СОКЕТЫ ДИСПЕТЧЕРСКОЙ И ПРИЛОЖЕНИЯ
+    broadcastOrderChange(saved, "UPDATE")
+
+    // 6. PUSH-УВЕДОМЛЕНИЕ ПАССАЖИРУ
+    if (saved.status == OrderStatus.ACCEPTED) {
+        notificationService.sendOrderStatusToClient(
+            token = saved.client.fcmToken,
+            orderId = saved.id!!,
+            status = saved.status.name,
+            title = "Водій знайдено",
+            body = "Водій прийняв ваше замовлення та прямує до вас."
+        )
+    }
+
+    return TaxiOrderDto(saved)
+}
 
     @Transactional
     fun driverArrived(driver: Driver, orderId: Long): TaxiOrderDto {
