@@ -76,12 +76,13 @@ class SecurityConfig(
                     ).permitAll()
 
                     // 2. Статические ресурсы и WebView-страницы (React build)
-                    .requestMatchers(
-                        "/", "/index.html", "/driver-register", "/driver/**", "/login", "/dashboard/**", 
-                        "/assets/**", "/favicon.ico", "/*.png", "/*.jpg", "/*.svg", 
-                        "/*.json", "/*.js", "/*.css", "/images/**", "/uploads/**", "/add-car/**",
-                        "/photo-control/**", "/photo-upload/**"
-                    ).permitAll()
+.requestMatchers(
+    "/", "/index.html", "/driver-register", "/driver-register/**", "/driver/**", "/login", "/dashboard/**", 
+    "/assets/**", "/favicon.ico", "/*.png", "/*.jpg", "/*.svg", 
+    "/*.json", "/*.js", "/*.css", "/images/**", "/uploads/**", 
+    "/add-car", "/add-car/**", // 👈 Добавили точный /add-car
+    "/photo-control/**", "/photo-upload/**"
+).permitAll()
 
                     // 3. Доступ по ролям
                     .requestMatchers("/api/v1/payments/**").hasAnyAuthority(

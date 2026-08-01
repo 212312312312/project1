@@ -152,10 +152,10 @@ class DriverAdminController(
     // --- РОБОТА З АВТОМОБІЛЯМИ ---
 
     @GetMapping("/cars/pending")
-    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
-    fun getPendingCars(): List<com.taxiapp.server.model.user.Car> {
-        return driverAdminService.getPendingCars()
-    }
+@PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
+fun getPendingCars(): List<DriverAdminService.PendingCarDto> {
+    return driverAdminService.getPendingCars()
+}
 
     @PostMapping("/cars/{id}/approve")
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")

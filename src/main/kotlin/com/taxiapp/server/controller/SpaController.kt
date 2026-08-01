@@ -11,7 +11,9 @@ class SpaController {
         "/", 
         "/login", 
         "/driver-register", 
+        "/driver-register/**",
         "/driver/**",
+        "/add-car",       // 👈 ДОБАВЛЕНО: точное совпадение для /add-car
         "/add-car/**",
         "/photo-control/**",
         "/photo-upload/**",

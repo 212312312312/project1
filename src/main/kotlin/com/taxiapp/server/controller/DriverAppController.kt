@@ -509,7 +509,13 @@ fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
         driver.car = car
         driverRepository.save(driver)
 
-        return ResponseEntity.ok(mapOf("message" to "Активне авто змінено на ${car.make} ${car.model}"))
+        // Авто-перерасчет доступных тарифов для выбранного автомобиля
+        driverService.updateDriverAllowedTariffsForCar(driver, car)
+
+        return ResponseEntity.ok(mapOf(
+            "message" to "Активне авто змінено на ${car.make} ${car.model}. Доступні тарифи оновлено.",
+            "allowedTariffs" to driver.allowedTariffs.map { it.name }
+        ))
     }
     
     private fun getDriverFromUser(userDetails: UserDetails): Driver {

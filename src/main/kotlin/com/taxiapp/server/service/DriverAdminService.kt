@@ -159,36 +159,42 @@ private val carModelRepository: CarModelRepository,
     }
 
     @Transactional(readOnly = true)
-    fun getPendingCars(): List<Car> {
-        return carRepository.findAll().filter { it.status == com.taxiapp.server.model.enums.CarStatus.PENDING }
-    }
+fun getPendingCars(): List<PendingCarDto> {
+    return carRepository.findAll()
+        .filter { it.status == com.taxiapp.server.model.enums.CarStatus.PENDING }
+        .map { PendingCarDto(it) }
+}
 
     @Transactional
-    fun approveCar(carId: Long): MessageResponse {
-        val car = carRepository.findById(carId)
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Авто не знайдено") }
-        
-        car.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
-        car.rejectionReason = null 
-        
-        val driver = car.driver!!
-        
-        if (driver.car == null) {
-            driver.car = car
-            driverRepository.save(driver)
-        }
-
-        carRepository.save(car)
-
-        val notification = mapOf(
-            "type" to "CAR_APPROVED",
-            "message" to "Ваше авто ${car.make} ${car.model} схвалено! Тепер воно доступне у списку.",
-            "carId" to car.id
-        )
-        messagingTemplate.convertAndSend("/topic/driver/${driver.id}", notification)
-        
-        return MessageResponse("Авто успішно схвалено!")
+fun approveCar(carId: Long): MessageResponse {
+    val car = carRepository.findById(carId)
+        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Авто не знайдено") }
+    
+    car.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
+    car.rejectionReason = null 
+    
+    val driver = car.driver!!
+    
+    if (driver.car == null) {
+        driver.car = car
     }
+    carRepository.save(car)
+
+    // Если одобренное авто является текущим активным — пересчитываем тарифы
+    if (driver.car?.id == car.id) {
+        // Пересчет разрешенных тарифов по классификатору
+        approveDriverRegistration(driver.id!!, null)
+    }
+
+    val notification = mapOf(
+        "type" to "CAR_APPROVED",
+        "message" to "Ваше авто ${car.make} ${car.model} схвалено! Тепер воно доступне у списку.",
+        "carId" to car.id
+    )
+    messagingTemplate.convertAndSend("/topic/driver/${driver.id}", notification)
+    
+    return MessageResponse("Авто успішно схвалено!")
+}
 
     @Transactional
     fun rejectCar(carId: Long, reason: String): MessageResponse {
@@ -469,4 +475,78 @@ val model = brand?.let { b ->
         val savedDriver = driverRepository.save(driver)
         return DriverDto(savedDriver)
     }
+
+    // --- DTO ДЛЯ ЗАЯВОК НА АВТО В АДМИНКЕ ---
+
+data class DriverSummaryDto(
+    val id: Long?,
+    val fullName: String?,
+    val phoneNumber: String?
+)
+
+data class PendingCarDto(
+    val id: Long,
+    val make: String,
+    val model: String,
+    val color: String,
+    val plateNumber: String,
+    val vin: String?,
+    val year: Int,
+    val carType: String?,
+    val status: String,
+    val rejectionReason: String?,
+    val driver: DriverSummaryDto?,
+    val photoUrl: String?,
+    val techPassportFront: String?,
+    val techPassportBack: String?,
+    val insurancePhoto: String?,
+    val photoFront: String?,
+    val photoBack: String?,
+    val photoLeft: String?,
+    val photoRight: String?,
+    val photoSeatsFront: String?,
+    val photoSeatsBack: String?,
+    val photoTrunk: String?
+) {
+    constructor(car: Car) : this(
+        id = car.id,
+        make = car.make,
+        model = car.model,
+        color = car.color,
+        plateNumber = car.plateNumber,
+        vin = car.vin,
+        year = car.year,
+        carType = car.carType,
+        status = car.status.name,
+        rejectionReason = car.rejectionReason,
+        driver = car.driver?.let { 
+            DriverSummaryDto(
+                id = it.id, 
+                fullName = it.fullName ?: "Водій", 
+                phoneNumber = it.userPhone ?: "Не вказано"
+            ) 
+        },
+        photoUrl = generateUrl(car.photoUrl),
+        techPassportFront = generateUrl(car.techPassportFront),
+        techPassportBack = generateUrl(car.techPassportBack),
+        insurancePhoto = generateUrl(car.insurancePhoto),
+        photoFront = generateUrl(car.photoFront),
+        photoBack = generateUrl(car.photoBack),
+        photoLeft = generateUrl(car.photoLeft),
+        photoRight = generateUrl(car.photoRight),
+        photoSeatsFront = generateUrl(car.photoSeatsFront),
+        photoSeatsBack = generateUrl(car.photoSeatsBack),
+        photoTrunk = generateUrl(car.photoTrunk)
+    )
+
+    companion object {
+        private fun generateUrl(filename: String?): String? {
+            if (filename.isNullOrBlank()) return null
+            return org.springframework.web.servlet.support.ServletUriComponentsBuilder.fromCurrentContextPath()
+                .path("/images/")
+                .path(filename)
+                .toUriString()
+        }
+    }
+}
 }

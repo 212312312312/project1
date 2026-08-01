@@ -2,6 +2,11 @@ package com.taxiapp.server.service
 
 import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.DriverSearchSettingsDto
+import com.taxiapp.server.model.user.Car
+import com.taxiapp.server.repository.CarBrandRepository
+import com.taxiapp.server.repository.CarModelRepository
+import com.taxiapp.server.repository.CarTariffRepository
+import com.taxiapp.server.service.CarClassifierService
 import com.taxiapp.server.dto.driver.DriverSearchStateDto
 import com.taxiapp.server.dto.driver.UpdateDisabilityRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
@@ -42,9 +47,12 @@ class DriverService(
     // Находим конструктор DriverService и добавляем туда:
     private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository,
     private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate,
-    private val redisTemplateAny: RedisTemplate<String, Any> // ДОБАВЛЕНО
+    private val redisTemplateAny: RedisTemplate<String, Any>,
+    private val carBrandRepository: CarBrandRepository,
+    private val carModelRepository: CarModelRepository,
+    private val carClassifierService: CarClassifierService,
+    private val tariffRepository: CarTariffRepository
 ) {
-
 
     @Transactional(readOnly = true)
     fun getDriverProfile(user: User): DriverDto {
@@ -129,6 +137,59 @@ class DriverService(
             }
         }
     }
+
+    @Transactional
+fun updateDriverAllowedTariffsForCar(driver: Driver, car: Car) {
+    val cityName = driver.city ?: "Київ"
+    
+    val brand = carBrandRepository.findAll()
+        .find { it.name.equals(car.make, ignoreCase = true) }
+
+    val model = brand?.let { b ->
+        carModelRepository.findAll()
+            .filter { it.brand.id == b.id }
+            .find { it.name.equals(car.model, ignoreCase = true) }
+    }
+
+    val newAllowed = if (model != null) {
+        val eval = carClassifierService.evaluateCar(
+            com.taxiapp.server.dto.classifier.EvaluateCarRequest(
+                cityName = cityName,
+                modelId = model.id,
+                year = car.year
+            )
+        )
+
+        tariffRepository.findAll().filter { tariff ->
+            eval.allowedTariffs.any { allowed -> 
+                tariff.name.contains(allowed, ignoreCase = true) || 
+                (allowed == "STANDARD" && tariff.name.contains("Стандарт", ignoreCase = true)) ||
+                (allowed == "COMFORT" && tariff.name.contains("Комфорт", ignoreCase = true)) ||
+                (allowed == "BUSINESS" && tariff.name.contains("Бізнес", ignoreCase = true))
+            }
+        }.toMutableSet()
+    } else {
+        tariffRepository.findAll().filter { 
+            it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true) 
+        }.toMutableSet()
+    }
+
+    val finalAllowed = if (newAllowed.isEmpty()) tariffRepository.findAll().toMutableSet() else newAllowed
+
+    // Обновляем разрешенные тарифы
+    driver.allowedTariffs = finalAllowed
+    
+    // Очищаем из выбранных тарифов те, которые больше недоступны для нового авто
+    val allowedIds = finalAllowed.map { it.id }.toSet()
+    driver.selectedTariffs.retainAll { it.id in allowedIds }
+    
+    // Если ничего не осталось выбранным, включаем все доступные по умолчанию
+    if (driver.selectedTariffs.isEmpty()) {
+        driver.selectedTariffs.addAll(finalAllowed)
+    }
+
+    driverRepository.save(driver)
+}
 
     @Transactional
     fun selectMainCard(driverId: Long, cardId: Long) {
