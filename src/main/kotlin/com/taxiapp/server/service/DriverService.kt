@@ -263,7 +263,7 @@ fun updateDriverAllowedTariffsForCar(driver: Driver, car: Car) {
                 redisTemplateAny.opsForGeo().add(geoKey, Point(updatedDriver.longitude!!, updatedDriver.latitude!!), driverIdStr)
             }
         } else {
-            // СТД: Оставляем водителя в GEO-индексе, чтобы планировщик его видел, но меняем статус в мете на false
+            // СТД: Оставляем мету, но меняем isOnline на "false"
             val existingMeta = redisTemplateAny.opsForHash<String, Any>().get(metaKey, driverIdStr) as? Map<*, *>
             val updatedMeta = (existingMeta?.toMutableMap() ?: mutableMapOf()).apply {
                 this["fullName"] = updatedDriver.fullName ?: "Водій"
@@ -273,6 +273,9 @@ fun updateDriverAllowedTariffsForCar(driver: Driver, car: Car) {
                 this["isOnline"] = "false"
             }
             redisTemplateAny.opsForHash<String, Any>().put(metaKey, driverIdStr, updatedMeta)
+
+            // 🔥 ДОБАВЛЕНО: Явно удаляем водителя из гео-индекса Redis при выходе в офлайн
+            redisTemplateAny.opsForGeo().remove(geoKey, driverIdStr)
         }
 
         messagingTemplate.convertAndSend("/topic/admin/drivers", driverDto)
