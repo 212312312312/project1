@@ -79,7 +79,8 @@ class DriverLocationService(
             "isOnline" to isOnline.toString(),
             "lat" to request.lat.toString(),
             "lng" to request.lng.toString(),
-            "bearing" to newBearing.toString()
+            "bearing" to newBearing.toString(),
+            "updatedAt" to System.currentTimeMillis().toString() // 👈 Добавили время последнего отклика
         )
         redisTemplate.opsForHash<String, Any>().put(META_KEY, driverId.toString(), updatedMeta)
 
@@ -174,33 +175,41 @@ class DriverLocationService(
         }
     }
 
-    fun getOnlineDriversForMap(): List<DriverLocationDto> {
-        val center = Point(30.5234, 50.4501) 
-        val circle = Circle(center, Distance(100.0, Metrics.KILOMETERS))
-        val args = RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs().includeCoordinates()
-        val geoResults = redisTemplate.opsForGeo().radius(GEO_KEY, circle, args) ?: return emptyList()
+    fun getAllActiveDriversForMap(): List<DriverLocationDto> {
+        val keys = redisTemplate.opsForHash<String, Any>().keys(META_KEY)
+        if (keys.isEmpty()) return emptyList()
 
-        val driverIds = geoResults.content.map { it.content.name.toString() }
-        if (driverIds.isEmpty()) return emptyList()
-
+        val driverIds = keys.map { it.toString() }
         val metaList = redisTemplate.opsForHash<String, Any>().multiGet(META_KEY, driverIds)
+        val now = System.currentTimeMillis()
 
-        return geoResults.content.mapIndexedNotNull { index, result ->
-            val driverIdStr = result.content.name.toString()
-            val point = result.content.point
+        return driverIds.mapIndexedNotNull { index, driverIdStr ->
             val meta = metaList.getOrNull(index) as? Map<*, *> ?: return@mapIndexedNotNull null
 
+            val latStr = meta["lat"] as? String ?: return@mapIndexedNotNull null
+            val lngStr = meta["lng"] as? String ?: return@mapIndexedNotNull null
+            val lat = latStr.toDoubleOrNull() ?: return@mapIndexedNotNull null
+            val lng = lngStr.toDoubleOrNull() ?: return@mapIndexedNotNull null
+
+            // 🛡️ Защита от "зависших" водителей: если от мобилки не было координат > 60 секунд, очищаем кэш
+            val lastUpdateStr = meta["updatedAt"] as? String
+            val lastUpdate = lastUpdateStr?.toLongOrNull() ?: 0L
+            if (lastUpdate > 0 && (now - lastUpdate > 60_000)) {
+                redisTemplate.opsForGeo().remove(GEO_KEY, driverIdStr)
+                redisTemplate.opsForHash<String, Any>().delete(META_KEY, driverIdStr)
+                return@mapIndexedNotNull null
+            }
+
             val isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false
-            if (!isOnline) return@mapIndexedNotNull null
 
             DriverLocationDto(
                 driverId = driverIdStr.toLong(),
                 fullName = meta["fullName"] as? String ?: "Водій",
-                lat = point.y,
-                lng = point.x,
-                bearing = (meta["bearing"] as? String)?.toFloat() ?: 0f,
+                lat = lat,
+                lng = lng,
+                bearing = (meta["bearing"] as? String)?.toFloatOrNull() ?: 0f,
                 status = meta["status"] as? String ?: "MANUAL",
-                isOnline = true,
+                isOnline = isOnline, // 👈 Возвращаем реальный статус (true - 🟢, false - ⚪)
                 carModel = meta["carModel"] as? String ?: "Не вказано",
                 carColor = meta["carColor"] as? String ?: ""
             )

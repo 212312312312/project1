@@ -11,14 +11,12 @@ class DriverLocationScheduler(
     private val messagingTemplate: SimpMessagingTemplate
 ) {
 
-    @Scheduled(fixedRate = 3000) // 🚀 Каждые 3 секунды транслируем координаты активных водителей на карту
+    @Scheduled(fixedRate = 3000) // 🚀 Каждые 3 секунды транслируем координаты всех активных водителей приложения
     fun broadcastDriversLocationToAdmin() {
         try {
-            val drivers = driverLocationService.getOnlineDriversForMap()
-            if (drivers.isNotEmpty()) {
-                // Отправляем массив координат диспетчерам, подписанным на этот топик
-                messagingTemplate.convertAndSend("/topic/admin/drivers-location", drivers)
-            }
+            val drivers = driverLocationService.getAllActiveDriversForMap()
+            // 🛡️ Транслируем ВСЕГДА (даже если список пустой []), чтобы диспетчерская вовремя обнуляла счетчики и убирала маркеры
+            messagingTemplate.convertAndSend("/topic/admin/drivers-location", drivers)
         } catch (e: Exception) {
             println(">>> Ошибка трансляции координат в WebSocket диспетчеров: ${e.message}")
         }
