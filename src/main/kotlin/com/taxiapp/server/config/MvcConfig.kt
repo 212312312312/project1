@@ -1,38 +1,38 @@
 package com.taxiapp.server.config
 
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Configuration
 import org.springframework.web.servlet.config.annotation.CorsRegistry
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
-import java.nio.file.Paths
 
 @Configuration
 class MvcConfig : WebMvcConfigurer {
 
-    /**
-     * Настройка CORS.
-     */
+    @Value("\${app.cors.allowed-origins:https://admin.unitua.com,http://localhost:5173,http://localhost:3000}")
+    private lateinit var allowedOriginsStr: String
+
     override fun addCorsMappings(registry: CorsRegistry) {
+        val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
+        
         registry.addMapping("/**")
-            .allowedOrigins("http://localhost:5173", "http://localhost:3000") // Разрешаем фронтенд
+            .allowedOrigins(*origins)
             .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
             .allowedHeaders("*")
             .allowCredentials(true)
     }
 
-    /**
-     * Настраиваем раздачу файлов.
-     */
     override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
-        // ИСПРАВЛЕНО: Используем чистый относительный префикс "file: папка/" с закрывающим слэшем
-        // Это гарантирует работу и на Windows, и на Linux без багов путей
+        val cachePeriod = java.time.Duration.ofDays(7)
+
         registry.addResourceHandler("/images/**")
             .addResourceLocations("file:uploads/")
+            .setCacheControl(org.springframework.http.CacheControl.maxAge(cachePeriod))
 
         registry.addResourceHandler("/uploads/**")
             .addResourceLocations("file:uploads/")
+            .setCacheControl(org.springframework.http.CacheControl.maxAge(cachePeriod))
             
-        // Раздаем статику React (если фронт встроен в jar)
         registry.addResourceHandler("/**")
             .addResourceLocations("classpath:/static/")
     }

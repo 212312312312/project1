@@ -2,6 +2,7 @@ package com.taxiapp.server.service
 
 import com.taxiapp.server.model.setting.AppSetting
 import com.taxiapp.server.repository.AppSettingRepository
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
 import java.io.File
@@ -11,14 +12,17 @@ import java.nio.file.StandardCopyOption
 
 @Service
 class SettingsService(
-    private val repository: AppSettingRepository
+    private val repository: AppSettingRepository,
+    @Value("\${evos.base-url:http://127.0.0.1:8080/api}") private val defaultEvosUrl: String
 ) {
     // Папка для сохранения картинок
     private val uploadDir = "uploads/settings"
 
-    // Ключи настроек
+    // Единый companion object для всех констант
     companion object {
         const val KEY_COMMISSION_PERCENT = "driver_commission_percent"
+        const val KEY_ENABLE_CARD_PAYMENT = "enable_card_payment"
+        const val KEY_ENABLE_DRIVER_CARD_PAYMENT = "enable_driver_card_payment"
     }
 
     fun getAllSettings(): Map<String, String?> {
@@ -29,7 +33,7 @@ class SettingsService(
         return repository.findById(key).map { it.value }.orElse(null)
     }
 
-    // --- НОВЫЙ МЕТОД: Получить процент комиссии (по умолчанию 10.0) ---
+    // --- НАСТРОЙКА КОМИССИИ ВОДИТЕЛЯ ---
     fun getDriverCommissionPercent(): Double {
         val setting = repository.findById(KEY_COMMISSION_PERCENT).orElse(null)
         return setting?.value?.toDoubleOrNull() ?: 10.0
@@ -45,7 +49,7 @@ class SettingsService(
     }
 
     fun getEvosUrl(): String {
-        return getSettingValue("evos_url") ?: "http://127.0.0.1:8080/api"
+        return getSettingValue("evos_url") ?: defaultEvosUrl
     }
 
     fun getEvosLogin(): String {
@@ -60,6 +64,22 @@ class SettingsService(
         return getSettingValue("evos_app_id") ?: "UNIT_TAXI"
     }
 
+    // --- НАСТРОЙКИ СПОСОБОВ ОПЛАТЫ ---
+    fun isCardPaymentEnabled(): Boolean {
+        return getSettingValue(KEY_ENABLE_CARD_PAYMENT)?.toBoolean() ?: true
+    }
+
+    fun isDriverCardPaymentEnabled(): Boolean {
+        return getSettingValue(KEY_ENABLE_DRIVER_CARD_PAYMENT)?.toBoolean() ?: true
+    }
+
+    fun getPaymentSettings(): Map<String, Boolean> {
+        return mapOf(
+            KEY_ENABLE_CARD_PAYMENT to isCardPaymentEnabled(),
+            KEY_ENABLE_DRIVER_CARD_PAYMENT to isDriverCardPaymentEnabled()
+        )
+    }
+
     fun uploadSettingImage(key: String, file: MultipartFile): String {
         val directory = File(uploadDir)
         if (!directory.exists()) {
@@ -72,8 +92,6 @@ class SettingsService(
 
         Files.copy(file.inputStream, filePath, StandardCopyOption.REPLACE_EXISTING)
 
-        // URL (в реальном продакшене тут нужен домен из application.properties)
-        // Пока оставляем хардкод или relative path, фронт разберется
         val fileUrl = "/uploads/settings/$fileName"
 
         val setting = repository.findById(key).orElse(AppSetting(key, null))

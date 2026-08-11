@@ -24,8 +24,8 @@ class WebSocketConfig(
     private val userDetailsService: UserDetailsService
 ) : WebSocketMessageBrokerConfigurer {
 
-    @Value("\${app.cors.allowed-origins:*}")
-    private lateinit var allowedOrigins: Array<String>
+    @Value("\${app.cors.allowed-origins:https://admin.unitua.com,http://localhost:5173,http://localhost:3000}")
+    private lateinit var allowedOriginsStr: String
 
     override fun configureMessageBroker(config: MessageBrokerRegistry) {
         config.enableSimpleBroker("/topic")
@@ -33,29 +33,28 @@ class WebSocketConfig(
     }
 
     override fun registerStompEndpoints(registry: StompEndpointRegistry) {
-        registry.addEndpoint("/ws-taxi").setAllowedOriginPatterns(*allowedOrigins).withSockJS()
-        registry.addEndpoint("/ws-taxi").setAllowedOriginPatterns(*allowedOrigins)
+        val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
+
+        registry.addEndpoint("/ws-taxi").setAllowedOriginPatterns(*origins).withSockJS()
+        registry.addEndpoint("/ws-taxi").setAllowedOriginPatterns(*origins)
     }
 
-    // --- ЗАЩИТА: Авторизация WebSocket-подключений на уровне фреймов CONNECT ---
     override fun configureClientInboundChannel(registration: ChannelRegistration) {
         registration.interceptors(object : ChannelInterceptor {
             override fun preSend(message: Message<*>, channel: MessageChannel): Message<*>? {
                 val accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor::class.java)
-                
+
                 if (accessor != null && StompCommand.CONNECT == accessor.command) {
                     val user = accessor.user
-                    // 1. Если юзер уже успешно авторизован через куки на этапе Handshake (веб-диспетчерская), пропускаем
                     if (user is org.springframework.security.core.Authentication && user.isAuthenticated) {
                         return message
                     }
 
-                    // 2. Ищем заголовок токена (сначала стандартный, затем в нижнем регистре для мобилок)
                     var authHeader = accessor.getFirstNativeHeader("Authorization")
                     if (authHeader == null) {
                         authHeader = accessor.getFirstNativeHeader("authorization")
                     }
-                    
+
                     if (authHeader != null && authHeader.startsWith("Bearer ")) {
                         val token = authHeader.substring(7).trim()
                         try {
@@ -67,14 +66,13 @@ class WebSocketConfig(
                                         userDetails, null, userDetails.authorities
                                     )
                                     accessor.user = authentication
-                                    return message // Успешная авторизация для мобильных приложений
+                                    return message
                                 }
                             }
                         } catch (e: Exception) {
                             throw org.springframework.messaging.MessageDeliveryException("Invalid Token")
                         }
                     }
-                    // Если дошли сюда и нет сессии из кук или валидного Bearer токена
                     throw org.springframework.messaging.MessageDeliveryException("Unauthorized: Access Denied")
                 }
                 return message

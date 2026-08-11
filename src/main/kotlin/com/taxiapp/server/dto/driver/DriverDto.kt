@@ -93,10 +93,10 @@ data class DriverDto(
     companion object {
         private fun generateUrl(filename: String?): String? {
             if (filename.isNullOrBlank()) return null
-            return ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/images/")
-                .path(filename)
-                .toUriString()
+            if (filename.startsWith("http://") || filename.startsWith("https://")) return filename
+            val clean = filename.trimStart('/')
+            val path = if (clean.startsWith("uploads/") || clean.startsWith("images/")) clean else "uploads/$clean"
+            return "/$path"
         }
     }
 }
