@@ -23,6 +23,22 @@ class SettingsService(
         const val KEY_COMMISSION_PERCENT = "driver_commission_percent"
         const val KEY_ENABLE_CARD_PAYMENT = "enable_card_payment"
         const val KEY_ENABLE_DRIVER_CARD_PAYMENT = "enable_driver_card_payment"
+        // ➕ Новые ключи для СМС
+        const val KEY_SMS_MODE = "sms_mode" // "TEST" или "PROD"
+        const val KEY_SMS_ALPHA_NAME = "sms_alpha_name" // Альфа-имя (например TAXI)
+    }
+
+    // ➕ Новые методы чтения СМС настроек
+    fun getSmsMode(): String {
+        return getSettingValue(KEY_SMS_MODE) ?: "TEST"
+    }
+
+    fun isSmsProdMode(): Boolean {
+        return getSmsMode().equals("PROD", ignoreCase = true)
+    }
+
+    fun getSmsAlphaName(): String {
+        return getSettingValue(KEY_SMS_ALPHA_NAME) ?: "TAXI"
     }
 
     fun getAllSettings(): Map<String, String?> {
@@ -108,4 +124,6 @@ class SettingsService(
             repository.save(setting)
         }
     }
+
+    
 }
