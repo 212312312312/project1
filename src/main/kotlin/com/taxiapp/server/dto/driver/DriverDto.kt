@@ -52,8 +52,9 @@ data class DriverDto(
         rnokpp = driver.rnokpp,
         driverLicense = driver.driverLicense,
         
-        driverLicenseFront = generateUrl(driver.driverLicenseFront),
-        driverLicenseBack = generateUrl(driver.driverLicenseBack),
+        driverLicenseFront = generateUrl(driver.driverLicenseFront, isThumbnail = true),
+        driverLicenseBack = generateUrl(driver.driverLicenseBack, isThumbnail = true),
+        
 
         // Маппинг новых полей
         hasMovementIssue = driver.hasMovementIssue,
@@ -82,7 +83,7 @@ data class DriverDto(
         } else {
             driver.selectedTariffs.mapNotNull { it.id }
         }, // 👈 ВОТ СЮДА ДОБАВЬ ЗАПЯТУЮ!
-        photoUrl = generateUrl(driver.photoUrl),
+        photoUrl = generateUrl(driver.photoUrl, isThumbnail = true),
         
         activityScore = driver.activityScore,
         registrationStatus = driver.registrationStatus.name,
@@ -91,12 +92,16 @@ data class DriverDto(
     )
 
     companion object {
-        private fun generateUrl(filename: String?): String? {
+        fun generateUrl(filename: String?, isThumbnail: Boolean = false): String? {
             if (filename.isNullOrBlank()) return null
             if (filename.startsWith("http://") || filename.startsWith("https://")) return filename
+            
             val clean = filename.trimStart('/')
-            val path = if (clean.startsWith("uploads/") || clean.startsWith("images/")) clean else "uploads/$clean"
-            return "/$path"
+            val rawName = if (clean.contains("/")) clean.substringAfterLast('/') else clean
+            val baseName = if (rawName.startsWith("thumb_")) rawName.substringAfter("thumb_") else rawName
+            
+            val finalName = if (isThumbnail) "thumb_$baseName" else baseName
+            return "/images/$finalName"
         }
     }
 }

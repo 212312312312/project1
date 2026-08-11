@@ -6,6 +6,7 @@ import org.springframework.core.io.UrlResource
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
 import java.io.IOException
+import net.coobird.thumbnailator.Thumbnails
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -38,10 +39,9 @@ class FileStorageService {
      */
     fun storeFile(file: MultipartFile): String {
         if (file.isEmpty) {
-            throw RuntimeException("Не удалось сохранить пустой файл.")
+            throw RuntimeException("Не вдалося зберегти порожній файл.")
         }
         
-        // 1. Получаем расширение (напр. "png")
         val originalFilename = file.originalFilename ?: "unknown.jpg"
         val extension = if (originalFilename.contains(".")) {
             originalFilename.substringAfterLast('.')
@@ -49,21 +49,30 @@ class FileStorageService {
             "jpg"
         }
 
-        // 2. Генерируем уникальное имя
-        val uniqueFilename = "${UUID.randomUUID()}.$extension"
+        val uuid = UUID.randomUUID().toString()
+        val uniqueFilename = "$uuid.$extension"
+        val thumbFilename = "thumb_$uuid.jpg" // Легкое превью
         
-        // 3. Решаем путь
-        val destinationFile = rootLocation.resolve(uniqueFilename)
-            .normalize().toAbsolutePath()
+        val destinationFile = rootLocation.resolve(uniqueFilename).normalize().toAbsolutePath()
+        val thumbDestinationFile = rootLocation.resolve(thumbFilename).normalize().toAbsolutePath()
 
-        // 4. Копируем байты
         try {
+            // 1. Сохраняем оригинал
             Files.copy(file.inputStream, destinationFile, StandardCopyOption.REPLACE_EXISTING)
+            
+            // 2. Генерируем сжатую миниатюру (макс 600px по ширине/высоте, качество 75%)
+            Thumbnails.of(destinationFile.toFile())
+                .size(450, 450)
+                .outputQuality(0.65)
+                .toFile(thumbDestinationFile.toFile())
+
         } catch (e: Exception) {
-            throw RuntimeException("Ошибка сохранения файла: ${e.message}", e)
+            // Если сжатие не удалось (например, не картинка), просто копируем оригинал как превью
+            try {
+                Files.copy(destinationFile, thumbDestinationFile, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: Exception) {}
         }
         
-        // 5. Возвращаем только имя файла
         return uniqueFilename
     }
 
@@ -108,7 +117,43 @@ class FileStorageService {
             throw RuntimeException("Не удалось прочитать файл: $filename", e)
         }
     }
-    
+    fun loadOrGenerateResource(filename: String): Resource {
+        try {
+            val cleanFilename = filename.trimStart('/')
+            val file = rootLocation.resolve(cleanFilename).normalize()
+            
+            // 1. Если файл превью или оригинал уже есть на диске — отдаем его
+            if (Files.exists(file) && Files.isReadable(file)) {
+                return UrlResource(file.toUri())
+            }
+
+            // 2. Если запросили thumb_, а его нет на диске
+            if (cleanFilename.startsWith("thumb_")) {
+                val originalFilename = cleanFilename.substringAfter("thumb_")
+                val originalFile = rootLocation.resolve(originalFilename).normalize()
+
+                if (Files.exists(originalFile) && Files.isReadable(originalFile)) {
+                    return try {
+                        // Попытка сжатия
+                        Thumbnails.of(originalFile.toFile())
+                            .size(400, 400)
+                            .outputQuality(0.60)
+                            .toFile(file.toFile())
+
+                        UrlResource(file.toUri())
+                    } catch (e: Throwable) {
+                        // Если памяти не хватило или сбой — БЕЗОПАСНО отдаем оригинал!
+                        println("Не вдалося згенерувати thumb для $originalFilename: ${e.message}")
+                        UrlResource(originalFile.toUri())
+                    }
+                }
+            }
+
+            throw RuntimeException("Файл не знайдено: $filename")
+        } catch (e: Exception) {
+            throw RuntimeException("Помилка читання файлу: $filename", e)
+        }
+    }
     /**
      * Удаляет старый файл
      */

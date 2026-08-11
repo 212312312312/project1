@@ -1,7 +1,6 @@
 package com.taxiapp.server.dto.driver
 
 import com.taxiapp.server.model.user.Car
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder
 
 data class CarDto(
     val id: Long,
@@ -43,28 +42,33 @@ data class CarDto(
         status = car.status.name,
         rejectionReason = car.rejectionReason,
         
-        photoUrl = generateUrl(if (!car.photoUrl.isNullOrBlank()) car.photoUrl else car.photoRight),
+        // ВСЕ ФОТО ТЕПЕРЬ ЗАПРАШИВАЮТ СЖАТУЮ МИНИАТЮРУ (isThumbnail = true)
+        photoUrl = generateUrl(if (!car.photoUrl.isNullOrBlank()) car.photoUrl else car.photoRight, isThumbnail = true),
         
-        techPassportFront = generateUrl(car.techPassportFront),
-        techPassportBack = generateUrl(car.techPassportBack),
-        insurancePhoto = generateUrl(car.insurancePhoto), // Убедись, что в Car.kt поле называется insurancePhoto
+        techPassportFront = generateUrl(car.techPassportFront, isThumbnail = true),
+        techPassportBack = generateUrl(car.techPassportBack, isThumbnail = true),
+        insurancePhoto = generateUrl(car.insurancePhoto, isThumbnail = true),
         
-        photoFront = generateUrl(car.photoFront),
-        photoBack = generateUrl(car.photoBack),
-        photoLeft = generateUrl(car.photoLeft),
-        photoTrunk = generateUrl(car.photoTrunk),
-        photoRight = generateUrl(car.photoRight),
-        photoSeatsFront = generateUrl(car.photoSeatsFront),
-        photoSeatsBack = generateUrl(car.photoSeatsBack)
+        photoFront = generateUrl(car.photoFront, isThumbnail = true),
+        photoBack = generateUrl(car.photoBack, isThumbnail = true),
+        photoLeft = generateUrl(car.photoLeft, isThumbnail = true),
+        photoTrunk = generateUrl(car.photoTrunk, isThumbnail = true),
+        photoRight = generateUrl(car.photoRight, isThumbnail = true),
+        photoSeatsFront = generateUrl(car.photoSeatsFront, isThumbnail = true),
+        photoSeatsBack = generateUrl(car.photoSeatsBack, isThumbnail = true)
     )
 
     companion object {
-        private fun generateUrl(filename: String?): String? {
+        fun generateUrl(filename: String?, isThumbnail: Boolean = false): String? {
             if (filename.isNullOrBlank()) return null
-            return ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/images/")
-                .path(filename)
-                .toUriString()
+            if (filename.startsWith("http://") || filename.startsWith("https://")) return filename
+            
+            val clean = filename.trimStart('/')
+            val rawName = if (clean.contains("/")) clean.substringAfterLast('/') else clean
+            val baseName = if (rawName.startsWith("thumb_")) rawName.substringAfter("thumb_") else rawName
+            
+            val finalName = if (isThumbnail) "thumb_$baseName" else baseName
+            return "/images/$finalName"
         }
     }
 }
