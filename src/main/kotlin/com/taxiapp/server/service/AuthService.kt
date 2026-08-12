@@ -42,7 +42,8 @@ class AuthService(
     private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate,
     private val refreshTokenRepository: RefreshTokenRepository,
     @org.springframework.beans.factory.annotation.Value("\${jwt.refresh-expiration}") private val refreshTokenDurationMs: Long,
-    @org.springframework.beans.factory.annotation.Value("\${google.client-id}") private val googleClientId: String
+    @org.springframework.beans.factory.annotation.Value("\${google.client-id}") private val googleClientId: String,
+    @org.springframework.beans.factory.annotation.Value("\${app.sms.app-hash:vqZZy+j5At9}") private val appHash: String
 ) {
 
     // --- НОРМАЛИЗАЦИЯ НОМЕРА ---
@@ -344,7 +345,7 @@ val email: String = payload.email
         redisTemplate.opsForValue().set(limitKey, (currentCount + 1).toString(), 5, java.util.concurrent.TimeUnit.MINUTES)
         redisTemplate.delete("sms:attempts:$phone") 
 
-        smsService.sendSms(phone, "Ваш код таксі: $code")
+        smsService.sendSms(phone, "<#> Ваш код таксі: $code\n$appHash")
     }
 
     fun updateFcmToken(userLogin: String, token: String) {
