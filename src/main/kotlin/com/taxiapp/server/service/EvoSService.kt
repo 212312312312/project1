@@ -51,7 +51,9 @@ class EvoSService(
     val clientName = if (order.client.fullName.isNotBlank()) order.client.fullName else "Пасажир"
 
     // 2. Тип оплаты (0 - Наличные, 1 - Безнал/Карта)
-    val pType = if (order.paymentMethod == "CARD") 1 else 0
+    // Любой безналичный вариант (карта, перевод водителю и т.д.) отправляется в EvoS как 1
+    val isCardPayment = order.paymentMethod in listOf("CARD", "CARD_TO_DRIVER", "DRIVER_CARD", "CARD_TRANSFER", "ONLINE")
+    val pType = if (isCardPayment) 1 else 0
 
     // 3. Предварительный заказ (Заказ на время)
     val isReservation = order.scheduledAt != null
