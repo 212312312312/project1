@@ -12,14 +12,13 @@ import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
 import java.util.Optional
-import java.util.UUID // <-- ДОБАВИЛИ ИМПОРТ
+import java.util.UUID
 
 @Repository
 interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     // --- МЕТОД ДЛЯ НАХОЖДЕНИЯ ЗАКАЗА ПО ПУБЛИЧНОМУ UUID ---
     fun findByUuid(uuid: UUID): Optional<TaxiOrder>
-    // -----------------------------------------------------
 
     fun findAllByClient(client: Client): List<TaxiOrder>
 
@@ -106,6 +105,19 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'ARRIVED', 'IN_PROGRESS')")
     fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>
 
+    // --- МЕТОДЫ ДЛЯ ОПТИМИЗАЦИИ EVOS SCHEDULER ---
+    @Query("SELECT o FROM TaxiOrder o WHERE o.isSentToEvos = false AND o.status = :status AND o.createdAt < :threshold")
+    fun findAllByStatusAndIsSentToEvosFalseAndCreatedAtBefore(
+        @Param("status") status: OrderStatus, 
+        @Param("threshold") threshold: LocalDateTime
+    ): List<TaxiOrder>
+
+    @Query("SELECT o FROM TaxiOrder o WHERE o.isSentToEvos = true AND o.status NOT IN :statuses")
+    fun findAllByIsSentToEvosTrueAndStatusNotIn(
+        @Param("statuses") statuses: List<OrderStatus>
+    ): List<TaxiOrder>
+    // ----------------------------------------------
+
     @Query("""
         SELECT o FROM TaxiOrder o 
         WHERE o.driver.id = :driverId 
@@ -125,22 +137,21 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         pageable: org.springframework.data.domain.Pageable
     ): List<TaxiOrder>
 
-
     @Query("SELECT AVG(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
-fun calculateAverageOrderValue(): Double?
+    fun calculateAverageOrderValue(): Double?
 
-@Query("SELECT SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
-fun calculateTotalRevenue(): Double?
+    @Query("SELECT SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
+    fun calculateTotalRevenue(): Double?
 
- fun countByStatus(status: OrderStatus): Long
+    fun countByStatus(status: OrderStatus): Long
     
-@Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
-fun getTariffAnalytics(): List<Array<Any>>
+    @Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
+    fun getTariffAnalytics(): List<Array<Any>>
 
-@Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o")
-fun countUniqueClientsWithOrders(): Long
+    @Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o")
+    fun countUniqueClientsWithOrders(): Long
 
-@Query("""
+    @Query("""
         SELECT o.cancellationReason AS reason, COUNT(o.id) AS count 
         FROM TaxiOrder o 
         WHERE o.status = 'CANCELLED' 
@@ -151,8 +162,6 @@ fun countUniqueClientsWithOrders(): Long
     """)
     fun getClientCancellationStats(): List<CancellationStatProjection>
 }
-
-
 
 interface CancellationStatProjection {
     val reason: String

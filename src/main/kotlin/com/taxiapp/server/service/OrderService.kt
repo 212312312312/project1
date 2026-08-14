@@ -52,6 +52,7 @@ class OrderService(
     private val appSettingRepository: AppSettingRepository,
     private val evoSService: EvoSService,
     private val liqPayService: LiqPayService,
+    private val driverPayoutService: DriverPayoutService,
     private val activityHistoryRepository: DriverActivityHistoryRepository,
     private val redisTemplate: org.springframework.data.redis.core.RedisTemplate<String, Any> // <-- ДОБАВЛЕНО
 ) {
