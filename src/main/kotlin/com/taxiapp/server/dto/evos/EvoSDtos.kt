@@ -53,6 +53,19 @@ data class EvoSDriverCarPositionDto(
     @JsonProperty("status") val status: String?
 )
 
+// --- ОТВЕТ НА РАСЧЕТ СТОИМОСТИ (POST /api/weborders/cost) ---
+data class EvoSCalculateCostResponseDto(
+    @JsonProperty("order_cost") val orderCost: String? = null,
+    @JsonProperty("currency") val currency: String? = null,
+    @JsonProperty("discount_trip") val discountTrip: Boolean? = false,
+    @JsonProperty("can_pay_bonuses") val canPayBonuses: Boolean? = false
+)
+
+// --- ЗАПРОС ДОБАВОЧНОЙ СТОИМОСТИ (PUT /api/weborders/{uid}/cost/additional) ---
+data class EvoSAddCostRequestDto(
+    @JsonProperty("add_cost") val addCost: Double
+)
+
 data class EvoSOrderStateResponseDto(
     @JsonProperty("dispatching_order_uid") val dispatchingOrderUid: String,
     @JsonProperty("order_cost") val orderCost: String?,

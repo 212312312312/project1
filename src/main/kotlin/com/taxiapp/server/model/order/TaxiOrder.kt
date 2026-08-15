@@ -178,6 +178,19 @@ class TaxiOrder(
     @Column(name = "evos_driver_phone")
     var evosDriverPhone: String? = null,
 
+    // ➕ ДОБАВИТЬ ЭТИ 4 ПОЛЯ:
+    @Column(name = "evos_rating")
+    var evosRating: Double? = null,
+
+    @Column(name = "last_evos_lat")
+    var lastEvosLat: Double? = null,
+
+    @Column(name = "last_evos_lng")
+    var lastEvosLng: Double? = null,
+
+    @Column(name = "last_evos_bearing")
+    var lastEvosBearing: Float? = null,
+
     @ManyToMany(fetch = FetchType.EAGER)
     @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
     @JoinTable(

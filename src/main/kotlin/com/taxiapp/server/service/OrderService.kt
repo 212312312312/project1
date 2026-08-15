@@ -1751,17 +1751,20 @@ private fun blockCoordinateRounding(v: Double): Double = v
 
     @Transactional
     fun updatePrice(orderId: Long, addedValue: Double) {
-        val order = orderRepository.findById(orderId)
+        val order = orderRepository.findById(orderId) 
             .orElseThrow { RuntimeException("Замовлення не знайдено") }
 
-        // Отнимаем старую надбавку и прибавляем новую
         val basePriceWithoutExtra = order.price - order.addedValue
         order.addedValue = addedValue
         order.price = basePriceWithoutExtra + addedValue 
         
         val savedOrder = orderRepository.save(order)
 
-        // Аналогично, используем твой броадкаст!
+        // 🟢 Если заказ уже в партнерке EvoS — синхронизируем поднятие цены
+        if (savedOrder.isSentToEvos && !savedOrder.evosOrderUid.isNullOrBlank()) {
+            evoSService.updateAdditionalCost(savedOrder.evosOrderUid!!, savedOrder.addedValue)
+        }
+
         broadcastOrderChange(savedOrder, "UPDATE")
     }
 

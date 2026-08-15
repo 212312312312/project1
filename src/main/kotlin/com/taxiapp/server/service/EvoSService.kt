@@ -40,28 +40,40 @@ class EvoSService(
         return headers
     }
 
-    fun sendOrderToEvoS(order: TaxiOrder): String? {
-    if (!settingsService.isEvosEnabled()) return null
+    // --- 1. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ БАЗОВОЙ СТОИМОСТИ В EVOS ---
+    fun calculateEvoSCost(body: EvoSCreateOrderRequestDto): Double? {
+        val baseUrl = settingsService.getEvosUrl().trimEnd('/')
+        val url = "$baseUrl/api/weborders/cost"
 
-    val baseUrl = settingsService.getEvosUrl().trimEnd('/')
-    val url = "$baseUrl/api/weborders"
-
-    // 1. Имя и телефон клиента
-    val clientPhone = order.client.userPhone ?: "0000000000"
-    val clientName = if (order.client.fullName.isNotBlank()) order.client.fullName else "Пасажир"
-
-    // 2. Тип оплаты (0 - Наличные, 1 - Безнал/Карта)
-    // Любой безналичный вариант (карта, перевод водителю и т.д.) отправляется в EvoS как 1
-    val isCardPayment = order.paymentMethod in listOf("CARD", "CARD_TO_DRIVER", "DRIVER_CARD", "CARD_TRANSFER", "ONLINE")
-    val pType = if (isCardPayment) 1 else 0
-
-    // 3. Предварительный заказ (Заказ на время)
-    val isReservation = order.scheduledAt != null
-    val formattedRequiredTime = order.scheduledAt?.let {
-        it.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+        return try {
+            val requestEntity = HttpEntity(body, createHeaders())
+            val response = restTemplate.postForEntity(url, requestEntity, EvoSCalculateCostResponseDto::class.java)
+            response.body?.orderCost?.toDoubleOrNull()
+        } catch (e: Exception) {
+            logger.warn(">>> [EvoS] Не удалось предварительно рассчитать стоимость: ${e.message}")
+            null
+        }
     }
 
-    var hasAnimal = false
+    // --- 2. СОЗДАНИЕ ЗАКАЗА С ГАРАНТИРОВАННОЙ НАШЕЙ ЦЕНОЙ ---
+    fun sendOrderToEvoS(order: TaxiOrder): String? {
+        if (!settingsService.isEvosEnabled()) return null
+
+        val baseUrl = settingsService.getEvosUrl().trimEnd('/')
+        val url = "$baseUrl/api/weborders"
+
+        val clientPhone = order.client.userPhone ?: "0000000000"
+        val clientName = if (order.client.fullName.isNotBlank()) order.client.fullName else "Пасажир"
+
+        val isCardPayment = order.paymentMethod in listOf("CARD", "CARD_TO_DRIVER", "DRIVER_CARD", "CARD_TRANSFER", "ONLINE")
+        val pType = if (isCardPayment) 1 else 0
+
+        val isReservation = order.scheduledAt != null
+        val formattedRequiredTime = order.scheduledAt?.let {
+            it.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+        }
+
+        var hasAnimal = false
         var hasBaggage = false
         var hasConditioner = false
         var hasCourier = false
@@ -72,11 +84,9 @@ class EvoSService(
 
         order.selectedServices.forEach { service ->
             extraServiceNames.add(service.name)
-
             if (!service.evosCode.isNullOrBlank()) {
                 val code = service.evosCode!!
                 extraCodesList.add(code)
-
                 when (code) {
                     "ANIMAL" -> hasAnimal = true
                     "BAGGAGE" -> hasBaggage = true
@@ -87,90 +97,94 @@ class EvoSService(
             }
         }
 
-    // 5. Формирование подробного комментария (Скидка + Список услуг + Текст клиента)
-    val fullPrice = order.price
-    val discount = order.appliedDiscount
-    val clientPays = fullPrice - discount
+        val discount = order.appliedDiscount
+        val clientPays = order.price - discount
 
-    val commentBuilder = StringBuilder()
-    if (discount > 0.0) {
-        commentBuilder.append("[Служба] Клієнт платить: ${clientPays.toInt()}грн, Доплата: ${discount.toInt()}грн.")
-    }
-    if (extraServiceNames.isNotEmpty()) {
-        if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
-        commentBuilder.append("[Послуги: ${extraServiceNames.joinToString(", ")}].")
-    }
-    if (!order.comment.isNullOrBlank()) {
-        if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
-        commentBuilder.append(order.comment)
-    }
+        val commentBuilder = StringBuilder()
+        if (discount > 0.0) {
+            commentBuilder.append("[Служба] Клієнт платить: ${clientPays.toInt()}грн, Доплата: ${discount.toInt()}грн.")
+        }
+        if (extraServiceNames.isNotEmpty()) {
+            if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
+            commentBuilder.append("[Послуги: ${extraServiceNames.joinToString(", ")}].")
+        }
+        if (!order.comment.isNullOrBlank()) {
+            if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")
+            commentBuilder.append(order.comment)
+        }
 
-    // 6. Формирование точки А, промежуточных и точки Б
-    val routeList = mutableListOf<EvoSRoutePointDto>()
-    routeList.add(
-        EvoSRoutePointDto(
-            name = order.fromAddress,
-            lat = order.originLat,
-            lng = order.originLng
+        val routeList = mutableListOf<EvoSRoutePointDto>()
+        routeList.add(EvoSRoutePointDto(name = order.fromAddress, lat = order.originLat, lng = order.originLng))
+        order.stops.sortedBy { it.stopOrder }.forEach { stop ->
+            routeList.add(EvoSRoutePointDto(name = stop.address, lat = stop.lat, lng = stop.lng))
+        }
+        routeList.add(EvoSRoutePointDto(name = order.toAddress, lat = order.destLat, lng = order.destLng))
+
+        // Черновой DTO для запроса базовой стоимости в EvoS
+        val draftBody = EvoSCreateOrderRequestDto(
+            userFullName = clientName,
+            userPhone = clientPhone,
+            requiredTime = formattedRequiredTime,
+            reservation = isReservation,
+            comment = commentBuilder.toString(),
+            addCost = 0.0,
+            wagon = hasWagon,
+            animal = hasAnimal,
+            baggage = hasBaggage,
+            conditioner = hasConditioner,
+            courierDelivery = hasCourier,
+            extraChargeCodes = extraCodesList.ifEmpty { null },
+            route = routeList,
+            taxiColumnId = 0,
+            paymentType = pType
         )
-    )
 
-    order.stops.sortedBy { it.stopOrder }.forEach { stop ->
-        routeList.add(
-            EvoSRoutePointDto(
-                name = stop.address,
-                lat = stop.lat,
-                lng = stop.lng
-            )
-        )
-    }
-
-    routeList.add(
-        EvoSRoutePointDto(
-            name = order.toAddress,
-            lat = order.destLat,
-            lng = order.destLng
-        )
-    )
-
-    // 7. Сборка полного DTO
-    val body = EvoSCreateOrderRequestDto(
-        userFullName = clientName,
-        userPhone = clientPhone,
-        requiredTime = formattedRequiredTime,
-        reservation = isReservation,
-        comment = commentBuilder.toString(),
-        addCost = 0.0,
-        orderCost = order.price,
-        wagon = hasWagon,
-        animal = hasAnimal,
-        baggage = hasBaggage,
-        conditioner = hasConditioner,
-        courierDelivery = hasCourier,
-        extraChargeCodes = extraCodesList.ifEmpty { null },
-        route = routeList,
-        taxiColumnId = 0,
-        paymentType = pType
-    )
-
-    // 8. Отправка на бэкенд партнеров
-    return try {
-        val requestEntity = HttpEntity(body, createHeaders())
-        val response = restTemplate.postForEntity(url, requestEntity, EvoSCreateOrderResponseDto::class.java)
-
-        if (response.statusCode == HttpStatus.OK && response.body != null) {
-            val uid = response.body!!.dispatchingOrderUid
-            logger.info(">>> [EvoS] Заказ #${order.id} успешно перекинут в EvoS. UID: $uid")
-            uid
+        // 🟢 РАСЧЕТ РАЗНИЦЫ: Вычисляем add_cost для фиксации нашей цены
+        val evosBaseCost = calculateEvoSCost(draftBody) ?: 0.0
+        val priceDiff = if (order.price > evosBaseCost && evosBaseCost > 0.0) {
+            order.price - evosBaseCost
         } else {
-            logger.error(">>> [EvoS] Ошибка отправки заказа #${order.id}: ${response.statusCode}")
+            0.0
+        }
+        val finalAddCost = priceDiff + order.addedValue
+
+        logger.info(">>> [EvoS Price Matching] Наша ціна: ${order.price} грн, База EvoS: $evosBaseCost грн, Розрахований add_cost: $finalAddCost грн")
+
+        val finalBody = draftBody.copy(addCost = finalAddCost)
+
+        return try {
+            val requestEntity = HttpEntity(finalBody, createHeaders())
+            val response = restTemplate.postForEntity(url, requestEntity, EvoSCreateOrderResponseDto::class.java)
+
+            if (response.statusCode == HttpStatus.OK && response.body != null) {
+                val uid = response.body!!.dispatchingOrderUid
+                logger.info(">>> [EvoS] Замовлення #${order.id} успішно створено в EvoS з нашою ціною! UID: $uid")
+                uid
+            } else {
+                logger.error(">>> [EvoS] Помилка створення замовлення #${order.id}: ${response.statusCode}")
+                null
+            }
+        } catch (e: Exception) {
+            logger.error(">>> [EvoS] Виняток при відправці замовлення #${order.id} в EvoS: ${e.message}")
             null
         }
-    } catch (e: Exception) {
-        logger.error(">>> [EvoS] Исключение при отправке заказа #${order.id} в EvoS: ${e.message}")
-        null
     }
-}
+
+    // --- 3. ОБНОВЛЕНИЕ ДОБАВОЧНОЙ СТОИМОСТИ (КОГДА КЛИЕНТ ПОДНИМАЕТ ЦЕНУ В ПРИЛОЖЕНИИ) ---
+    fun updateAdditionalCost(evosOrderUid: String, newAddCost: Double): Boolean {
+        val baseUrl = settingsService.getEvosUrl().trimEnd('/')
+        val url = "$baseUrl/api/weborders/$evosOrderUid/cost/additional"
+
+        return try {
+            val requestEntity = HttpEntity(EvoSAddCostRequestDto(newAddCost), createHeaders())
+            restTemplate.exchange(url, HttpMethod.PUT, requestEntity, Void::class.java)
+            logger.info(">>> [EvoS] Добавочна вартість для $evosOrderUid оновлена: $newAddCost грн")
+            true
+        } catch (e: Exception) {
+            logger.error(">>> [EvoS] Помилка оновлення добавочної вартості: ${e.message}")
+            false
+        }
+    }
 
     // --- ЗАПРОС СОСТОЯНИЯ ЗАКАЗА ---
     fun getOrderState(evosOrderUid: String): EvoSOrderStateResponseDto? {

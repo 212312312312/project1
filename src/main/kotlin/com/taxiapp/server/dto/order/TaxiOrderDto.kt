@@ -73,7 +73,37 @@ data class TaxiOrderDto(
         id = order.uuid.toString(),
         idLong = order.id ?: 0L,
         client = OrderClientDto(order.client),
-        driver = order.driver?.let { OrderDriverDto(it) },
+        driver = if (order.driver != null) {
+            OrderDriverDto(order.driver!!)
+        } else if (!order.evosDriverCarInfo.isNullOrBlank() || !order.evosDriverPhone.isNullOrBlank()) {
+            val rawInfo = order.evosDriverCarInfo ?: ""
+            val parts = rawInfo.split(",").map { it.trim() }
+            val carNumber = parts.getOrNull(0) ?: ""
+            val carColor = parts.getOrNull(1) ?: ""
+            val carModel = if (parts.size > 2) parts.drop(2).joinToString(", ") else (parts.getOrNull(0) ?: "Партнерське авто")
+
+            OrderDriverDto(
+                id = -1L,
+                fullName = "Водій (Партнерська мережа)",
+                phoneNumber = order.evosDriverPhone ?: "",
+                carModel = carModel,
+                carColor = carColor,
+                carPlateNumber = carNumber,
+                photoUrl = null,
+                completedRides = 100,
+                monthsInService = 12,
+                latitude = order.lastEvosLat,
+                longitude = order.lastEvosLng,
+                bearing = order.lastEvosBearing ?: 0f,
+                hasMovementIssue = false,
+                hasHearingIssue = false,
+                isDeaf = false,
+                hasSpeechIssue = false,
+                rating = order.evosRating ?: 5.0
+            )
+        } else {
+            null
+        },
         status = order.status,
         fromAddress = order.fromAddress,
         toAddress = order.toAddress,

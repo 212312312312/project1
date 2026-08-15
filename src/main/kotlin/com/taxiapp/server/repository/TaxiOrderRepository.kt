@@ -57,6 +57,9 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByStatus(status: OrderStatus): List<TaxiOrder>
 
+    // ➕ ДОБАВИТЬ ЭТОТ МЕТОД:
+    fun findAllByStatusInOrderByIdDesc(statuses: List<OrderStatus>): List<TaxiOrder>
+
     fun findAllByStatusIn(statuses: List<OrderStatus>): List<TaxiOrder>
 
     fun findAllByClientId(clientId: Long): List<TaxiOrder>
