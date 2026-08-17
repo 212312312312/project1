@@ -33,11 +33,12 @@ class WebSocketConfig(
     }
 
     override fun registerStompEndpoints(registry: StompEndpointRegistry) {
-        val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
+    val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
 
-        registry.addEndpoint("/ws-taxi").setAllowedOriginPatterns(*origins).withSockJS()
-        registry.addEndpoint("/ws-taxi").setAllowedOriginPatterns(*origins)
-    }
+    // Добавляем /ws-taxi/websocket в список эндпоинтов
+    registry.addEndpoint("/ws-taxi", "/ws-taxi/websocket").setAllowedOriginPatterns(*origins).withSockJS()
+    registry.addEndpoint("/ws-taxi", "/ws-taxi/websocket").setAllowedOriginPatterns(*origins)
+}
 
     override fun configureClientInboundChannel(registration: ChannelRegistration) {
         registration.interceptors(object : ChannelInterceptor {

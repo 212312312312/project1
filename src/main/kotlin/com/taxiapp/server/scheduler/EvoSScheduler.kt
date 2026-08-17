@@ -180,32 +180,56 @@ class EvoSScheduler(
 
             // --- 4) GPS трекинг позиции автомобиля ---
             val pos = evosState.drivercarPosition ?: evoSService.getDriverPosition(uid)
-            if (pos?.lat != null && pos.lng != null && (pos.status == null || pos.status == "gpsOk")) {
-                order.lastEvosLat = pos.lat
-                order.lastEvosLng = pos.lng
-                order.lastEvosBearing = pos.bearing ?: 0f
 
-                // Чистый DTO координат (lat, lng, bearing)
+            logger.info(">>> [EvoS GPS Raw] Замовлення #${order.id} (UID: $uid): pos=$pos")
+
+            if (pos == null) {
+                logger.warn(">>> [EvoS GPS] Об'єкт позиції null для замовлення #${order.id}")
+            } else if (pos.lat == null || pos.lng == null || pos.lat == 0.0 || pos.lng == 0.0) {
+                logger.warn(">>> [EvoS GPS] Координати відсутні або 0.0: lat=${pos.lat}, lng=${pos.lng}, status=${pos.status}")
+            } else {
+                logger.info(">>> [EvoS GPS VALID] Замовлення #${order.id}: lat=${pos.lat}, lng=${pos.lng}, bearing=${pos.bearing}, speed=${pos.speed}, status=${pos.status}")
+
+                val lat = pos.lat
+                val lng = pos.lng
+                val bearing = pos.bearing ?: 0f
+                val speed = pos.speed ?: 0
+
+                order.lastEvosLat = lat
+                order.lastEvosLng = lng
+                order.lastEvosBearing = bearing
+
                 val trackingPayload = TrackingLocationDto(
-                    lat = pos.lat,
-                    lng = pos.lng,
-                    bearing = pos.bearing ?: 0f
+                    lat = lat,
+                    lng = lng,
+                    bearing = bearing
                 )
 
-                // Универсальная Map с дополнительными метаданными для веб-панели и сокетов
                 val trackingMap = mapOf(
-                    "orderId" to order.id,
-                    "lat" to pos.lat,
-                    "lng" to pos.lng,
-                    "bearing" to (pos.bearing ?: 0f),
-                    "speed" to (pos.speed ?: 0),
+                    "orderId" to (order.uuid?.toString() ?: order.id.toString()),
+                    "idLong" to (order.id ?: 0L),
+                    "lat" to lat,
+                    "lng" to lng,
+                    "bearing" to bearing,
+                    "speed" to speed,
+                    "status" to (pos.status ?: "gpsOk"),
                     "carInfo" to (order.evosDriverCarInfo ?: "")
                 )
 
-                // Рассылаем в каналы трекинга
-                messagingTemplate.convertAndSend("/topic/tracking/${order.id}", trackingPayload)
-                messagingTemplate.convertAndSend("/topic/orders/${order.id}/tracking", trackingMap)
-                messagingTemplate.convertAndSend("/topic/admin/tracking/${order.id}", trackingMap)
+                val orderUuidStr = order.uuid.toString()
+                val orderIdLongStr = order.id.toString()
+
+                // Рассылка клиенту
+                messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingPayload)
+                messagingTemplate.convertAndSend("/topic/order/$orderIdLongStr/tracking", trackingPayload)
+                messagingTemplate.convertAndSend("/topic/orders/$orderUuidStr/tracking", trackingMap)
+
+                // Рассылка в диспетчерскую
+                messagingTemplate.convertAndSend("/topic/admin/tracking/$orderUuidStr", trackingMap)
+                messagingTemplate.convertAndSend("/topic/admin/tracking/$orderIdLongStr", trackingMap)
+                messagingTemplate.convertAndSend("/topic/admin/drivers-location", listOf(trackingMap))
+                
+                logger.info(">>> [EvoS GPS STOMP SENT] Координати успішно відправлені в сокети для #${order.id}")
             }
         }
     }

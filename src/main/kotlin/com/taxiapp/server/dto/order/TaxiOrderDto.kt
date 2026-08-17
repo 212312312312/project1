@@ -74,36 +74,46 @@ data class TaxiOrderDto(
         idLong = order.id ?: 0L,
         client = OrderClientDto(order.client),
         driver = if (order.driver != null) {
-            OrderDriverDto(order.driver!!)
-        } else if (!order.evosDriverCarInfo.isNullOrBlank() || !order.evosDriverPhone.isNullOrBlank()) {
-            val rawInfo = order.evosDriverCarInfo ?: ""
-            val parts = rawInfo.split(",").map { it.trim() }
-            val carNumber = parts.getOrNull(0) ?: ""
-            val carColor = parts.getOrNull(1) ?: ""
-            val carModel = if (parts.size > 2) parts.drop(2).joinToString(", ") else (parts.getOrNull(0) ?: "Партнерське авто")
+    OrderDriverDto(order.driver!!)
+} else if (!order.evosDriverCarInfo.isNullOrBlank() || !order.evosDriverPhone.isNullOrBlank()) {
+    val rawInfo = order.evosDriverCarInfo ?: ""
+    val parts = rawInfo.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    
+    val carNumber = parts.getOrNull(0) ?: ""
+    val carColor = parts.getOrNull(1) ?: ""
+    
+    // Фильтруем номер телефона из названия марки/модели авто
+    val modelParts = parts.drop(2).filter { part ->
+        !part.startsWith("+") && !part.matches(Regex("^\\d{9,13}$")) && part != order.evosDriverPhone
+    }
+    val cleanCarModel = if (modelParts.isNotEmpty()) {
+        modelParts.joinToString(" ")
+    } else {
+        "Партнерське авто"
+    }
 
-            OrderDriverDto(
-                id = -1L,
-                fullName = "Водій (Партнерська мережа)",
-                phoneNumber = order.evosDriverPhone ?: "",
-                carModel = carModel,
-                carColor = carColor,
-                carPlateNumber = carNumber,
-                photoUrl = null,
-                completedRides = 100,
-                monthsInService = 12,
-                latitude = order.lastEvosLat,
-                longitude = order.lastEvosLng,
-                bearing = order.lastEvosBearing ?: 0f,
-                hasMovementIssue = false,
-                hasHearingIssue = false,
-                isDeaf = false,
-                hasSpeechIssue = false,
-                rating = order.evosRating ?: 5.0
-            )
-        } else {
-            null
-        },
+    OrderDriverDto(
+        id = -1L,
+        fullName = "Водій", // Убрали приписку "(Партнерська мережа)"
+        phoneNumber = order.evosDriverPhone ?: "",
+        carModel = cleanCarModel,
+        carColor = carColor,
+        carPlateNumber = carNumber,
+        photoUrl = null,
+        completedRides = 100,
+        monthsInService = 12,
+        latitude = order.lastEvosLat,
+        longitude = order.lastEvosLng,
+        bearing = order.lastEvosBearing ?: 0f,
+        hasMovementIssue = false,
+        hasHearingIssue = false,
+        isDeaf = false,
+        hasSpeechIssue = false,
+        rating = order.evosRating ?: 5.0
+    )
+} else {
+    null
+},
         status = order.status,
         fromAddress = order.fromAddress,
         toAddress = order.toAddress,
