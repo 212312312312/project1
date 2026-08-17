@@ -111,10 +111,20 @@ class AnalyticsService(
 
     @Transactional
     fun saveClientEvents(username: String, request: ClientEventBatchRequest) {
-        val client = clientRepository.findByUserPhone(username)
-            .orElseThrow { IllegalArgumentException("Клієнта не знайдено") }
+        val client = if (username.isNotBlank()) {
+            clientRepository.findByUserPhone(username).orElseGet {
+                clientRepository.findByUserLogin(username).orElseGet {
+                    clientRepository.findByEmail(username).orElse(null)
+                }
+            }
+        } else null
 
-        // Сохраняем UTM-метки только если они еще не были установлены (First-Touch Attribution)
+        if (client == null) {
+            // Запрос от неавторизованного пользователя
+            return
+        }
+
+        // Сохраняем UTM-метки (First-Touch Attribution)
         if (client.utmSource == null && request.utmSource != null) {
             client.utmSource = request.utmSource
             client.utmMedium = request.utmMedium
@@ -134,7 +144,7 @@ class AnalyticsService(
         }
         clientAppEventRepository.saveAll(entities)
 
-        // Пакетное сохранение кастомных действий (кликов) из приложения
+        // Пакетное сохранение кастомных действий (кликов)
         if (!request.customEvents.isNullOrEmpty()) {
             val actionEntities = request.customEvents.map { actionDto ->
                 ClientAppAction(
@@ -148,5 +158,4 @@ class AnalyticsService(
             clientAppActionRepository.saveAll(actionEntities)
         }
     }
-
   }

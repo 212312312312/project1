@@ -255,6 +255,10 @@ class OrderService(
 
     @Transactional
 fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
+    if (client.userPhone.isNullOrBlank()) {
+        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Для замовлення таксі необхідно прив'язати номер телефону")
+    }
+
     logger.info(">>> СОЗДАНИЕ ЗАКАЗА: From='${request.fromAddress}'")
     val tariff = tariffRepository.findById(request.tariffId)
         .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }

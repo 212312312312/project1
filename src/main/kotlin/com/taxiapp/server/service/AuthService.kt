@@ -120,10 +120,8 @@ val email: String = payload.email
             val name: String = payload.get("name") as String? ?: "Клієнт"
             
             var user = userRepository.findByEmail(email)
-            var isNew = false
 
             if (user == null) {
-                isNew = true
                 val newClient = Client().apply {
                     this.email = email
                     this.userLogin = email
@@ -131,13 +129,15 @@ val email: String = payload.email
                     this.passwordHash = passwordEncoder.encode(java.util.UUID.randomUUID().toString())
                     this.role = Role.CLIENT
                     this.isBlocked = false
-                    // Записуємо маркетингове джерело з Google-запиту в сутність
                     this.acquisitionSource = request.acquisitionSource
                 }
                 user = clientRepository.save(newClient)
             }
 
             if (user.isBlocked) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Акаунт заблоковано")
+
+            // Пользователь считается новым, пока у него нет верифицированного номера телефона
+            val isPhoneMissing = user.userPhone.isNullOrBlank()
 
             val userDetails = userDetailsService.loadUserByUsername(user.userLogin ?: user.email!!)
             val token = jwtUtils.generateToken(userDetails, user.uuid, user.role.name)
@@ -151,7 +151,7 @@ val email: String = payload.email
                 phoneNumber = user.userPhone ?: "", 
                 fullName = user.fullName,
                 role = user.role.name,
-                isNewUser = isNew,
+                isNewUser = isPhoneMissing, // <-- ВСЕГДА true, если номер не привязан
                 isPendingDeletion = isPending
             )
 
