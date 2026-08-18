@@ -4,11 +4,22 @@ import com.taxiapp.server.model.enums.PayoutStatus
 import com.taxiapp.server.model.finance.DriverPayout
 import java.time.LocalDateTime
 
+data class ConfirmPayoutRequest(
+    val dispatcherName: String? = null
+)
+
+data class CreatePayoutRequest(
+    val driverId: Long? = null,
+    val orderId: Long? = null,
+    val amount: Double,
+    val comment: String? = null
+)
+
 data class DriverPayoutDto(
-    val id: Long,
-    val driverId: Long,
-    val driverName: String,
-    val driverPhone: String,
+    val id: Long?,
+    val driverId: Long?,
+    val driverName: String?,
+    val driverPhone: String?,
     val orderId: Long?,
     val amount: Double,
     val status: PayoutStatus,
@@ -17,22 +28,17 @@ data class DriverPayoutDto(
     val paidAt: LocalDateTime?,
     val paidByDispatcher: String?
 ) {
-    constructor(entity: DriverPayout) : this(
-        id = entity.id!!,
-        driverId = entity.driver.id!!,
-        driverName = entity.driver.fullName.ifBlank { "Водій #${entity.driver.id}" },
-        driverPhone = entity.driver.userPhone ?: "",
-        orderId = entity.order?.id,
-        amount = entity.amount,
-        status = entity.status,
-        comment = entity.comment,
-        createdAt = entity.createdAt,
-        paidAt = entity.paidAt,
-        paidByDispatcher = entity.paidByDispatcher
+    constructor(payout: DriverPayout) : this(
+        id = payout.id,
+        driverId = payout.driver?.id,
+        driverName = payout.driver?.fullName ?: (payout.order?.evosDriverCarInfo ?: "Партнер EvoS"),
+        driverPhone = payout.driver?.userPhone ?: payout.order?.evosDriverPhone,
+        orderId = payout.order?.id,
+        amount = payout.amount,
+        status = payout.status,
+        comment = payout.comment,
+        createdAt = payout.createdAt,
+        paidAt = payout.paidAt,
+        paidByDispatcher = payout.paidByDispatcher
     )
 }
-
-data class ConfirmPayoutRequest(
-    val payoutId: Long,
-    val comment: String? = null
-)

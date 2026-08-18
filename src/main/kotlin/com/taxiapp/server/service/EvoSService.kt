@@ -141,12 +141,14 @@ class EvoSService(
 
         // 🟢 РАСЧЕТ РАЗНИЦЫ: Вычисляем add_cost для фиксации нашей цены
         val evosBaseCost = calculateEvoSCost(draftBody) ?: 0.0
-        val priceDiff = if (order.price > evosBaseCost && evosBaseCost > 0.0) {
+        order.evosBaseCost = evosBaseCost // Сохраняем базу EvoS для последующих пересчетов цены на лету
+
+        // order.price УЖЕ содержит в себе order.addedValue, повторно прибавлять его НЕЛЬЗЯ
+        val finalAddCost = if (order.price > evosBaseCost && evosBaseCost > 0.0) {
             order.price - evosBaseCost
         } else {
             0.0
         }
-        val finalAddCost = priceDiff + order.addedValue
 
         logger.info(">>> [EvoS Price Matching] Наша ціна: ${order.price} грн, База EvoS: $evosBaseCost грн, Розрахований add_cost: $finalAddCost грн")
 
@@ -170,22 +172,42 @@ class EvoSService(
         }
     }
 
+
+    // --- 3.1. СИНХРОНИЗАЦИЯ ЦЕНЫ НА ЛЕТУ С УЧЕТОМ БАЗЫ EVOS ---
+    fun updateOrderPriceInEvoS(order: TaxiOrder): Boolean {
+        val evosOrderUid = order.evosOrderUid ?: return false
+        val evosBase = order.evosBaseCost
+
+        // Считаем точный add_cost для EvoS, чтобы сумма (evosBase + addCost) была равна order.price
+        val targetAddCost = if (order.price > evosBase && evosBase > 0.0) {
+            order.price - evosBase
+        } else {
+            0.0
+        }
+
+        logger.info(">>> [EvoS Price Update] Оновлення ціни для $evosOrderUid: Нова ціна=${order.price} грн, База EvoS=$evosBase грн -> Відправляємо add_cost=$targetAddCost грн")
+        return updateAdditionalCost(evosOrderUid, targetAddCost)
+    }
+
     // --- 3. ОБНОВЛЕНИЕ ДОБАВОЧНОЙ СТОИМОСТИ (КОГДА КЛИЕНТ ПОДНИМАЕТ ЦЕНУ В ПРИЛОЖЕНИИ) ---
     fun updateAdditionalCost(evosOrderUid: String, newAddCost: Double): Boolean {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val url = "$baseUrl/api/weborders/$evosOrderUid/cost/additional"
 
         return try {
-            val requestEntity = HttpEntity(EvoSAddCostRequestDto(newAddCost), createHeaders())
+            val requestDto = EvoSAddCostRequestDto(
+                id = evosOrderUid,
+                amount = newAddCost
+            )
+            val requestEntity = HttpEntity(requestDto, createHeaders())
             restTemplate.exchange(url, HttpMethod.PUT, requestEntity, Void::class.java)
-            logger.info(">>> [EvoS] Добавочна вартість для $evosOrderUid оновлена: $newAddCost грн")
+            logger.info(">>> [EvoS] Добавочна вартість для $evosOrderUid оновлена на $newAddCost грн (amount=$newAddCost)")
             true
         } catch (e: Exception) {
             logger.error(">>> [EvoS] Помилка оновлення добавочної вартості: ${e.message}")
             false
         }
     }
-
     // --- ЗАПРОС СОСТОЯНИЯ ЗАКАЗА ---
     fun getOrderState(evosOrderUid: String): EvoSOrderStateResponseDto? {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')

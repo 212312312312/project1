@@ -63,7 +63,11 @@ data class EvoSCalculateCostResponseDto(
 
 // --- ЗАПРОС ДОБАВОЧНОЙ СТОИМОСТИ (PUT /api/weborders/{uid}/cost/additional) ---
 data class EvoSAddCostRequestDto(
-    @JsonProperty("add_cost") val addCost: Double
+    @JsonProperty("id")
+    val id: String? = null,
+
+    @JsonProperty("amount")
+    val amount: Double
 )
 
 data class EvoSOrderStateResponseDto(

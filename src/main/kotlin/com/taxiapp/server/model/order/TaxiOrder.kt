@@ -169,6 +169,9 @@ class TaxiOrder(
     @Column(name = "evos_order_uid")
     var evosOrderUid: String? = null,
 
+    @Column(name = "evos_base_cost", nullable = false)
+    var evosBaseCost: Double = 0.0,
+
     @Column(name = "is_sent_to_evos", nullable = false)
     var isSentToEvos: Boolean = false,
 

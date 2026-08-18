@@ -1801,13 +1801,15 @@ private fun blockCoordinateRounding(v: Double): Double = v
         
         val savedOrder = orderRepository.save(order)
 
-        // 🟢 Если заказ уже в партнерке EvoS — синхронизируем поднятие цены
+        // 🟢 Синхронизируем поднятие цены с EvoS через правильный пересчет дельты
         if (savedOrder.isSentToEvos && !savedOrder.evosOrderUid.isNullOrBlank()) {
-            evoSService.updateAdditionalCost(savedOrder.evosOrderUid!!, savedOrder.addedValue)
+            evoSService.updateOrderPriceInEvoS(savedOrder)
         }
 
         broadcastOrderChange(savedOrder, "UPDATE")
     }
+
+    
 
     fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
     val activeStatuses = listOf(
