@@ -1225,12 +1225,20 @@ fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     order.offeredDriver = null
     order.acceptedAt = LocalDateTime.now()
 
+    if (driver.latitude != null && driver.longitude != null && order.originLat != null && order.originLng != null) {
+        order.driverToPickupPolyline = fetchDirectionsPolyline(
+            startLat = driver.latitude!!,
+            startLng = driver.longitude!!,
+            endLat = order.originLat!!,
+            endLng = order.originLng!!
+        )
+    }
+
     if (order.status != OrderStatus.SCHEDULED) {
         order.status = OrderStatus.ACCEPTED
     } else {
         logger.info("Driver ${driver.id} reserved scheduled order ${order.id}")
     }
-
     val saved = orderRepository.save(order)
 
     // 5. ДОБАВЛЯЕМ В REDIS ТРЕКИНГ ДЛЯ АКТИВНОГО ВОДИТЕЛЯ
@@ -1330,6 +1338,35 @@ fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
         )
         
         return TaxiOrderDto(savedOrder)
+    }
+
+    fun fetchDirectionsPolyline(startLat: Double, startLng: Double, endLat: Double, endLng: Double): String? {
+        return try {
+            // OSRM принимает координаты в формате: долгота,широта;долгота,широта
+            val osrmUrl = "https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=polyline"
+            val connection = java.net.URL(osrmUrl).openConnection() as java.net.HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 4000
+            connection.readTimeout = 4000
+            connection.setRequestProperty("User-Agent", "TaxiServer/1.0")
+
+            if (connection.responseCode == 200) {
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = com.google.gson.JsonParser.parseString(responseText).asJsonObject
+                val routes = json.getAsJsonArray("routes")
+                if (routes != null && routes.size() > 0) {
+                    val polyline = routes[0].asJsonObject.get("geometry")?.asString
+                    logger.info(">>> [OSRM Router] Маршрут подачі успішно згенеровано (довжина рядка: ${polyline?.length})")
+                    polyline
+                } else null
+            } else {
+                logger.warn(">>> [OSRM Router] Помилка відповіді OSRM: код ${connection.responseCode}")
+                null
+            }
+        } catch (e: Exception) {
+            logger.error(">>> [OSRM Router] Помилка запиту до OSRM: ${e.message}")
+            null
+        }
     }
 
     @Transactional

@@ -179,6 +179,7 @@ class EvoSScheduler(
             }
 
             // --- 4) GPS трекинг позиции автомобиля ---
+            // --- 4) GPS трекинг позиции автомобиля ---
             val pos = evosState.drivercarPosition ?: evoSService.getDriverPosition(uid)
 
             logger.info(">>> [EvoS GPS Raw] Замовлення #${order.id} (UID: $uid): pos=$pos")
@@ -198,6 +199,21 @@ class EvoSScheduler(
                 order.lastEvosLat = lat
                 order.lastEvosLng = lng
                 order.lastEvosBearing = bearing
+
+                // ➕ Генерация полилинии подачи для партнера EvoS
+                if (order.driverToPickupPolyline.isNullOrEmpty() && 
+                    order.status == OrderStatus.ACCEPTED && 
+                    order.originLat != null && order.originLng != null &&
+                    order.originLat != 0.0 && order.originLng != 0.0) {
+                    
+                    val pickupPoly = orderService.fetchDirectionsPolyline(lat, lng, order.originLat!!, order.originLng!!)
+                    if (!pickupPoly.isNullOrEmpty()) {
+                        order.driverToPickupPolyline = pickupPoly
+                        val saved = orderRepository.save(order)
+                        orderService.broadcastOrderChange(saved, "UPDATE")
+                        logger.info(">>> [EvoS Route] Маршрут подачі згенеровано через OSRM та надіслано для #${order.id}")
+                    }
+                }
 
                 val trackingPayload = TrackingLocationDto(
                     lat = lat,

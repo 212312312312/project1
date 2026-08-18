@@ -34,6 +34,7 @@ data class TaxiOrderDto(
     val destLat: Double?,
     val destLng: Double?,
     val googleRoutePolyline: String?,
+    val driverToPickupPolyline: String? = null,
 
     val arrivedAt: LocalDateTime? = null,
     val waitingStartTime: LocalDateTime? = null, 
@@ -147,6 +148,7 @@ data class TaxiOrderDto(
         destLat = order.destLat,
         destLng = order.destLng,
         googleRoutePolyline = order.googleRoutePolyline,
+        driverToPickupPolyline = order.driverToPickupPolyline,
 
         arrivedAt = order.arrivedAt,
         

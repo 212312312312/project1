@@ -94,6 +94,9 @@ class TaxiOrder(
     @Column(nullable = true, length = 4096)
     var googleRoutePolyline: String? = null,
 
+    @Column(name = "driver_to_pickup_polyline", nullable = true, length = 4096)
+    var driverToPickupPolyline: String? = null,
+
     @Column(nullable = false)
     var price: Double = 0.0, 
     
