@@ -5,6 +5,7 @@ import com.taxiapp.server.model.finance.DriverPayout
 import java.time.LocalDateTime
 
 data class ConfirmPayoutRequest(
+    val payoutId: Long,
     val dispatcherName: String? = null
 )
 

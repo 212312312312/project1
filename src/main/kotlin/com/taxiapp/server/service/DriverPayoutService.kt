@@ -17,7 +17,7 @@ class DriverPayoutService(
     private val payoutRepository: DriverPayoutRepository
 ) {
     @Transactional
-    fun createPayout(driver: Driver, order: TaxiOrder?, amount: Double, comment: String?): DriverPayout {
+    fun createPayout(driver: Driver? = null, order: TaxiOrder?, amount: Double, comment: String?): DriverPayout {
         val payout = DriverPayout(
             driver = driver,
             order = order,

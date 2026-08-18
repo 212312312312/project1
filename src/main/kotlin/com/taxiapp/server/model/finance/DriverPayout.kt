@@ -14,8 +14,8 @@ class DriverPayout(
     val id: Long? = null,
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "driver_id", nullable = false)
-    val driver: Driver,
+    @JoinColumn(name = "driver_id", nullable = true)
+    val driver: Driver? = null,
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "order_id", nullable = true)

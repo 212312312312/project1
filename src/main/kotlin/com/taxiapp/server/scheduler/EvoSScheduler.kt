@@ -6,8 +6,13 @@ import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.service.EvoSService
 import com.taxiapp.server.service.NotificationService
 import com.taxiapp.server.service.OrderService
+import com.taxiapp.server.service.DriverPayoutService
 import com.taxiapp.server.service.SettingsService
 import org.slf4j.LoggerFactory
+import com.taxiapp.server.service.PromoService
+import com.taxiapp.server.service.PromoCodeService
+import com.taxiapp.server.service.ChatService
+import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
@@ -21,7 +26,12 @@ class EvoSScheduler(
     private val settingsService: SettingsService,
     private val orderService: OrderService,
     private val messagingTemplate: SimpMessagingTemplate,
-    private val notificationService: NotificationService
+    private val notificationService: NotificationService,
+    private val driverPayoutService: DriverPayoutService,
+    private val promoService: PromoService, // 👈 ДОБАВЛЕНО
+    private val promoCodeService: PromoCodeService, // 👈 ДОБАВЛЕНО
+    private val chatService: ChatService, // 👈 ДОБАВЛЕНО
+    private val redisTemplate: RedisTemplate<String, Any> // 👈 ДОБАВЛЕНО
 ) {
     private val logger = LoggerFactory.getLogger(EvoSScheduler::class.java)
 
@@ -103,6 +113,39 @@ class EvoSScheduler(
                     statusChanged = true
                     pushTitle = "Поїздку завершено"
                     pushBody = "Дякуємо, що скористалися нашими послугами!"
+
+                    // 1. Очистка активного заказа клиента в Redis
+                    redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
+
+                    // 2. Увеличение счетчика поездок клиента
+                    order.client.tripsCount += 1
+
+                    // 3. Гашение скидки (акционный план, промокод или награда)
+                    if (order.appliedDiscount > 0.0) {
+                        if (order.promoPlanId != null) {
+                            promoService.markPromoPlanAsUsed(order.client, order.promoPlanId!!)
+                        } else if (order.isPromoCodeUsed) {
+                            val activePromoUsage = promoCodeService.findActiveUsage(order.client)
+                            activePromoUsage?.let { promoCodeService.markAsUsed(it.id) }
+                        } else {
+                            promoService.markRewardAsUsed(order.client)
+                        }
+
+                        // Фиксация доплаты в "Розрахунки з водіями"
+                        val clientPays = (order.price - order.appliedDiscount).toInt()
+                        val subsidy = order.appliedDiscount.toInt()
+                        driverPayoutService.createPayout(
+                            driver = null,
+                            order = order,
+                            amount = order.appliedDiscount,
+                            comment = "Доплата партнеру EvoS за знижку (Клієнт: ${clientPays} грн, Доплата: ${subsidy} грн)"
+                        )
+                        logger.info(">>> [EvoS Payout] Створено розрахунок на суму ${order.appliedDiscount} грн для замовлення #${order.id}")
+                    }
+
+                    // 4. Прогресс в маркетинговых заданиях и очистка чата
+                    promoService.updateProgressOnRideCompletion(order.client, order)
+                    chatService.clearChatForOrder(order.id!!)
                 }
             } else if (execStatus.equals("Canceled", ignoreCase = true) || closeReason > 0) {
                 if (order.status != OrderStatus.CANCELLED) {
