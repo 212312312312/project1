@@ -22,16 +22,15 @@ class PromoCodeService(
     // --- АДМИН: Получить список всех кодов ---
     fun getAllPromoCodes(): List<PromoCodeDto> {
         return promoCodeRepository.findAll().map { promo ->
+            val realCount = promoUsageRepository.countByPromoCodeId(promo.id).toInt()
             PromoCodeDto(
                 id = promo.id,
                 code = promo.code,
                 discountPercent = promo.discountPercent,
                 maxDiscountAmount = promo.maxDiscountAmount,
                 usageLimit = promo.usageLimit,
-                usedCount = promo.usedCount,
+                usedCount = maxOf(promo.usedCount, realCount), // 👈 ФИКС: Реальный подсчет из базы
                 expiresAt = promo.expiresAt,
-                
-                // НОВОЕ: Передаем админу инфу про длительность
                 activationDurationHours = promo.activationDurationHours 
             )
         }

@@ -14,6 +14,8 @@ interface PromoUsageRepository : JpaRepository<PromoUsage, Long> {
     // Інші твої методи
     fun existsByClientAndPromoCodeId(client: Client, promoCodeId: Long): Boolean
     
+    fun countByPromoCodeId(promoCodeId: Long): Long
+
     fun findFirstByClientAndIsUsedFalseOrderByCreatedAtDesc(client: Client): Optional<PromoUsage>
 
     fun findAllByClientAndIsUsedFalse(client: Client): List<PromoUsage>

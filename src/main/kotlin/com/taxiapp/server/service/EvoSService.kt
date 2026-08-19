@@ -97,12 +97,12 @@ class EvoSService(
             }
         }
 
-        val discount = order.appliedDiscount
-        val clientPays = order.price - discount
+        val discount = Math.round(order.appliedDiscount).toInt()
+        val clientPays = Math.round(order.price - order.appliedDiscount).toInt()
 
         val commentBuilder = StringBuilder()
-        if (discount > 0.0) {
-            commentBuilder.append("[Служба] Клієнт платить: ${clientPays.toInt()}грн, Доплата: ${discount.toInt()}грн.")
+        if (discount > 0) {
+            commentBuilder.append("[Служба] Клієнт платить: ${clientPays}грн, Доплата: ${discount}грн.")
         }
         if (extraServiceNames.isNotEmpty()) {
             if (commentBuilder.isNotEmpty()) commentBuilder.append(" ")

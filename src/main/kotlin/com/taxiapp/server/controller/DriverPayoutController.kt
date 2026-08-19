@@ -8,8 +8,8 @@ import org.springframework.web.bind.annotation.*
 import java.security.Principal
 
 @RestController
-@RequestMapping("/api/admin/payouts")
-@PreAuthorize("hasAnyRole('ADMIN', 'DISPATCHER')")
+@RequestMapping("/api/v1/admin/payouts", "/api/admin/payouts", "/api/v1/api/admin/payouts")
+@PreAuthorize("hasAnyRole('ADMINISTRATOR', 'DISPATCHER') or hasAnyAuthority('ROLE_ADMINISTRATOR', 'ROLE_DISPATCHER')")
 class DriverPayoutController(
     private val payoutService: DriverPayoutService
 ) {

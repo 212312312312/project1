@@ -188,7 +188,7 @@ class OrderService(
                     val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
                     if (!isExpired) {
                         val percent = activePromoUsage.promoCode.discountPercent
-                        var calcDiscount = price * (percent / 100.0)
+                        var calcDiscount = kotlin.math.round(price * (percent / 100.0))
                         val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
                         if (maxAmount != null && calcDiscount > maxAmount) {
                             calcDiscount = maxAmount
@@ -204,13 +204,13 @@ class OrderService(
                     if (activeReward != null) {
                         val task = activeReward.promoTask
                         val percent = task.discountPercent
-                        discountAmount = price * (percent / 100.0)
-                        if (task.maxDiscountAmount != null && discountAmount > task.maxDiscountAmount!!) {
-                            discountAmount = task.maxDiscountAmount!!
+                        var calcDiscount = kotlin.math.round(price * (percent / 100.0))
+                        if (task.maxDiscountAmount != null && calcDiscount > task.maxDiscountAmount!!) {
+                            calcDiscount = task.maxDiscountAmount!!
                         }
+                        discountAmount = calcDiscount
                     }
                 }
-
                 // 🎁 НОВОЕ: Проверяем глобальный акционный план "Бесплатная минималка"
                 val activePlan = promoService.findActiveFreeMinPlan(client)
                 if (activePlan != null) {
@@ -343,7 +343,6 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
         isDebug = true
     )
 
-    // --- Логіка знижок (Promo) ---
     var discountAmount = 0.0
     var isPromoCodeUsedForThisOrder = false
     var promoCodeApplied = false
@@ -364,7 +363,7 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
             val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
             if (!isExpired) {
                 val percent = activePromoUsage.promoCode.discountPercent
-                var calcDiscount = calculatedPrice * (percent / 100.0)
+                var calcDiscount = kotlin.math.round(calculatedPrice * (percent / 100.0))
                 val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
                 if (maxAmount != null && calcDiscount > maxAmount) {
                     calcDiscount = maxAmount
@@ -380,44 +379,16 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
             if (activeReward != null) {
                 val task = activeReward.promoTask
                 val percent = task.discountPercent
-                discountAmount = calculatedPrice * (percent / 100.0)
-                if (task.maxDiscountAmount != null && discountAmount > task.maxDiscountAmount!!) {
-                    discountAmount = task.maxDiscountAmount!!
+                var calcDiscount = kotlin.math.round(calculatedPrice * (percent / 100.0))
+                if (task.maxDiscountAmount != null && calcDiscount > task.maxDiscountAmount!!) {
+                    calcDiscount = task.maxDiscountAmount!!
                 }
+                discountAmount = calcDiscount
                 isPromoCodeUsedForThisOrder = false
             }
         }
     } else {
         logger.info(">>> [Discount] Создание заказа для клиента #${client.id} без скидки: уже есть активный заказ со скидкой.")
-    }
-
-    val activePromoUsage = promoCodeService.findActiveUsage(client)
-    if (activePromoUsage != null) {
-        val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
-        if (!isExpired) {
-            val percent = activePromoUsage.promoCode.discountPercent
-            var calcDiscount = calculatedPrice * (percent / 100.0)
-            val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
-            if (maxAmount != null && calcDiscount > maxAmount) {
-                calcDiscount = maxAmount
-            }
-            discountAmount = calcDiscount
-            promoCodeApplied = true
-            isPromoCodeUsedForThisOrder = true
-        }
-    }
-
-    if (!promoCodeApplied) {
-        val activeReward = promoService.findActiveReward(client)
-        if (activeReward != null) {
-            val task = activeReward.promoTask
-            val percent = task.discountPercent
-            discountAmount = calculatedPrice * (percent / 100.0)
-            if (task.maxDiscountAmount != null && discountAmount > task.maxDiscountAmount!!) {
-                discountAmount = task.maxDiscountAmount!!
-            }
-            isPromoCodeUsedForThisOrder = false
-        }
     }
 
     // =====================================================================
@@ -427,7 +398,7 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
 
     // Вычисляем чистую долю клиента
     var clientPayAmount = fullPrice - discountAmount
-    if (clientPayAmount < 1.0) { // 👈 Ставимо порог 1.0 замість tariff.basePrice, щоб замовлення на коротку відстань створювалось зі знижкою!
+    if (clientPayAmount < 1.0) {
         clientPayAmount = 1.0
     }
     
@@ -1533,6 +1504,16 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     if (order.appliedDiscount > 0.0) {
         val marketingWalletSetting = appSettingRepository.findById("company_marketing_balance").orElse(null)
         val marketingBalance = marketingWalletSetting?.value?.toDoubleOrNull() ?: 0.0
+
+        // 🟢 ФИКС: Фиксируем долг/доплату в реестре выплат для диспетчерской
+        val clientPays = (order.price - order.appliedDiscount).toInt()
+        val subsidy = order.appliedDiscount.toInt()
+        driverPayoutService.createPayout(
+            driver = driver,
+            order = order,
+            amount = order.appliedDiscount,
+            comment = "Доплата водію за знижку клієнта (Клієнт: ${clientPays} грн, Доплата: ${subsidy} грн)"
+        )
 
         if (marketingBalance >= order.appliedDiscount) {
             marketingWalletSetting?.value = (marketingBalance - order.appliedDiscount).toString()

@@ -31,22 +31,33 @@ class PromoService(
 
     @Transactional
     fun activatePromoCode(client: Client, codeString: String) {
-        val promoCode = promoCodeRepository.findByCode(codeString)
+        val code = codeString.uppercase().trim()
+        val promoCode = promoCodeRepository.findByCode(code)
             .orElseThrow { RuntimeException("Промокод не знайдено") }
 
         if (promoCode.expiresAt != null && LocalDateTime.now().isAfter(promoCode.expiresAt)) {
             throw RuntimeException("Термін дії промокоду вичерпано")
         }
-        if (promoCode.usageLimit != null && promoCode.usedCount >= promoCode.usageLimit) {
+
+        // 🟢 Перевіряємо актуальну кількість використань через БД
+        val totalUsages = promoUsageRepository.countByPromoCodeId(promoCode.id)
+        if (promoCode.usageLimit != null && totalUsages >= promoCode.usageLimit) {
             throw RuntimeException("Ліміт використань цього коду вичерпано")
         }
 
-        val existingUsage = promoUsageRepository.findAllByClient(client)
-            .any { it.promoCode.id == promoCode.id }
-        
+        val existingUsage = promoUsageRepository.existsByClientAndPromoCodeId(client, promoCode.id)
         if (existingUsage) {
             throw RuntimeException("Ви вже активували цей промокод")
         }
+
+        val existingActive = promoUsageRepository.findFirstByClientAndIsUsedFalseOrderByCreatedAtDesc(client)
+        if (existingActive.isPresent) {
+            throw RuntimeException("У вас вже є активний промокод. Використайте його спочатку.")
+        }
+
+        // 🟢 ФИКС: Сразу увеличиваем счетчик и сохраняем в БД при вводе клиентом
+        promoCode.usedCount += 1
+        promoCodeRepository.save(promoCode)
 
         val usage = PromoUsage(
             client = client,
@@ -198,10 +209,6 @@ class PromoService(
                 codeReward?.let {
                     it.isUsed = true
                     promoUsageRepository.save(it)
-                    
-                    val code = it.promoCode
-                    code.usedCount++
-                    promoCodeRepository.save(code)
                 }
             }
         }
