@@ -1435,6 +1435,8 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
                     orderRepository.save(order)
                     order.comment = (order.comment ?: "") + " [Несписана доплата готівкою: $delta UAH]"
     orderRepository.save(order)
+
+    
     
     broadcastOrderChange(order, "UPDATE")
     
@@ -1576,6 +1578,14 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     
     val savedOrder = orderRepository.save(order)
     chatService.clearChatForOrder(orderId)
+
+    notificationService.sendOrderStatusToClient(
+        token = savedOrder.client.fcmToken,
+        orderId = savedOrder.id!!,
+        status = savedOrder.status.name, // "COMPLETED"
+        title = "Поїздку завершено",
+        body = "Дякуємо за поїздку! Оцініть, будь ласка, водія."
+    )
 
     broadcastOrderChange(savedOrder, "UPDATE") 
     
