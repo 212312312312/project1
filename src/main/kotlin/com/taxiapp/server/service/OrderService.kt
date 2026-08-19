@@ -472,13 +472,12 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
 
     // --- Збереження запланованого замовлення (До збереження ID) ---
     if (initialStatus == OrderStatus.SCHEDULED) {
-        logger.info("Order scheduled for ${newOrder.scheduledAt}")
-        val savedScheduled = orderRepository.save(newOrder)
-        // 🔥 ВНЕДРЕНО: Додаємо ID запланованого замовлення в активний Redis Set клієнта
-        redisTemplate.opsForSet().add(clientActiveOrdersKey, savedScheduled.id.toString())
-        broadcastOrderChange(savedScheduled, "ADD")
-        return TaxiOrderDto(savedScheduled)
-    }
+    logger.info("Order scheduled for ${newOrder.scheduledAt}")
+    val savedScheduled = orderRepository.save(newOrder)
+    redisTemplate.opsForSet().add(clientActiveOrdersKey, savedScheduled.id.toString())
+    broadcastOrderChange(savedScheduled, "ADD")
+    return TaxiOrderDto(savedScheduled) // 👈 Выход из метода
+}
 
     // Зберігаємо замовлення в БД, щоб згенерувати ID для транзакцій LiqPay
     var savedOrder = orderRepository.save(newOrder)
@@ -1074,10 +1073,10 @@ if (assignedDriver != null && (
         order.completedAt = LocalDateTime.now() // 👈 ФИКС: Задаем точное время отмены для архива
         redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
         
-        val saved = orderRepository.save(order) // 👈 Объявляем ровно ОДИН раз
-        broadcastOrderChange(saved, "ADD")
-        
-        chatService.clearChatForOrder(orderId) 
+        val saved = orderRepository.save(order)
+        chatService.clearChatForOrder(orderId)
+
+        // ✅ Оставляем ТОЛЬКО REMOVE (или UPDATE), убрав ошибочный "ADD"
         broadcastOrderChange(saved, "REMOVE")
         
         return TaxiOrderDto(saved)
