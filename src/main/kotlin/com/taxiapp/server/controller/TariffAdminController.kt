@@ -76,6 +76,11 @@ class TariffAdminController(
         return ResponseEntity.ok(mapOf("minDistance" to distance))
     }
 
+    @GetMapping("/evos-tariffs")
+    fun getEvoSTariffs(): ResponseEntity<List<String>> {
+        return ResponseEntity.ok(tariffAdminService.getEvoSTariffs())
+    }
+
     @PutMapping("/min-distance")
     fun updateMinDistance(@RequestParam distance: Double): ResponseEntity<MessageResponse> {
         tariffAdminService.updateMinOrderDistance(distance)

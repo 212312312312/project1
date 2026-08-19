@@ -19,7 +19,8 @@ class TariffAdminService(
     private val fileStorageService: FileStorageService,
     private val objectMapper: ObjectMapper,
     private val redisTemplate: RedisTemplate<String, Any>,
-    private val appSettingRepository: AppSettingRepository
+    private val appSettingRepository: AppSettingRepository,
+    private val evoSService: EvoSService // 👈 ДОБАВИТЬ В КОНСТРУКТОР
 ) {
     private val CACHE_KEY = "tariffs:all"
 
@@ -33,6 +34,7 @@ class TariffAdminService(
         return CarTariffDto(
             id = tariff.id,
             name = tariff.name,
+            evosTariffName = tariff.evosTariffName,
             basePrice = tariff.basePrice,
             pricePerKm = tariff.pricePerKm,
             sortOrder = tariff.sortOrder,
@@ -109,6 +111,7 @@ class TariffAdminService(
             name = request.name,
             basePrice = request.basePrice,
             pricePerKm = request.pricePerKm,
+            evosTariffName = request.evosTariffName,
             pricePerKmOutCity = request.pricePerKmOutCity,
             freeWaitingMinutes = request.freeWaitingMinutes,
             pricePerWaitingMinute = request.pricePerWaitingMinute,
@@ -146,6 +149,7 @@ class TariffAdminService(
         tariff.extraWaypointPrice = request.extraWaypointPrice
         tariff.freeWaitingMinutes = request.freeWaitingMinutes
         tariff.pricePerWaitingMinute = request.pricePerWaitingMinute
+        tariff.evosTariffName = request.evosTariffName
         tariff.isActive = request.isActive
         tariff.isBeta = request.isBeta
         tariff.isUnavailable = request.isUnavailable
@@ -166,6 +170,10 @@ class TariffAdminService(
         tariffRepository.save(tariff)
         
         redisTemplate.delete(CACHE_KEY)
+    }
+
+    fun getEvoSTariffs(): List<String> {
+        return evoSService.getEvoSTariffs()
     }
 
     fun getTariffById(id: Long): CarTariffDto {

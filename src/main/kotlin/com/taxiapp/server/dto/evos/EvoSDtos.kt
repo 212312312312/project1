@@ -61,6 +61,11 @@ data class EvoSCalculateCostResponseDto(
     @JsonProperty("can_pay_bonuses") val canPayBonuses: Boolean? = false
 )
 
+// --- СПИСОК ТАРИФОВ ИЗ EVOS (GET /api/tariffs) ---
+data class EvoSTariffItemDto(
+    @JsonProperty("name") val name: String
+)
+
 // --- ЗАПРОС ДОБАВОЧНОЙ СТОИМОСТИ (PUT /api/weborders/{uid}/cost/additional) ---
 data class EvoSAddCostRequestDto(
     @JsonProperty("id")

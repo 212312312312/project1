@@ -15,6 +15,9 @@ var name: String,
 
     @Column(nullable = false)
     var basePrice: Double,
+
+    @Column(name = "evos_tariff_name", nullable = true)
+    var evosTariffName: String? = null,
     
 
     @Column(nullable = false)

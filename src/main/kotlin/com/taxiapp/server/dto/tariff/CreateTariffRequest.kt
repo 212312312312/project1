@@ -37,6 +37,7 @@ data class CreateTariffRequest(
 
     val isBeta: Boolean = false,
     val isUnavailable: Boolean = false,
+    val evosTariffName: String? = null,
 
     val isActive: Boolean = true
 )

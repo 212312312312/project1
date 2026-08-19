@@ -7,6 +7,7 @@ data class UpdateTariffRequest(
     val freeWaitingMinutes: Int?,
     val pricePerWaitingMinute: Double?,
     val isActive: Boolean?,
+    val evosTariffName: String? = null,
     val isBeta: Boolean?,
     val isUnavailable: Boolean?
 )

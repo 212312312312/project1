@@ -12,6 +12,7 @@ data class CarTariffDto(
     val freeWaitingMinutes: Int,
     val pricePerWaitingMinute: Double,
     val extraWaypointPrice: Double,
+    val evosTariffName: String? = null,
     @get:com.fasterxml.jackson.annotation.JsonProperty("isActive")
     @field:com.fasterxml.jackson.annotation.JsonProperty("isActive")
     val isActive: Boolean,
@@ -36,6 +37,7 @@ data class CarTariffDto(
         extraWaypointPrice = tariff.extraWaypointPrice,
         isBeta = tariff.isBeta,
         isUnavailable = tariff.isUnavailable,
+        evosTariffName = tariff.evosTariffName,
         pricePerWaitingMinute = tariff.pricePerWaitingMinute,
         isActive = tariff.isActive,
         imageUrl = fullImageUrl ?: tariff.imageUrl,

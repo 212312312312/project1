@@ -133,6 +133,7 @@ class EvoSService(
             baggage = hasBaggage,
             conditioner = hasConditioner,
             courierDelivery = hasCourier,
+            flexibleTariffName = order.tariff.evosTariffName, // 👈 ПЕРЕДАЕМ ТАРИФ В EVOS
             extraChargeCodes = extraCodesList.ifEmpty { null },
             route = routeList,
             taxiColumnId = 0,
@@ -187,6 +188,27 @@ class EvoSService(
 
         logger.info(">>> [EvoS Price Update] Оновлення ціни для $evosOrderUid: Нова ціна=${order.price} грн, База EvoS=$evosBase грн -> Відправляємо add_cost=$targetAddCost грн")
         return updateAdditionalCost(evosOrderUid, targetAddCost)
+    }
+
+    // --- ПОЛУЧЕНИЕ СПИСКА ТАРИФОВ ИЗ EVOS (GET /api/tariffs) ---
+    fun getEvoSTariffs(): List<String> {
+        if (!settingsService.isEvosEnabled()) return emptyList()
+        val baseUrl = settingsService.getEvosUrl().trimEnd('/')
+        val url = "$baseUrl/api/tariffs"
+
+        return try {
+            val requestEntity = HttpEntity<Void>(createHeaders())
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                requestEntity,
+                Array<EvoSTariffItemDto>::class.java
+            )
+            response.body?.map { it.name } ?: emptyList()
+        } catch (e: Exception) {
+            logger.error(">>> [EvoS] Помилка отримання списку тарифів з EvoS: ${e.message}")
+            emptyList()
+        }
     }
 
     // --- 3. ОБНОВЛЕНИЕ ДОБАВОЧНОЙ СТОИМОСТИ (КОГДА КЛИЕНТ ПОДНИМАЕТ ЦЕНУ В ПРИЛОЖЕНИИ) ---
