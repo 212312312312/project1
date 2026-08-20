@@ -18,6 +18,25 @@ class JwtAuthFilter(
     private val userDetailsService: UserDetailsService
 ) : OncePerRequestFilter() {
 
+    override fun shouldNotFilter(request: HttpServletRequest): Boolean {
+        val path = request.servletPath
+        return path.startsWith("/api/v1/auth/") ||
+               path.startsWith("/api/v1/public/") ||
+               path.startsWith("/assets/") ||
+               path.startsWith("/ws") ||
+               path.startsWith("/topic/") ||
+               path.startsWith("/app/") ||
+               path == "/driver-register" ||
+               path == "/index.html" ||
+               path == "/" ||
+               path.endsWith(".html") ||
+               path.endsWith(".js") ||
+               path.endsWith(".css") ||
+               path.endsWith(".svg") ||
+               path.endsWith(".png") ||
+               path.endsWith(".ico")
+    }
+
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,

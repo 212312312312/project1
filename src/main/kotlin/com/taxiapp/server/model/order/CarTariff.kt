@@ -13,6 +13,9 @@ data class CarTariff(
     @Column(nullable = false)
 var name: String,
 
+    @Column(name = "body_type", nullable = true)
+    var bodyType: String? = null,
+
     @Column(nullable = false)
     var basePrice: Double,
 

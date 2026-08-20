@@ -9,5 +9,6 @@ data class UpdateTariffRequest(
     val isActive: Boolean?,
     val evosTariffName: String? = null,
     val isBeta: Boolean?,
-    val isUnavailable: Boolean?
+    val isUnavailable: Boolean?,
+    val bodyType: String? = null
 )

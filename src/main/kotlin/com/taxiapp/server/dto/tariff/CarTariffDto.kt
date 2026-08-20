@@ -19,6 +19,7 @@ data class CarTariffDto(
     val imageUrl: String?,
     val isBeta: Boolean,
     val isUnavailable: Boolean,
+    val bodyType: String? = null,
     
     // --- НОВІ ПОЛЯ ДЛЯ SMART PRICING ---
     var calculatedPrice: Double? = null,
@@ -37,6 +38,7 @@ data class CarTariffDto(
         extraWaypointPrice = tariff.extraWaypointPrice,
         isBeta = tariff.isBeta,
         isUnavailable = tariff.isUnavailable,
+        bodyType = tariff.bodyType,
         evosTariffName = tariff.evosTariffName,
         pricePerWaitingMinute = tariff.pricePerWaitingMinute,
         isActive = tariff.isActive,

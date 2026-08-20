@@ -5,6 +5,11 @@ enum class CityGrade {
     GRADE_B
 }
 
+enum class CarBodyType {
+    UNIVERSAL,
+    MINIBUS
+}
+
 enum class TariffStatus {
     BUSINESS,
     COMFORT,

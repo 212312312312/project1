@@ -139,57 +139,69 @@ class DriverService(
     }
 
     @Transactional
-fun updateDriverAllowedTariffsForCar(driver: Driver, car: Car) {
-    val cityName = driver.city ?: "Київ"
-    
-    val brand = carBrandRepository.findAll()
-        .find { it.name.equals(car.make, ignoreCase = true) }
+    fun updateDriverAllowedTariffsForCar(driver: Driver, car: Car) {
+        val cityName = driver.city ?: "Київ"
+        
+        val brand = carBrandRepository.findAll()
+            .find { it.name.equals(car.make, ignoreCase = true) }
 
-    val model = brand?.let { b ->
-        carModelRepository.findAll()
-            .filter { it.brand.id == b.id }
-            .find { it.name.equals(car.model, ignoreCase = true) }
-    }
+        val model = brand?.let { b ->
+            carModelRepository.findAll()
+                .filter { it.brand.id == b.id }
+                .find { it.name.equals(car.model, ignoreCase = true) }
+        }
 
-    val newAllowed = if (model != null) {
-        val eval = carClassifierService.evaluateCar(
-            com.taxiapp.server.dto.classifier.EvaluateCarRequest(
-                cityName = cityName,
-                modelId = model.id,
-                year = car.year
+        val newAllowed = if (model != null) {
+            val eval = carClassifierService.evaluateCar(
+                com.taxiapp.server.dto.classifier.EvaluateCarRequest(
+                    cityName = cityName,
+                    modelId = model.id,
+                    year = car.year
+                )
             )
-        )
 
-        tariffRepository.findAll().filter { tariff ->
-            eval.allowedTariffs.any { allowed -> 
-                tariff.name.contains(allowed, ignoreCase = true) || 
-                (allowed == "STANDARD" && tariff.name.contains("Стандарт", ignoreCase = true)) ||
-                (allowed == "COMFORT" && tariff.name.contains("Комфорт", ignoreCase = true)) ||
-                (allowed == "BUSINESS" && tariff.name.contains("Бізнес", ignoreCase = true))
+            tariffRepository.findAll().filter { tariff ->
+                eval.allowedTariffs.any { allowed -> 
+                    tariff.name.contains(allowed, ignoreCase = true) || 
+                    (allowed == "STANDARD" && tariff.name.contains("Стандарт", ignoreCase = true)) ||
+                    (allowed == "COMFORT" && tariff.name.contains("Комфорт", ignoreCase = true)) ||
+                    (allowed == "BUSINESS" && tariff.name.contains("Бізнес", ignoreCase = true))
+                }
+            }.toMutableSet()
+        } else {
+            tariffRepository.findAll().filter { 
+                it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true) 
+            }.toMutableSet()
+        }
+
+        // 🔥 ДОБАВЛЕНО: Автоматическое назначение кузовных тарифов (Универсал, Микроавтобус и т.д.)
+        if (!car.carType.isNullOrBlank()) {
+            val normalizedCarType = car.carType!!.trim().uppercase()
+            val bodyTariffs = tariffRepository.findAll().filter { tariff ->
+                tariff.bodyType != null && (
+                    tariff.bodyType!!.equals(normalizedCarType, ignoreCase = true) ||
+                    (normalizedCarType.contains("UNIVERSAL") && tariff.bodyType!!.contains("UNIVERSAL", ignoreCase = true)) ||
+                    (normalizedCarType.contains("MINIBUS") && tariff.bodyType!!.contains("MINIBUS", ignoreCase = true)) ||
+                    (normalizedCarType.contains("УНІВЕРСАЛ") && tariff.bodyType!!.contains("UNIVERSAL", ignoreCase = true)) ||
+                    (normalizedCarType.contains("МІКРОАВТОБУС") && tariff.bodyType!!.contains("MINIBUS", ignoreCase = true))
+                )
             }
-        }.toMutableSet()
-    } else {
-        tariffRepository.findAll().filter { 
-            it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true) 
-        }.toMutableSet()
+            newAllowed.addAll(bodyTariffs)
+        }
+
+        val finalAllowed = if (newAllowed.isEmpty()) tariffRepository.findAll().toMutableSet() else newAllowed
+
+        driver.allowedTariffs = finalAllowed
+        
+        val allowedIds = finalAllowed.map { it.id }.toSet()
+        driver.selectedTariffs.retainAll { it.id in allowedIds }
+        
+        if (driver.selectedTariffs.isEmpty()) {
+            driver.selectedTariffs.addAll(finalAllowed)
+        }
+
+        driverRepository.save(driver)
     }
-
-    val finalAllowed = if (newAllowed.isEmpty()) tariffRepository.findAll().toMutableSet() else newAllowed
-
-    // Обновляем разрешенные тарифы
-    driver.allowedTariffs = finalAllowed
-    
-    // Очищаем из выбранных тарифов те, которые больше недоступны для нового авто
-    val allowedIds = finalAllowed.map { it.id }.toSet()
-    driver.selectedTariffs.retainAll { it.id in allowedIds }
-    
-    // Если ничего не осталось выбранным, включаем все доступные по умолчанию
-    if (driver.selectedTariffs.isEmpty()) {
-        driver.selectedTariffs.addAll(finalAllowed)
-    }
-
-    driverRepository.save(driver)
-}
 
     @Transactional
     fun selectMainCard(driverId: Long, cardId: Long) {

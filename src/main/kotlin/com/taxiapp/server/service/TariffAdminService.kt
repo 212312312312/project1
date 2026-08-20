@@ -45,6 +45,7 @@ class TariffAdminService(
             isActive = tariff.isActive,
             isBeta = tariff.isBeta,
             isUnavailable = tariff.isUnavailable,
+            bodyType = tariff.bodyType,
             imageUrl = buildImageUrl(tariff.imageUrl)
         )
     }
@@ -119,6 +120,7 @@ class TariffAdminService(
             isActive = request.isActive,
             isBeta = request.isBeta,
             isUnavailable = request.isUnavailable,
+            bodyType = request.bodyType,
             imageUrl = filename,
             sortOrder = tariffRepository.findAll().size
         )
@@ -153,6 +155,7 @@ class TariffAdminService(
         tariff.isActive = request.isActive
         tariff.isBeta = request.isBeta
         tariff.isUnavailable = request.isUnavailable
+        tariff.bodyType = request.bodyType
         tariff.imageUrl = newFilename
 
         val updatedTariff = tariffRepository.save(tariff)
