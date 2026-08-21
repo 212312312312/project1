@@ -96,7 +96,7 @@ private val carModelRepository: CarModelRepository,
             make = request.make,
             model = request.model,
             color = request.color,
-            plateNumber = request.plateNumber,
+            plateNumber = request.plateNumber.trim().uppercase(),
             vin = "", 
             year = request.year,
             carType = request.carType,
@@ -332,7 +332,7 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
 
         car.make = request.make
         car.model = request.model
-        car.plateNumber = request.plateNumber
+        car.plateNumber = request.plateNumber.trim().uppercase()
         car.color = request.color
         car.year = request.year
         
@@ -382,65 +382,81 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
         return DriverDto(driver)
     }
 
-    @Transactional
-fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>? = null) {
-    val driver = driverRepository.findById(driverId)
-        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+   @Transactional
+    fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>? = null) {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
 
-    val tariffs = if (!tariffIds.isNullOrEmpty()) {
-        tariffRepository.findAllById(tariffIds).toMutableSet()
-    } else {
-        // АВТО-РАСЧЕТ ТАРИФОВ ПО КЛАССИФИКАТОРУ
-        val car = driver.car ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "У водія немає авто")
-        val cityName = driver.city ?: "Київ"
+        // 1. Сразу берем строго только активные тарифы
+        val activeTariffs = tariffRepository.findAll().filter { it.isActive }
 
-        // Ищем модель в базе классификатора
-        val brand = carBrandRepository.findAll()
-    .find { it.name.equals(car.make, ignoreCase = true) }
-
-val model = brand?.let { b ->
-    carModelRepository.findAll()
-        .filter { it.brand.id == b.id }
-        .find { it.name.equals(car.model, ignoreCase = true) }
-}
-
-        if (model != null) {
-            val eval = carClassifierService.evaluateCar(
-                com.taxiapp.server.dto.classifier.EvaluateCarRequest(
-                    cityName = cityName,
-                    modelId = model.id,
-                    year = car.year
-                )
-            )
-
-            // Фильтруем тарифы из БД по разрешенным категориям (STANDARD, COMFORT, BUSINESS)
-            tariffRepository.findAll().filter { tariff ->
-                eval.allowedTariffs.any { allowed -> 
-                    tariff.name.contains(allowed, ignoreCase = true) || 
-                    (allowed == "STANDARD" && tariff.name.contains("Стандарт", ignoreCase = true)) ||
-                    (allowed == "COMFORT" && tariff.name.contains("Комфорт", ignoreCase = true)) ||
-                    (allowed == "BUSINESS" && tariff.name.contains("Бізнес", ignoreCase = true))
-                }
-            }.toMutableSet()
+        val tariffs = if (!tariffIds.isNullOrEmpty()) {
+            tariffRepository.findAllById(tariffIds).filter { it.isActive }.toMutableSet()
         } else {
-            // Если модель не найдена в строгом классификаторе — по умолчанию даем "Стандарт"
-            tariffRepository.findAll().filter { 
-                it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true) 
-            }.toMutableSet()
+            val car = driver.car ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "У водія немає авто")
+            val cityName = driver.city ?: "Київ"
+
+            // Ищем модель в базе классификатора
+            val brand = carBrandRepository.findAll()
+                .find { it.name.trim().equals(car.make.trim(), ignoreCase = true) }
+
+            val model = brand?.let { b ->
+                carModelRepository.findAll()
+                    .filter { it.brand.id == b.id }
+                    .find { it.name.trim().equals(car.model.trim(), ignoreCase = true) }
+            }
+
+            val evalAllowed = if (model != null) {
+                carClassifierService.evaluateCar(
+                    com.taxiapp.server.dto.classifier.EvaluateCarRequest(
+                        cityName = cityName,
+                        modelId = model.id,
+                        year = car.year
+                    )
+                ).allowedTariffs
+            } else {
+                listOf("STANDARD")
+            }
+
+            // Хелпер для надежного сравнения типов кузова (учитывает 'і' и 'и')
+            fun matchesBody(tariffBody: String?, carBody: String?): Boolean {
+                if (tariffBody.isNullOrBlank() || carBody.isNullOrBlank()) return false
+                val t = tariffBody.trim().lowercase().replace('і', 'и')
+                val c = carBody.trim().lowercase().replace('і', 'и')
+                return t == c
+            }
+
+            // 1. Категорийные тарифы (Стандарт, Комфорт, Бизнес / Бізнес)
+            val matchedCategoryTariffs = activeTariffs.filter { tariff ->
+                if (!tariff.bodyType.isNullOrBlank()) return@filter false
+
+                evalAllowed.any { allowed ->
+                    tariff.name.contains(allowed, ignoreCase = true) ||
+                    (allowed == "STANDARD" && (tariff.name.contains("Стандарт", ignoreCase = true) || tariff.name.contains("Standard", ignoreCase = true))) ||
+                    (allowed == "COMFORT" && (tariff.name.contains("Комфорт", ignoreCase = true) || tariff.name.contains("Comfort", ignoreCase = true))) ||
+                    (allowed == "BUSINESS" && (tariff.name.contains("Бізнес", ignoreCase = true) || tariff.name.contains("Бизнес", ignoreCase = true) || tariff.name.contains("Business", ignoreCase = true)))
+                }
+            }
+
+            // 2. Кузовные тарифы (Универсал / Універсал, Минивэн и т.д.)
+            val matchedBodyTariffs = activeTariffs.filter { tariff ->
+                matchesBody(tariff.bodyType, car.carType)
+            }
+
+            (matchedCategoryTariffs + matchedBodyTariffs).toMutableSet()
+        }
+
+        val finalTariffs = if (tariffs.isEmpty()) activeTariffs.toSet() else tariffs
+
+        driver.registrationStatus = RegistrationStatus.APPROVED
+        driver.car?.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
+        driver.allowedTariffs = finalTariffs.toMutableSet()
+
+        driverRepository.save(driver)
+        if (!driver.email.isNullOrBlank()) {
+            emailService.sendDriverApprovalEmail(driver.email!!, driver.fullName ?: "Водій")
         }
     }
-
-    val finalTariffs = if (tariffs.isEmpty()) tariffRepository.findAll().toSet() else tariffs
-
-    driver.registrationStatus = RegistrationStatus.APPROVED
-    driver.car?.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
-    driver.allowedTariffs = finalTariffs.toMutableSet()
-
-    driverRepository.save(driver)
-    if (!driver.email.isNullOrBlank()) {
-        emailService.sendDriverApprovalEmail(driver.email!!, driver.fullName ?: "Водій")
-    }
-}
 
     // =========================================================================
     // 💰 НОВІ МЕТОДИ ДЛЯ ФІНАНСІВ (Баланс та Історія)

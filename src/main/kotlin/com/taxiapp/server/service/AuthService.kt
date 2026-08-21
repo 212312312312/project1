@@ -407,14 +407,14 @@ fun registerDriver(request: RegisterDriverRequest, files: Map<String, MultipartF
     }
 
         val car = Car(
-            make = request.make,
-            model = request.model,
-            color = request.color,
-            plateNumber = request.plateNumber,
-            vin = "", 
-            year = request.year,
-            carType = request.carType
-        ).apply {
+    make = request.make.trim(),
+    model = request.model.trim(),
+    color = request.color.trim(),
+    plateNumber = request.plateNumber.trim().uppercase(),
+    vin = "", 
+    year = request.year,
+    carType = request.carType?.trim()
+).apply {
             this.techPassportFront = techFrontUrl
             this.techPassportBack = techBackUrl
             this.insurancePhoto = insuranceUrl 
