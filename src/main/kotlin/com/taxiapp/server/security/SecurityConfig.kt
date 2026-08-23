@@ -72,7 +72,8 @@ class SecurityConfig(
                         "/api/v1/payments/callback",
                         "/api/v1/driver/forms/**",
                         "/api/v1/photo-control/driver/*/submit",
-                        "/error"
+                        "/error",
+                        "/api/v1/support/webhook"
                     ).permitAll()
 
                     // 2. Статические ресурсы и WebView-страницы (React build)
@@ -88,9 +89,9 @@ class SecurityConfig(
                     .requestMatchers("/api/v1/payments/**").hasAnyAuthority(
                         "ROLE_DRIVER", "ROLE_ADMINISTRATOR", "ROLE_CLIENT"
                     )
-                    .requestMatchers("/api/v1/admin/**", "/api/v1/photo-control/admin/**", "/api/v1/photo-control/request").hasAnyAuthority(
-                        "ROLE_ADMINISTRATOR", "ROLE_DISPATCHER"
-                    )
+.requestMatchers("/api/v1/admin/**", "/api/v1/support/admin/**", "/api/v1/photo-control/admin/**", "/api/v1/photo-control/request").hasAnyAuthority(
+    "ROLE_ADMINISTRATOR", "ROLE_DISPATCHER"
+)
                     .requestMatchers("/api/v1/driver/**").hasAnyAuthority(
                         "ROLE_DRIVER", "ROLE_ADMINISTRATOR"
                     )
