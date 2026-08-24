@@ -164,6 +164,64 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         ORDER BY count DESC
     """)
     fun getClientCancellationStats(): List<CancellationStatProjection>
+
+
+
+    // ➕ Аналитические агрегационные методы:
+
+// 1. Среднее время поиска водителя (в секундах)
+@Query(value = """
+    SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (o.accepted_at - o.created_at))), 0.0) 
+    FROM taxi_orders o 
+    WHERE o.accepted_at IS NOT NULL AND o.status = 'COMPLETED'
+""", nativeQuery = true)
+fun calculateAvgTimeToAcceptSeconds(): Double
+
+// 2. Статистика эффективности кнопки Boost (+20/+40 грн)
+@Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0")
+fun countOrdersWithBoost(): Long
+
+@Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0 AND o.status = 'COMPLETED'")
+fun countCompletedOrdersWithBoost(): Long
+
+// 3. Отмены клиентом до 60 секунд
+@Query(value = """
+    SELECT COUNT(o.id) 
+    FROM taxi_orders o 
+    WHERE o.status = 'CANCELLED' 
+      AND o.cancelled_at IS NOT NULL 
+      AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) <= 60
+""", nativeQuery = true)
+fun countQuickClientCancellations(): Long
+
+// 4. Отмены по таймауту поиска
+@Query("""
+    SELECT COUNT(o) 
+    FROM TaxiOrder o 
+    WHERE o.status = 'CANCELLED' 
+      AND (LOWER(o.cancellationReason) LIKE '%таймаут%' OR LOWER(o.cancellationReason) LIKE '%timeout%')
+""")
+fun countTimeoutCancellations(): Long
+
+// 5. Среднее число дней до совершения 8 поездки активным клиентом
+@Query(value = """
+    WITH client_8th_ride AS (
+        SELECT client_id, created_at,
+               ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY created_at ASC) as rn
+        FROM taxi_orders
+        WHERE status = 'COMPLETED'
+    ),
+    client_first_ride AS (
+        SELECT client_id, created_at as first_ride_at
+        FROM client_8th_ride
+        WHERE rn = 1
+    )
+    SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (r8.created_at - f.first_ride_at)) / 86400.0), 0.0)
+    FROM client_8th_ride r8
+    JOIN client_first_ride f ON r8.client_id = f.client_id
+    WHERE r8.rn = 8
+""", nativeQuery = true)
+fun calculateAvgDaysTo8thRide(): Double
 }
 
 interface CancellationStatProjection {

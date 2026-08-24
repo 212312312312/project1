@@ -34,6 +34,11 @@ data class CreateOrderRequestDto(
     val paymentMethod: String = "CASH",
     val addedValue: Double = 0.0,
 
-    // --- НОВЕ ПОЛЕ ---
-    val scheduledAt: LocalDateTime? = null
+    val scheduledAt: LocalDateTime? = null,
+
+    // ➕ ДОБАВИТЬ ЭТИ 4 ПОЛЯ:
+    val districtStart: String? = null,
+    val districtEnd: String? = null,
+    val deviceId: String? = null,
+    val boostAmount: Double? = 0.0
 )

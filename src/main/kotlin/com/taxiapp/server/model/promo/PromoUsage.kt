@@ -25,8 +25,6 @@ data class PromoUsage(
     @Column(nullable = false)
     var isUsed: Boolean = false,
 
-    // --- ВИПРАВЛЕНО: activatedAt -> createdAt ---
-    // Це виправить помилку в PromoService, де ми передаємо createdAt
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: LocalDateTime = LocalDateTime.now(),
     
@@ -34,5 +32,12 @@ data class PromoUsage(
     val expiresAt: LocalDateTime? = null,
 
     @Column(name = "used_at")
-    var usedAt: LocalDateTime? = null
+    var usedAt: LocalDateTime? = null,
+
+    // ➕ ДОЛЖНЫ БЫТЬ ТАКЖЕ В КОНСТРУКТОРЕ:
+    @Column(name = "device_id", length = 128)
+    var deviceId: String? = null,
+
+    @Column(name = "discount_amount", nullable = false, columnDefinition = "double precision default 0.0")
+    var discountAmount: Double = 0.0
 )

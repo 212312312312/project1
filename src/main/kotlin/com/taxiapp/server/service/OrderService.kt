@@ -37,6 +37,7 @@ class OrderService(
     private val notificationService: NotificationService,
     private val orderRepository: TaxiOrderRepository,
     private val tariffRepository: CarTariffRepository,
+    private val clientRepository: ClientRepository,
     private val promoService: PromoService,
     private val driverRepository: DriverRepository,
     private val promoCodeService: PromoCodeService,
@@ -451,6 +452,14 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
     if (activePlan != null) {
         newOrder.promoPlanId = activePlan.id
     }
+
+    // ➕ ДОБАВИТЬ СРАЗУ ПОСЛЕ ЭТОГО:
+    newOrder.districtStart = request.districtStart
+    newOrder.districtEnd = request.districtEnd
+    newOrder.basePrice = tariff.basePrice
+    newOrder.boostAdded = request.boostAmount ?: request.addedValue ?: 0.0
+    newOrder.clientDeviceId = request.deviceId ?: client.deviceId
+    newOrder.finalPrice = fullPrice
 
     if (!request.serviceIds.isNullOrEmpty()) {
         val services = taxiServiceRepository.findAllById(request.serviceIds)
@@ -1066,14 +1075,15 @@ if (assignedDriver != null && (
 }
 
         if (reasonText != null) {
-            order.cancellationReason = reasonText
-        }
+        order.cancellationReason = reasonText
+    }
 
-        order.status = OrderStatus.CANCELLED
-        order.completedAt = LocalDateTime.now() // 👈 ФИКС: Задаем точное время отмены для архива
-        redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
-        
-        val saved = orderRepository.save(order)
+    order.status = OrderStatus.CANCELLED
+    order.completedAt = LocalDateTime.now()
+    order.cancelledAt = LocalDateTime.now() // ➕ ДОБАВИТЬ ЭТУ СТРОКУ
+    redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
+    
+    val saved = orderRepository.save(order)
         chatService.clearChatForOrder(orderId)
 
         // ✅ Оставляем ТОЛЬКО REMOVE (или UPDATE), убрав ошибочный "ADD"
@@ -1134,12 +1144,13 @@ fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrder
 
         // Стандартне скасування для активних замовлень
         order.cancellationReason = reasonText
-        driverActivityService.processOrderCancellation(driver, orderId, penalty, reasonText)
-        redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
+    driverActivityService.processOrderCancellation(driver, orderId, penalty, reasonText)
+    redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
 
-        order.status = OrderStatus.CANCELLED
-        order.completedAt = LocalDateTime.now() // 👈 ФИКС: Фиксируем время отмены водителем
-        val saved = orderRepository.save(order)
+    order.status = OrderStatus.CANCELLED
+    order.completedAt = LocalDateTime.now()
+    order.cancelledAt = LocalDateTime.now() // ➕ ДОБАВИТЬ ЭТУ СТРОКУ
+    val saved = orderRepository.save(order)
 
         // <--- ОЧИСТКА ЧАТА --->
         chatService.clearChatForOrder(orderId)
@@ -1449,6 +1460,7 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
 
     order.status = OrderStatus.COMPLETED
     order.completedAt = LocalDateTime.now()
+    order.finalPrice = order.price // ➕ ДОБАВИТЬ ЭТУ СТРОКУ
     redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
 
     if (order.startedAt != null) {
@@ -1459,6 +1471,10 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     driver.completedRides += 1
     driverActivityService.processOrderCompletion(driver, order)
     order.client.tripsCount += 1
+    
+    // ➕ ДОБАВИТЬ ЭТИ 2 СТРОКИ:
+    order.client.totalCompletedOrders += 1
+    clientRepository.save(order.client)
 
     // =======================================================
     // 💰 РАСЧЕТ И СПИСАНИЕ КОМИССИИ ВОДИТЕЛЯ (С ПОЛНОЙ СУММЫ)
@@ -1786,10 +1802,15 @@ private fun blockCoordinateRounding(v: Double): Double = v
             .orElseThrow { RuntimeException("Замовлення не знайдено") }
 
         val basePriceWithoutExtra = order.price - order.addedValue
-        order.addedValue = addedValue
-        order.price = basePriceWithoutExtra + addedValue 
-        
-        val savedOrder = orderRepository.save(order)
+    order.addedValue = addedValue
+    order.price = basePriceWithoutExtra + addedValue 
+    
+    // ➕ ДОБАВИТЬ ЭТИ 3 СТРОКИ:
+    order.boostAdded = addedValue
+    order.boostClickedAt = LocalDateTime.now()
+    order.finalPrice = order.price
+
+    val savedOrder = orderRepository.save(order)
 
         // 🟢 Синхронизируем поднятие цены с EvoS через правильный пересчет дельты
         if (savedOrder.isSentToEvos && !savedOrder.evosOrderUid.isNullOrBlank()) {

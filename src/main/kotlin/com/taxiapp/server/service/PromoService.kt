@@ -30,7 +30,7 @@ class PromoService(
 ) {
 
     @Transactional
-    fun activatePromoCode(client: Client, codeString: String) {
+    fun activatePromoCode(client: Client, codeString: String, deviceId: String? = null) { // 👈 Проверьте наличие `deviceId: String? = null`
         val code = codeString.uppercase().trim()
         val promoCode = promoCodeRepository.findByCode(code)
             .orElseThrow { RuntimeException("Промокод не знайдено") }
@@ -39,7 +39,15 @@ class PromoService(
             throw RuntimeException("Термін дії промокоду вичерпано")
         }
 
-        // 🟢 Перевіряємо актуальну кількість використань через БД
+        // Антифрод проверка по deviceId
+        val targetDeviceId = deviceId ?: client.deviceId
+        if (!targetDeviceId.isNullOrBlank()) {
+            val deviceAlreadyUsed = promoUsageRepository.existsByDeviceIdAndClientIdNot(targetDeviceId, client.id!!)
+            if (deviceAlreadyUsed) {
+                throw RuntimeException("Цей пристрій вже використовував вітальний промокод під іншим акаунтом")
+            }
+        }
+
         val totalUsages = promoUsageRepository.countByPromoCodeId(promoCode.id)
         if (promoCode.usageLimit != null && totalUsages >= promoCode.usageLimit) {
             throw RuntimeException("Ліміт використань цього коду вичерпано")
@@ -55,7 +63,6 @@ class PromoService(
             throw RuntimeException("У вас вже є активний промокод. Використайте його спочатку.")
         }
 
-        // 🟢 ФИКС: Сразу увеличиваем счетчик и сохраняем в БД при вводе клиентом
         promoCode.usedCount += 1
         promoCodeRepository.save(promoCode)
 
@@ -64,7 +71,9 @@ class PromoService(
             promoCode = promoCode,
             isUsed = false,
             createdAt = LocalDateTime.now(),
-            expiresAt = promoCode.activationDurationHours?.let { LocalDateTime.now().plusHours(it.toLong()) }
+            expiresAt = promoCode.activationDurationHours?.let { LocalDateTime.now().plusHours(it.toLong()) },
+            deviceId = targetDeviceId,
+            discountAmount = 0.0
         )
         
         promoUsageRepository.save(usage)

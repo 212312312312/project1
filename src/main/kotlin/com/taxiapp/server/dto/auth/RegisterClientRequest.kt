@@ -15,5 +15,9 @@ data class RegisterClientRequest(
     val fullName: String,
 
     // Маркетинговый источник (например: fb_poznyaki, inst_promo)
-    val acquisitionSource: String? = null
+    val acquisitionSource: String? = null,
+
+    // ➕ Добавить deviceId и acquisitionChannel в DTO:
+val deviceId: String? = null,
+val acquisitionChannel: String? = null
 )

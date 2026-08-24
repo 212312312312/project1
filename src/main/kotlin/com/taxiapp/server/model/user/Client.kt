@@ -5,6 +5,7 @@ import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.OneToMany
 import jakarta.persistence.Table
+import java.time.LocalDateTime
 
 @Entity
 @Table(name = "clients")
@@ -41,6 +42,18 @@ class Client : User() {
 
     @Column(name = "utm_campaign")
     var utmCampaign: String? = null
+
+    @Column(name = "device_id", length = 128)
+var deviceId: String? = null
+
+@Column(name = "registration_datetime", nullable = false)
+var registrationDatetime: LocalDateTime = LocalDateTime.now()
+
+@Column(name = "acquisition_channel")
+var acquisitionChannel: String? = null // Meta, Google, ЖК-чат и т.д.
+
+@Column(name = "total_completed_orders", nullable = false, columnDefinition = "integer default 0")
+var totalCompletedOrders: Int = 0
     // ----------------------
 
 }

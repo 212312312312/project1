@@ -25,4 +25,9 @@ interface PromoUsageRepository : JpaRepository<PromoUsage, Long> {
     fun findActiveValidUsage(client: Client): Optional<PromoUsage>
 
     fun deleteAllByPromoCodeId(promoCodeId: Long)
+
+    // ➕ Проверка и подсчет попыток абуза скидок по deviceId:
+fun existsByDeviceIdAndClientIdNot(deviceId: String, clientId: Long): Boolean
+
+fun countByDeviceIdAndIsUsedTrue(deviceId: String): Long
 }

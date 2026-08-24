@@ -5,6 +5,7 @@ import com.taxiapp.server.service.AnalyticsService
 import org.springframework.http.ResponseEntity
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.web.bind.annotation.GetMapping
+import com.taxiapp.server.dto.analytics.*
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
@@ -16,5 +17,11 @@ class AdminAnalyticsController(private val analyticsService: AnalyticsService) {
     @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')")
     fun getGeneralAnalytics(): ResponseEntity<GeneralAnalyticsResponse> {
         return ResponseEntity.ok(analyticsService.getGeneralAnalytics())
+    }
+
+    @GetMapping("/deep")
+    @PreAuthorize("hasAnyAuthority('ADMINISTRATOR', 'ROLE_ADMINISTRATOR')") 
+    fun getDeepAnalytics(): ResponseEntity<DeepAnalyticsResponse> {
+        return ResponseEntity.ok(analyticsService.getDeepAnalytics())
     }
 }

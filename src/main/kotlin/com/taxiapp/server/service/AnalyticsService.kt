@@ -109,6 +109,75 @@ class AnalyticsService(
         )
     }
 
+    // ➕ Добавить расчет глубокой аналитики:
+@Transactional(readOnly = true)
+fun getDeepAnalytics(): DeepAnalyticsResponse {
+    val general = getGeneralAnalytics()
+    val totalOrders = taxiOrderRepository.count()
+    
+    // 1. Операционные KPIs
+    val avgTimeToAccept = taxiOrderRepository.calculateAvgTimeToAcceptSeconds()
+    val boostOrdersCount = taxiOrderRepository.countOrdersWithBoost()
+    val boostCompletedCount = taxiOrderRepository.countCompletedOrdersWithBoost()
+    val quickCancels = taxiOrderRepository.countQuickClientCancellations()
+    val timeoutCancels = taxiOrderRepository.countTimeoutCancellations()
+
+    val kpis = OperationalKpiDto(
+        fulfillmentRate = general.fulfillmentRate,
+        avgTimeToAcceptSeconds = Math.round(avgTimeToAccept * 10.0) / 10.0,
+        boostOrdersPercent = if (totalOrders > 0) Math.round((boostOrdersCount.toDouble() / totalOrders * 100.0) * 10.0) / 10.0 else 0.0,
+        boostFulfillmentPercent = if (boostOrdersCount > 0) Math.round((boostCompletedCount.toDouble() / boostOrdersCount * 100.0) * 10.0) / 10.0 else 0.0,
+        quickClientCancelPercent = if (totalOrders > 0) Math.round((quickCancels.toDouble() / totalOrders * 100.0) * 10.0) / 10.0 else 0.0,
+        timeoutCancelPercent = if (totalOrders > 0) Math.round((timeoutCancels.toDouble() / totalOrders * 100.0) * 10.0) / 10.0 else 0.0
+    )
+
+    // 2. Когортный анализ (Недельные когорты по дате регистрации)
+    val allClients = clientRepository.findAll()
+    val cohorts = allClients
+        .groupBy { client ->
+            val dt = client.registrationDatetime
+            "${dt.year}-W${String.format("%02d", (dt.dayOfYear / 7) + 1)}"
+        }
+        .map { (cohortWeek, clientsInCohort) ->
+            val size = clientsInCohort.size.toDouble()
+            val ride2Count = clientsInCohort.count { it.totalCompletedOrders >= 2 }
+            val ride3Count = clientsInCohort.count { it.totalCompletedOrders >= 3 }
+            val ride5Count = clientsInCohort.count { it.totalCompletedOrders >= 5 }
+            
+            CohortRetentionDto(
+                cohortWeek = cohortWeek,
+                totalUsers = clientsInCohort.size.toLong(),
+                ride2RetentionPercent = if (size > 0) Math.round((ride2Count / size * 100.0) * 10.0) / 10.0 else 0.0,
+                ride3RetentionPercent = if (size > 0) Math.round((ride3Count / size * 100.0) * 10.0) / 10.0 else 0.0,
+                ride5PlusRetentionPercent = if (size > 0) Math.round((ride5Count / size * 100.0) * 10.0) / 10.0 else 0.0
+            )
+        }
+        .sortedByDescending { it.cohortWeek }
+
+    // 3. Срок окупаемости (Payback Period при CAC = 120 грн и комиссии = 15 грн)
+    val avgDaysTo8th = taxiOrderRepository.calculateAvgDaysTo8thRide()
+    val payback = PaybackPeriodDto(
+        estimatedCac = 120.0,
+        avgCommissionPerOrder = 15.0,
+        targetRidesForPayback = 8,
+        avgDaysToPayback = Math.round(avgDaysTo8th * 10.0) / 10.0
+    )
+
+    // 4. Антифрод метрики
+    val fraud = FraudMetricDto(
+        blockedPromoAttempts = 0L, // Счетчик из Redis или логов блокировок
+        suspiciousDevicesCount = 0L
+    )
+
+    return DeepAnalyticsResponse(
+        general = general,
+        kpis = kpis,
+        cohorts = cohorts,
+        payback = payback,
+        fraud = fraud
+    )
+}
+
     @Transactional
     fun saveClientEvents(username: String, request: ClientEventBatchRequest) {
         val client = if (username.isNotBlank()) {

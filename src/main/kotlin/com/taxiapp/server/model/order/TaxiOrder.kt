@@ -197,8 +197,32 @@ class TaxiOrder(
     @Column(name = "last_evos_bearing")
     var lastEvosBearing: Float? = null,
 
+    @Column(name = "cancelled_at")
+    var cancelledAt: LocalDateTime? = null, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "district_start", length = 100)
+    var districtStart: String? = null, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "district_end", length = 100)
+    var districtEnd: String? = null, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "base_price", nullable = false, columnDefinition = "double precision default 0.0")
+    var basePrice: Double = 0.0, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "boost_added", nullable = false, columnDefinition = "double precision default 0.0")
+    var boostAdded: Double = 0.0, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "boost_clicked_at")
+    var boostClickedAt: LocalDateTime? = null, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "final_price", nullable = false, columnDefinition = "double precision default 0.0")
+    var finalPrice: Double = 0.0, // 👈 ЗАПЯТАЯ
+
+    @Column(name = "client_device_id", length = 128)
+    var clientDeviceId: String? = null, // 👈 ЗАПЯТАЯ
+
     @ManyToMany(fetch = FetchType.EAGER)
-    @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
+    @Fetch(FetchMode.SUBSELECT)
     @JoinTable(
         name = "order_services_link",
         joinColumns = [JoinColumn(name = "order_id")],
@@ -207,7 +231,7 @@ class TaxiOrder(
     val selectedServices: MutableList<TaxiServiceEntity> = mutableListOf()
 ) {
     @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
-    @Fetch(FetchMode.SUBSELECT) // <-- Защита от MultipleBagFetchException и Cartesian Product
+    @Fetch(FetchMode.SUBSELECT)
     var stops: MutableList<OrderStop> = mutableListOf()
     
     @Column(name = "current_stop_order", nullable = false, columnDefinition = "integer default 0")
