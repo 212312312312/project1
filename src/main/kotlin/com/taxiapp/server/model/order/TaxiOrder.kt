@@ -128,6 +128,9 @@ class TaxiOrder(
     @Column(name = "client_comment", length = 400)
     var comment: String? = null,
 
+    @Column(name = "evos_cancel_pending", nullable = false)
+    var evosCancelPending: Boolean = false,
+
     @Column(name = "cancellation_reason")
     var cancellationReason: String? = null,
 

@@ -1011,11 +1011,16 @@ fun cancelOrder(user: User, orderId: Long, reasonText: String? = null): TaxiOrde
     val evosUid = order.evosOrderUid
     if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
         val cancelledInEvos = evoSService.cancelOrderInEvoS(evosUid)
-        if (!cancelledInEvos) {
-            logger.warn(">>> [EvoS] Партнер вернул 0 или ошибку при попытке отмены заказа $evosUid")
+        if (cancelledInEvos) {
+            order.isSentToEvos = false
+            order.evosCancelPending = false
+            order.evosOrderUid = null
+            logger.info(">>> [EvoS] Заказ $evosUid успешно отменен в EvoS")
+        } else {
+            // Ошибка или занят диспетчером -> ставим в очередь повторной отмены
+            order.evosCancelPending = true
+            logger.warn(">>> [EvoS] Партнер не подтвердил отмену $evosUid. Заказ помечен для Retry-отмены.")
         }
-        order.isSentToEvos = false
-        order.evosOrderUid = null
     }
 
     order.driver?.let { drv ->
@@ -1194,11 +1199,14 @@ fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
         logger.info(">>> [OrderService] Водитель #${driver.id} принимает заказ #${order.id}. Отзываем из EvoS (UID: $evosUid)...")
         val cancelledInEvos = evoSService.cancelOrderInEvoS(evosUid)
-        if (!cancelledInEvos) {
-            logger.warn(">>> [OrderService] EvoS не подтвердил отмену $evosUid, но заказ перехвачен нашим водителем.")
+        if (cancelledInEvos) {
+            order.isSentToEvos = false
+            order.evosCancelPending = false
+            order.evosOrderUid = null
+        } else {
+            order.evosCancelPending = true
+            logger.warn(">>> [OrderService] EvoS не подтвердил отмену $evosUid. Передан в фоновый Retry.")
         }
-        order.isSentToEvos = false
-        order.evosOrderUid = null
     }
 
     // 4. НАЗНАЧАЕМ НАШЕГО ВОДИТЕЛЯ

@@ -18,6 +18,7 @@ class ClientAdminService(
     @Transactional(readOnly = true)
     fun getAllClients(): List<ClientDto> {
         return clientRepository.findAll()
+            .filter { !it.userPhone.isNullOrBlank() } // 👈 Игнорируем незавершенные Google-регистрации
             .sortedBy { it.id }
             .map { ClientDto(it) }
     }

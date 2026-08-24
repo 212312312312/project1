@@ -292,4 +292,47 @@ class EvoSScheduler(
             }
         }
     }
+
+
+    // 3. Повторная отмена зависших заказов в сети EvoS (каждые 5 сек)
+    @Scheduled(fixedDelay = 5000)
+    @Transactional
+    fun retryCancelPendingEvosOrders() {
+        if (!settingsService.isEvosEnabled()) return
+
+        val pendingOrders = orderRepository.findAllByEvosCancelPendingTrue()
+        if (pendingOrders.isEmpty()) return
+
+        for (order in pendingOrders) {
+            val uid = order.evosOrderUid ?: continue
+
+            // 1. Проверяем текущее состояние в EvoS
+            val evosState = evoSService.getOrderState(uid)
+            val isAlreadyClosed = evosState != null && (
+                evosState.executionStatus.equals("Canceled", ignoreCase = true) ||
+                (evosState.closeReason != null && evosState.closeReason > 0) ||
+                evosState.orderIsArchive == true
+            )
+
+            if (isAlreadyClosed) {
+                logger.info(">>> [EvoS Retry] Заказ #${order.id} (UID: $uid) уже закрыт в EvoS. Снимаем флаг ожидания.")
+                order.evosCancelPending = false
+                order.isSentToEvos = false
+                orderRepository.save(order)
+                continue
+            }
+
+            // 2. Если всё еще открыт — повторяем запрос на отмену
+            logger.info(">>> [EvoS Retry] Повторная попытка отмены заказа #${order.id} (UID: $uid)...")
+            val isSuccess = evoSService.cancelOrderInEvoS(uid)
+            if (isSuccess) {
+                logger.info(">>> [EvoS Retry] Заказ #${order.id} (UID: $uid) успешно отменен в EvoS.")
+                order.evosCancelPending = false
+                order.isSentToEvos = false
+                orderRepository.save(order)
+            } else {
+                logger.warn(">>> [EvoS Retry] Заказ #${order.id} (UID: $uid) не удалось отменить. Повтор через 5 сек.")
+            }
+        }
+    }
 }

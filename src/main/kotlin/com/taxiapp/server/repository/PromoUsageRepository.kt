@@ -4,6 +4,7 @@ import com.taxiapp.server.model.promo.PromoUsage
 import com.taxiapp.server.model.user.Client
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
+import java.time.LocalDateTime
 import java.util.Optional
 
 interface PromoUsageRepository : JpaRepository<PromoUsage, Long> {
@@ -13,6 +14,8 @@ interface PromoUsageRepository : JpaRepository<PromoUsage, Long> {
     
     // Інші твої методи
     fun existsByClientAndPromoCodeId(client: Client, promoCodeId: Long): Boolean
+
+    fun findAllByIsUsedFalseAndExpiresAtBetween(start: LocalDateTime, end: LocalDateTime): List<PromoUsage>
     
     fun countByPromoCodeId(promoCodeId: Long): Long
 

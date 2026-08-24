@@ -311,4 +311,34 @@ val message = com.google.firebase.messaging.Message.builder()
         println("Не вдалося відправити пуш про скасування водію: ${e.message}")
     }
 }
+/**
+     * МЕТОД 7: Маркетингове нагадування про знижку, що згорає.
+     */
+    fun sendDiscountReminderNotification(token: String?, percent: Int, expiresAt: LocalDateTime) {
+        if (token.isNullOrBlank()) return
+
+        val timeStr = expiresAt.format(DateTimeFormatter.ofPattern("HH:mm, dd.MM"))
+        val title = "Встигніть скористатися знижкою $percent%!"
+        val body = "Ваша персональна знижка $percent% діє до $timeStr. Замовте поїздку вигідно!"
+
+        try {
+            val notification = Notification.builder()
+                .setTitle(title)
+                .setBody(body)
+                .build()
+
+            val message = Message.builder()
+                .setToken(token)
+                .setNotification(notification)
+                .putData("type", "DISCOUNT_EXPIRING")
+                .putData("percent", percent.toString())
+                .putData("expiresAt", timeStr)
+                .build()
+
+            FirebaseMessaging.getInstance().send(message)
+            logger.info(">>> PUSH (Discount Reminder $percent%) успішно надіслано на токен: ${token.take(10)}...")
+        } catch (e: Exception) {
+            logger.error(">>> Помилка FCM (Discount Reminder): ${e.message}")
+        }
+    }
 }

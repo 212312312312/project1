@@ -7,6 +7,10 @@ import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
 import java.io.IOException
 import net.coobird.thumbnailator.Thumbnails
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import javax.imageio.ImageIO
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -31,6 +35,73 @@ class FileStorageService {
         } catch (e: Exception) {
             throw RuntimeException("Не удалось создать директорию для загрузки файлов!", e)
         }
+    }
+
+    fun storeIconAsWebp(file: MultipartFile, targetWidth: Int = 400, targetHeight: Int = 400): String {
+        if (file.isEmpty) throw RuntimeException("Файл порожній.")
+
+        val originalImage = ImageIO.read(file.inputStream)
+            ?: throw RuntimeException("Неможливо декодувати зображення.")
+
+        // 1. Авто-обрезка прозрачных полей (Auto-trim)
+        val trimmedImage = trimTransparentBorders(originalImage)
+
+        // 2. Пропорциональное масштабирование в bounding box (targetWidth x targetHeight)
+        val scaledImage = Thumbnails.of(trimmedImage)
+            .size(targetWidth, targetHeight)
+            .keepAspectRatio(true)
+            .asBufferedImage()
+
+        // 3. Сохранение в формате .webp
+        val uuid = UUID.randomUUID().toString()
+        val webpFilename = "$uuid.webp"
+        val destinationFile = rootLocation.resolve(webpFilename).normalize().toAbsolutePath()
+
+        val webpWritten = ImageIO.write(scaledImage, "webp", destinationFile.toFile())
+        if (!webpWritten) {
+            // Fallback на PNG, если плагин не зарегистрирован в runtime
+            val pngFilename = "$uuid.png"
+            val fallbackFile = rootLocation.resolve(pngFilename).normalize().toAbsolutePath()
+            ImageIO.write(scaledImage, "png", fallbackFile.toFile())
+            return pngFilename
+        }
+
+        return webpFilename
+    }
+
+    /**
+     * Алгоритм сканирования альфа-канала и обрезки прозрачных полей
+     */
+    private fun trimTransparentBorders(img: BufferedImage): BufferedImage {
+        val width = img.width
+        val height = img.height
+
+        var minX = width
+        var minY = height
+        var maxX = 0
+        var maxY = 0
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixel = img.getRGB(x, y)
+                val alpha = (pixel shr 24) and 0xFF
+                // Порог альфы > 10 (не полностью прозрачный пиксель)
+                if (alpha > 10) {
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
+
+        // Если картинка полностью прозрачная, возвращаем оригинал
+        if (minX >= maxX || minY >= maxY) return img
+
+        val trimmedWidth = (maxX - minX) + 1
+        val trimmedHeight = (maxY - minY) + 1
+
+        return img.getSubimage(minX, minY, trimmedWidth, trimmedHeight)
     }
 
     /**

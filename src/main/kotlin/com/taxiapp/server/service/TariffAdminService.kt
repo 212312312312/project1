@@ -105,7 +105,7 @@ class TariffAdminService(
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
         
         val filename: String? = file?.let {
-            fileStorageService.storeFile(it)
+            fileStorageService.storeIconAsWebp(it, 400, 400)
         }
 
         val newTariff = CarTariff(
@@ -141,7 +141,7 @@ class TariffAdminService(
 
         if (file != null) {
             fileStorageService.delete(tariff.imageUrl)
-            newFilename = fileStorageService.storeFile(file)
+            newFilename = fileStorageService.storeIconAsWebp(file, 400, 400)
         }
 
         tariff.name = request.name
