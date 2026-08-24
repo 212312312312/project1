@@ -64,6 +64,9 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByClientId(clientId: Long): List<TaxiOrder>
 
+    // ➕ Добавить в TaxiOrderRepository.kt:
+fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateTime): List<TaxiOrder>
+
     fun findAllByDriverId(driverId: Long): List<TaxiOrder>
 
     fun findAllByClientOrderByCreatedAtDesc(client: Client): List<TaxiOrder>
@@ -195,12 +198,13 @@ fun countCompletedOrdersWithBoost(): Long
 fun countQuickClientCancellations(): Long
 
 // 4. Отмены по таймауту поиска
-@Query("""
-    SELECT COUNT(o) 
-    FROM TaxiOrder o 
-    WHERE o.status = 'CANCELLED' 
-      AND (LOWER(o.cancellationReason) LIKE '%таймаут%' OR LOWER(o.cancellationReason) LIKE '%timeout%')
-""")
+@Query(value = """
+    SELECT COUNT(o.id) 
+    FROM taxi_orders o 
+    WHERE (o.accepted_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.accepted_at - o.created_at)) > 180)
+       OR (o.status = 'CANCELLED' AND o.cancelled_at IS NOT NULL AND o.accepted_at IS NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) > 180)
+       OR (o.status IN ('REQUESTED', 'OFFERING') AND EXTRACT(EPOCH FROM (NOW() - o.created_at)) > 180)
+""", nativeQuery = true)
 fun countTimeoutCancellations(): Long
 
 // 5. Среднее число дней до совершения 8 поездки активным клиентом

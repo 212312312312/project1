@@ -1924,5 +1924,8 @@ private fun blockCoordinateRounding(v: Double): Double = v
         return TaxiOrderDto(savedOrder)
     }
 
+
+
+
     fun mapToDto(order: TaxiOrder): TaxiOrderDto = TaxiOrderDto(order)
 }
