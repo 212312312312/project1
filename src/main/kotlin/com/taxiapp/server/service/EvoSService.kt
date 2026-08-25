@@ -37,6 +37,7 @@ class EvoSService(
         headers.set("Accept", "application/json")
         headers.set("Authorization", "Basic $basicAuth")
         headers.set("X-WO-API-APP-ID", appId)
+        headers.set("X-API-VERSION", "1.46.0") // 👈 ДОБАВЛЕНО: поддержка доп. кодов и расширенных статусов
         return headers
     }
 
@@ -70,7 +71,7 @@ class EvoSService(
 
         val isReservation = order.scheduledAt != null
         val formattedRequiredTime = order.scheduledAt?.let {
-            it.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+            it.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")) // 👈 ИСПРАВЛЕНО: строгий формат без миллисекунд
         }
 
         var hasAnimal = false

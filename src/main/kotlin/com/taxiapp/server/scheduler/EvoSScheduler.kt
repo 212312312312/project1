@@ -28,10 +28,10 @@ class EvoSScheduler(
     private val messagingTemplate: SimpMessagingTemplate,
     private val notificationService: NotificationService,
     private val driverPayoutService: DriverPayoutService,
-    private val promoService: PromoService, // 👈 ДОБАВЛЕНО
-    private val promoCodeService: PromoCodeService, // 👈 ДОБАВЛЕНО
-    private val chatService: ChatService, // 👈 ДОБАВЛЕНО
-    private val redisTemplate: RedisTemplate<String, Any> // 👈 ДОБАВЛЕНО
+    private val promoService: PromoService,
+    private val promoCodeService: PromoCodeService,
+    private val chatService: ChatService,
+    private val redisTemplate: RedisTemplate<String, Any>
 ) {
     private val logger = LoggerFactory.getLogger(EvoSScheduler::class.java)
 
@@ -44,8 +44,8 @@ class EvoSScheduler(
         val delaySeconds = settingsService.getEvosDelaySeconds()
         val thresholdTime = LocalDateTime.now().minusSeconds(delaySeconds)
 
-        val candidateOrders = orderRepository.findAllByStatusAndIsSentToEvosFalseAndCreatedAtBefore(
-            OrderStatus.REQUESTED,
+        val candidateOrders = orderRepository.findAllByStatusInAndIsSentToEvosFalseAndCreatedAtBefore(
+            listOf(OrderStatus.REQUESTED, OrderStatus.SCHEDULED),
             thresholdTime
         )
 
@@ -58,7 +58,7 @@ class EvoSScheduler(
                 val saved = orderRepository.save(order)
                 orderService.broadcastOrderChange(saved, "UPDATE")
 
-                logger.info(">>> [EvoSScheduler] Замовлення #${order.id} передано в EvoS (UID: $evosUid)")
+                logger.info(">>> [EvoSScheduler] Замовлення #${order.id} (Статус: ${order.status}) передано в EvoS (UID: $evosUid)")
             }
         }
     }
@@ -84,7 +84,6 @@ class EvoSScheduler(
             val oldStatus = order.status
             var pushTitle: String? = null
             var pushBody: String? = null
-
 
             // --- 1) Данные автомобиля, телефона и рейтинга водителя ---
             if (!evosState.orderCarInfo.isNullOrBlank() && order.evosDriverCarInfo != evosState.orderCarInfo) {
@@ -166,6 +165,7 @@ class EvoSScheduler(
                     execStatus.equals("CarAtPlace", ignoreCase = true) || driverExecStatus == 2 || driverExecStatus == 4 -> {
                         if (order.status != OrderStatus.DRIVER_ARRIVED) {
                             order.status = OrderStatus.DRIVER_ARRIVED
+                            order.isEvosDriverAssigned = true
                             order.arrivedAt = order.arrivedAt ?: LocalDateTime.now()
                             isChanged = true
                             statusChanged = true
@@ -177,6 +177,7 @@ class EvoSScheduler(
                     execStatus.equals("Executing", ignoreCase = true) || execStatus.equals("Running", ignoreCase = true) || driverExecStatus == 5 -> {
                         if (order.status != OrderStatus.IN_PROGRESS) {
                             order.status = OrderStatus.IN_PROGRESS
+                            order.isEvosDriverAssigned = true
                             order.startedAt = order.startedAt ?: LocalDateTime.now()
                             isChanged = true
                             statusChanged = true
@@ -184,9 +185,35 @@ class EvoSScheduler(
                             pushBody = "Поїздка розпочалася. Гарної дороги!"
                         }
                     }
-                    // Водитель назначен / принял заказ
+                    // Водитель забронировал предзаказ заранее (driver_execution_status == 10)
+                    driverExecStatus == 10 -> {
+                        if (!order.isEvosDriverAssigned) {
+                            order.isEvosDriverAssigned = true
+                            isChanged = true
+                            statusChanged = true
+                            pushTitle = "Попереднє замовлення підтверджено"
+                            pushBody = "Водій підтвердив завчасну подачу: ${order.evosDriverCarInfo ?: "автомобіль"}"
+                        }
+                    }
+                    // Водитель назначен / принял заказ (CarAssigned / CarFound)
                     execStatus.equals("CarAssigned", ignoreCase = true) || execStatus.equals("CarFound", ignoreCase = true) || hasCar || driverExecStatus == 3 -> {
-                        if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.DRIVER_ARRIVED && order.status != OrderStatus.IN_PROGRESS) {
+                        if (order.status == OrderStatus.SCHEDULED) {
+                            // Для предзаказа сохраняем назначение борта, статус переводим в ACCEPTED только если до подачи осталось <= 30 мин
+                            val isNearExecution = order.scheduledAt?.isBefore(LocalDateTime.now().plusMinutes(30)) ?: true
+                            if (!order.isEvosDriverAssigned) {
+                                order.isEvosDriverAssigned = true
+                                isChanged = true
+                                statusChanged = true
+                                pushTitle = "Водія знайдено"
+                                pushBody = "На попереднє замовлення призначено: ${order.evosDriverCarInfo ?: "автомобіль"}"
+                            }
+                            if (isNearExecution && order.status != OrderStatus.ACCEPTED) {
+                                order.status = OrderStatus.ACCEPTED
+                                order.acceptedAt = order.acceptedAt ?: LocalDateTime.now()
+                                isChanged = true
+                                statusChanged = true
+                            }
+                        } else if (order.status != OrderStatus.ACCEPTED && order.status != OrderStatus.DRIVER_ARRIVED && order.status != OrderStatus.IN_PROGRESS) {
                             order.status = OrderStatus.ACCEPTED
                             order.isEvosDriverAssigned = true
                             order.acceptedAt = order.acceptedAt ?: LocalDateTime.now()
@@ -196,6 +223,10 @@ class EvoSScheduler(
                             pushBody = "До вас прямує: ${order.evosDriverCarInfo ?: "автомобіль"}"
                         }
                     }
+                    // Ожидание поиска машины для предзаказа
+                    execStatus.equals("WaitingCarSearch", ignoreCase = true) -> {
+                        logger.debug(">>> [EvoS] Предзаказ #${order.id} в статусе WaitingCarSearch")
+                    }
                 }
             }
 
@@ -204,10 +235,8 @@ class EvoSScheduler(
                 val saved = orderRepository.save(order)
                 val action = if (saved.status == OrderStatus.COMPLETED || saved.status == OrderStatus.CANCELLED) "REMOVE" else "UPDATE"
 
-                // Мгновенно рассылает обновленный заказ с синтетическим DTO водителя клиенту и в веб-панель
                 orderService.broadcastOrderChange(saved, action)
 
-                // Отправка FCM пуша клиенту
                 if (statusChanged && pushTitle != null && pushBody != null) {
                     notificationService.sendOrderStatusToClient(
                         token = saved.client.fcmToken,
@@ -221,78 +250,72 @@ class EvoSScheduler(
                 logger.info(">>> [EvoSScheduler] Замовлення #${order.id}: $oldStatus -> ${order.status} (${order.evosDriverCarInfo})")
             }
 
-            // --- 4) GPS трекинг позиции автомобиля ---
-            // --- 4) GPS трекинг позиции автомобиля ---
-            val pos = evosState.drivercarPosition ?: evoSService.getDriverPosition(uid)
+            // --- 4) GPS трекинг позиции автомобиля (запрашиваем только если борт уже найден/назначен) ---
+            val hasAssignedCar = !evosState.orderCarInfo.isNullOrBlank() || order.isEvosDriverAssigned
 
-            logger.info(">>> [EvoS GPS Raw] Замовлення #${order.id} (UID: $uid): pos=$pos")
+            if (hasAssignedCar) {
+                val pos = evosState.drivercarPosition ?: evoSService.getDriverPosition(uid)
 
-            if (pos == null) {
-                logger.warn(">>> [EvoS GPS] Об'єкт позиції null для замовлення #${order.id}")
-            } else if (pos.lat == null || pos.lng == null || pos.lat == 0.0 || pos.lng == 0.0) {
-                logger.warn(">>> [EvoS GPS] Координати відсутні або 0.0: lat=${pos.lat}, lng=${pos.lng}, status=${pos.status}")
-            } else {
-                logger.info(">>> [EvoS GPS VALID] Замовлення #${order.id}: lat=${pos.lat}, lng=${pos.lng}, bearing=${pos.bearing}, speed=${pos.speed}, status=${pos.status}")
+                if (pos != null && pos.lat != null && pos.lng != null && pos.lat != 0.0 && pos.lng != 0.0) {
+                    val lat = pos.lat
+                    val lng = pos.lng
+                    val bearing = pos.bearing ?: 0f
+                    val speed = pos.speed ?: 0
 
-                val lat = pos.lat
-                val lng = pos.lng
-                val bearing = pos.bearing ?: 0f
-                val speed = pos.speed ?: 0
+                    order.lastEvosLat = lat
+                    order.lastEvosLng = lng
+                    order.lastEvosBearing = bearing
 
-                order.lastEvosLat = lat
-                order.lastEvosLng = lng
-                order.lastEvosBearing = bearing
-
-                // ➕ Генерация полилинии подачи для партнера EvoS
-                if (order.driverToPickupPolyline.isNullOrEmpty() && 
-                    order.status == OrderStatus.ACCEPTED && 
-                    order.originLat != null && order.originLng != null &&
-                    order.originLat != 0.0 && order.originLng != 0.0) {
-                    
-                    val pickupPoly = orderService.fetchDirectionsPolyline(lat, lng, order.originLat!!, order.originLng!!)
-                    if (!pickupPoly.isNullOrEmpty()) {
-                        order.driverToPickupPolyline = pickupPoly
-                        val saved = orderRepository.save(order)
-                        orderService.broadcastOrderChange(saved, "UPDATE")
-                        logger.info(">>> [EvoS Route] Маршрут подачі згенеровано через OSRM та надіслано для #${order.id}")
+                    // Генерация полилинии подачи для партнера EvoS
+                    if (order.driverToPickupPolyline.isNullOrEmpty() && 
+                        order.status == OrderStatus.ACCEPTED && 
+                        order.originLat != null && order.originLng != null &&
+                        order.originLat != 0.0 && order.originLng != 0.0) {
+                        
+                        val pickupPoly = orderService.fetchDirectionsPolyline(lat, lng, order.originLat!!, order.originLng!!)
+                        if (!pickupPoly.isNullOrEmpty()) {
+                            order.driverToPickupPolyline = pickupPoly
+                            val saved = orderRepository.save(order)
+                            orderService.broadcastOrderChange(saved, "UPDATE")
+                            logger.info(">>> [EvoS Route] Маршрут подачі згенеровано через OSRM та надіслано для #${order.id}")
+                        }
                     }
+
+                    val trackingPayload = TrackingLocationDto(
+                        lat = lat,
+                        lng = lng,
+                        bearing = bearing
+                    )
+
+                    val trackingMap = mapOf(
+                        "orderId" to (order.uuid?.toString() ?: order.id.toString()),
+                        "idLong" to (order.id ?: 0L),
+                        "lat" to lat,
+                        "lng" to lng,
+                        "bearing" to bearing,
+                        "speed" to speed,
+                        "status" to (pos.status ?: "gpsOk"),
+                        "carInfo" to (order.evosDriverCarInfo ?: "")
+                    )
+
+                    val orderUuidStr = order.uuid.toString()
+                    val orderIdLongStr = order.id.toString()
+
+                    // Рассылка клиенту
+                    messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingPayload)
+                    messagingTemplate.convertAndSend("/topic/order/$orderIdLongStr/tracking", trackingPayload)
+                    messagingTemplate.convertAndSend("/topic/orders/$orderUuidStr/tracking", trackingMap)
+
+                    // Рассылка в диспетчерскую
+                    messagingTemplate.convertAndSend("/topic/admin/tracking/$orderUuidStr", trackingMap)
+                    messagingTemplate.convertAndSend("/topic/admin/tracking/$orderIdLongStr", trackingMap)
+                    messagingTemplate.convertAndSend("/topic/admin/drivers-location", listOf(trackingMap))
+                    
+                    logger.info(">>> [EvoS GPS STOMP SENT] Координати успішно відправлені в сокети для #${order.id}")
                 }
-
-                val trackingPayload = TrackingLocationDto(
-                    lat = lat,
-                    lng = lng,
-                    bearing = bearing
-                )
-
-                val trackingMap = mapOf(
-                    "orderId" to (order.uuid?.toString() ?: order.id.toString()),
-                    "idLong" to (order.id ?: 0L),
-                    "lat" to lat,
-                    "lng" to lng,
-                    "bearing" to bearing,
-                    "speed" to speed,
-                    "status" to (pos.status ?: "gpsOk"),
-                    "carInfo" to (order.evosDriverCarInfo ?: "")
-                )
-
-                val orderUuidStr = order.uuid.toString()
-                val orderIdLongStr = order.id.toString()
-
-                // Рассылка клиенту
-                messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingPayload)
-                messagingTemplate.convertAndSend("/topic/order/$orderIdLongStr/tracking", trackingPayload)
-                messagingTemplate.convertAndSend("/topic/orders/$orderUuidStr/tracking", trackingMap)
-
-                // Рассылка в диспетчерскую
-                messagingTemplate.convertAndSend("/topic/admin/tracking/$orderUuidStr", trackingMap)
-                messagingTemplate.convertAndSend("/topic/admin/tracking/$orderIdLongStr", trackingMap)
-                messagingTemplate.convertAndSend("/topic/admin/drivers-location", listOf(trackingMap))
-                
-                logger.info(">>> [EvoS GPS STOMP SENT] Координати успішно відправлені в сокети для #${order.id}")
             }
         }
     }
-
 
     // 3. Повторная отмена зависших заказов в сети EvoS (каждые 5 сек)
     @Scheduled(fixedDelay = 5000)

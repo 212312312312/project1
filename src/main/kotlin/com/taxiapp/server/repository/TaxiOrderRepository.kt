@@ -79,6 +79,11 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
 
     fun findAllByEvosCancelPendingTrue(): List<TaxiOrder>
 
+    fun findAllByStatusInAndIsSentToEvosFalseAndCreatedAtBefore(
+        statuses: List<OrderStatus>,
+        thresholdTime: LocalDateTime
+    ): List<TaxiOrder>
+
     // Перевірка, чи є у клієнта активні (незавершені) замовлення зі знижкою
     @Query("""
         SELECT COUNT(o) > 0 

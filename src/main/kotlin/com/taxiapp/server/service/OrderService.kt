@@ -1619,14 +1619,23 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     @Transactional
     fun activateScheduledOrders() {
         val now = LocalDateTime.now()
-        // Шукаємо замовлення, де час подачі настане через 30-35 хвилин (вікно активації)
-        // АБО ті, які вже прострочені (для очищення)
         val checkThreshold = now.plusMinutes(35) 
 
         val pendingOrders = orderRepository.findAllByStatusAndScheduledAtBefore(OrderStatus.SCHEDULED, checkThreshold)
 
         for (order in pendingOrders) {
             if (order.scheduledAt == null) continue
+
+            // 👈 ДОБАВЛЕНО: Если предзаказ передан в EvoS и партнерский водитель уже закреплен — не перехватываем
+            if (order.isSentToEvos && order.isEvosDriverAssigned) {
+                logger.info(">>> [OrderService] Заплановане замовлення #${order.id} вже закріплене за водієм EvoS (${order.evosDriverCarInfo})")
+                if (order.scheduledAt!!.isBefore(now.plusMinutes(30)) && order.status == OrderStatus.SCHEDULED) {
+                    order.status = OrderStatus.ACCEPTED
+                    orderRepository.save(order)
+                    broadcastOrderChange(order, "UPDATE")
+                }
+                continue
+            }
 
             // 1. Якщо замовлення безнадійно прострочене (більше години) -> Скасовуємо
             if (order.scheduledAt!!.isBefore(now.minusHours(1))) {
