@@ -137,7 +137,7 @@ class EvoSService(
             flexibleTariffName = order.tariff.evosTariffName, // 👈 ПЕРЕДАЕМ ТАРИФ В EVOS
             extraChargeCodes = extraCodesList.ifEmpty { null },
             route = routeList,
-            taxiColumnId = 0,
+            taxiColumnId = 1,
             paymentType = pType
         )
 

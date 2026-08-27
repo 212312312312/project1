@@ -79,6 +79,18 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
 
     fun findAllByEvosCancelPendingTrue(): List<TaxiOrder>
 
+    @Query("""
+        SELECT DISTINCT o FROM TaxiOrder o 
+        WHERE o.client.id = :clientId 
+           OR (o.client.userPhone = :phone AND :phone IS NOT NULL AND :phone != '')
+        ORDER BY o.id DESC
+    """)
+    fun findAllOrdersForClientHistory(
+        @Param("clientId") clientId: Long,
+        @Param("phone") phone: String?,
+        pageable: org.springframework.data.domain.Pageable
+    ): List<TaxiOrder>
+
     fun findAllByStatusInAndIsSentToEvosFalseAndCreatedAtBefore(
         statuses: List<OrderStatus>,
         thresholdTime: LocalDateTime

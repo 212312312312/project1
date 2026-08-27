@@ -48,7 +48,9 @@ class OrderController(
 
     @GetMapping("/history")
     fun getHistory(
-        authentication: Authentication // <-- ВИКОРИСТОВУЄМО Authentication ЗАМІСТЬ @AuthenticationPrincipal
+        authentication: Authentication,
+        @RequestParam(defaultValue = "0") page: Int,
+        @RequestParam(defaultValue = "30") size: Int
     ): List<TaxiOrderDto> {
         // 1. Беремо номер телефону з токена (це найнадійніше)
         val phone = authentication.name
@@ -62,8 +64,8 @@ class OrderController(
              return emptyList()
         }
         
-        // 4. Отримуємо історію
-        return orderService.getClientHistory(user)
+        // 4. Отримуємо історію з урахуванням сторінки та розміру пачки
+        return orderService.getClientHistory(user, page, size)
     }
 
    @GetMapping("/{id}")

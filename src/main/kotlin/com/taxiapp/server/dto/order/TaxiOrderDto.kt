@@ -68,7 +68,8 @@ data class TaxiOrderDto(
     val evosDriverPhone: String? = null,
 
     val currentStopOrder: Int = 0,
-    val waypointArrivedAt: LocalDateTime? = null
+    val waypointArrivedAt: LocalDateTime? = null,
+    val cancellationReason: String? = null
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.uuid.toString(),
@@ -228,7 +229,8 @@ data class TaxiOrderDto(
         evosDriverPhone = order.evosDriverPhone,
 
         currentStopOrder = order.currentStopOrder,
-        waypointArrivedAt = order.waypointArrivedAt
+        waypointArrivedAt = order.waypointArrivedAt,
+        cancellationReason = order.cancellationReason
     )
 
     companion object {
