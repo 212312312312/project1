@@ -79,6 +79,8 @@ class EvoSService(
         var hasConditioner = false
         var hasCourier = false
         var hasWagon = false
+        var hasTerminal = false
+        var hasReceipt = false
 
         val extraServiceNames = mutableListOf<String>()
         val extraCodesList = mutableListOf<String>()
@@ -86,7 +88,7 @@ class EvoSService(
         order.selectedServices.forEach { service ->
             extraServiceNames.add(service.name)
             if (!service.evosCode.isNullOrBlank()) {
-                val code = service.evosCode!!
+                val code = service.evosCode!!.trim().uppercase()
                 extraCodesList.add(code)
                 when (code) {
                     "ANIMAL" -> hasAnimal = true
@@ -94,6 +96,8 @@ class EvoSService(
                     "CONDIT" -> hasConditioner = true
                     "COURIER" -> hasCourier = true
                     "WAGON" -> hasWagon = true
+                    "TERMINAL" -> hasTerminal = true
+                    "CHECK" -> hasReceipt = true
                 }
             }
         }
@@ -134,7 +138,9 @@ class EvoSService(
             baggage = hasBaggage,
             conditioner = hasConditioner,
             courierDelivery = hasCourier,
-            flexibleTariffName = order.tariff.evosTariffName, // 👈 ПЕРЕДАЕМ ТАРИФ В EVOS
+            terminal = hasTerminal,
+            receipt = hasReceipt,
+            flexibleTariffName = order.tariff.evosTariffName,
             extraChargeCodes = extraCodesList.ifEmpty { null },
             route = routeList,
             taxiColumnId = 1,
