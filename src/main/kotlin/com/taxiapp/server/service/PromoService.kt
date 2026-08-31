@@ -111,7 +111,9 @@ class PromoService(
             return
         }
 
+        val now = LocalDateTime.now()
         val activeTasks = promoTaskRepository.findAllByIsActiveTrue()
+            .filter { it.expiresAt == null || it.expiresAt!!.isAfter(now) } // <- Прогресс начисляется только за актуальные задания
 
         for (task in activeTasks) {
             val progressOpt = progressRepository.findByClientIdAndPromoTaskId(client.id, task.id)
@@ -224,7 +226,9 @@ class PromoService(
     }
 
     fun getClientPromos(client: Client): List<ClientPromoProgress> {
+        val now = LocalDateTime.now()
         val allTasks = promoTaskRepository.findAllByIsActiveTrue()
+            .filter { it.expiresAt == null || it.expiresAt!!.isAfter(now) } // <- Игнорируем просроченные
         
         val taskProgresses = allTasks.mapNotNull { task ->
             val progressOpt = progressRepository.findByClientIdAndPromoTaskId(client.id, task.id)

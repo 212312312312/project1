@@ -54,6 +54,11 @@ class PromoAdminController(
         val distMeters = (request.requiredDistanceKm * 1000).toLong()
         val finalRequiredRides = if (distMeters > 0) 0 else request.requiredRides
 
+        // Расчет даты окончания задания
+        val calculatedExpiresAt = request.taskDurationDays?.takeIf { it > 0 }?.let {
+            java.time.LocalDateTime.now().plusDays(it.toLong())
+        }
+
         val task = PromoTask(
             title = request.title,
             description = request.description,
@@ -65,10 +70,10 @@ class PromoAdminController(
             maxDiscountAmount = request.maxDiscountAmount,
             requiredDistanceMeters = distMeters,
             activeDaysDuration = request.activeDaysDuration,
-            maxAllocations = request.maxAllocations // <- ИСПРАВЛЕНО: Передаем лимит в конструктор модели
+            maxAllocations = request.maxAllocations,
+            taskDurationDays = request.taskDurationDays,
+            expiresAt = calculatedExpiresAt
         )
-        
-        println(">>> ADMIN: Створено акцію '${task.title}'. Дистанція: $distMeters м, Поїздок: $finalRequiredRides")
         
         return ResponseEntity.ok(promoRepository.save(task))
     }

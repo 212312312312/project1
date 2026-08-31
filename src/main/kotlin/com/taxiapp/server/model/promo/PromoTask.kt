@@ -45,5 +45,15 @@ data class PromoTask(
     var activeDaysDuration: Int? = null,
     
     @Column(name = "max_allocations")
-    var maxAllocations: Int? = null
+    var maxAllocations: Int? = null,
+
+    // --- НОВЫЕ ПОЛЯ СРОКА ЖИЗНИ ЗАДАНИЯ ---
+    @Column(name = "task_duration_days")
+    var taskDurationDays: Int? = null,
+
+    @Column(name = "expires_at")
+    var expiresAt: java.time.LocalDateTime? = null,
+
+    @Column(name = "created_at", nullable = false)
+    val createdAt: java.time.LocalDateTime = java.time.LocalDateTime.now()
 )

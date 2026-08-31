@@ -51,7 +51,8 @@ class PromoController(
                 maxDiscountAmount = p.promoTask.maxDiscountAmount,
                 requiredDistanceMeters = p.promoTask.requiredDistanceMeters,
                 currentDistanceMeters = p.currentDistanceMeters,
-                rewardExpiresAt = p.rewardExpiresAt?.toString() 
+                rewardExpiresAt = p.rewardExpiresAt?.toString(),
+                taskExpiresAt = p.promoTask.expiresAt?.toString() // <- Проброс дедлайна задания
             )
         }
         

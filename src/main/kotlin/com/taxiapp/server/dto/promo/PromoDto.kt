@@ -1,6 +1,7 @@
 package com.taxiapp.server.dto.promo
 
 // DTO для адмінки (список завдань)
+// В PromoTaskDto добавляем:
 data class PromoTaskDto(
     val id: Long,
     val title: String,
@@ -13,10 +14,12 @@ data class PromoTaskDto(
     val requiredTariffName: String?,
     val isOneTime: Boolean,
     val activeDaysDuration: Int?,
-    val maxAllocations: Int? // <- ДОБАВЛЕНО для вывода лимита в JSON
+    val maxAllocations: Int?,
+    val taskDurationDays: Int?,
+    val expiresAt: String?
 )
 
-// DTO для мобільного додатку (прогрес клієнта)
+// В ClientPromoProgressDto добавляем taskExpiresAt:
 data class ClientPromoProgressDto(
     val id: Long,
     val title: String,
@@ -28,11 +31,10 @@ data class ClientPromoProgressDto(
     val requiredTariffName: String? = null,
     val isFullyCompleted: Boolean = false,
     val maxDiscountAmount: Double? = null,
-    
-    // Нові поля
     val requiredDistanceMeters: Long = 0,
     val currentDistanceMeters: Long = 0,
-    val rewardExpiresAt: String? = null
+    val rewardExpiresAt: String? = null,
+    val taskExpiresAt: String? = null // <- Срок действия самого задания
 )
 
 // DTO для активної знижки

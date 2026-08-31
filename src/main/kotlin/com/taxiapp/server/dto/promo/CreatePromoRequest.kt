@@ -29,5 +29,9 @@ data class CreatePromoRequest(
     val activeDaysDuration: Int? = null,
     
     @field:Min(1)
-    val maxAllocations: Int? = null
+    val maxAllocations: Int? = null,
+
+    // --- НОВОЕ ПОЛЕ: Срок действия задания в днях ---
+    @field:Min(1)
+    val taskDurationDays: Int? = null
 )
