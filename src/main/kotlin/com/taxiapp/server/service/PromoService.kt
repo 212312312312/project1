@@ -81,19 +81,21 @@ class PromoService(
 
     fun findActiveFreeMinPlan(client: Client): PromoPlan? {
         val now = LocalDateTime.now()
-        val plan = promoPlanRepository.findFirstByIsActiveTrueAndStartDateBeforeAndEndDateAfter(now, now).orElse(null) ?: return null
+        val plan = promoPlanRepository.findFirstByPlanTypeAndIsActiveTrueAndStartDateBeforeAndEndDateAfter(
+            com.taxiapp.server.model.promo.PromoPlanType.FREE_MINIMUM,
+            now, 
+            now
+        ).orElse(null) ?: return null
+        
         val alreadyUsed = clientPromoPlanUsageRepository.existsByClientAndPromoPlanId(client, plan.id)
         if (alreadyUsed) return null
         
-        // НОВОЕ: проверка глобального лимита плана
         if (plan.maxUses != null) {
-            // Предполагаем, что в clientPromoPlanUsageRepository есть стандартный countByPromoPlanId
             val currentUsages = clientPromoPlanUsageRepository.countByPromoPlanId(plan.id)
             if (currentUsages >= plan.maxUses!!) {
                 return null
             }
         }
-        
         return plan
     }
 
@@ -103,6 +105,43 @@ class PromoService(
         if (!clientPromoPlanUsageRepository.existsByClientAndPromoPlanId(client, planId)) {
             clientPromoPlanUsageRepository.save(ClientPromoPlanUsage(client = client, promoPlan = plan))
         }
+    }
+
+    fun findActiveRegistrationDiscountPlan(client: Client): PromoPlan? {
+        val now = LocalDateTime.now()
+        val plan = promoPlanRepository.findFirstByPlanTypeAndIsActiveTrueAndStartDateBeforeAndEndDateAfter(
+            com.taxiapp.server.model.promo.PromoPlanType.REGISTRATION_DISCOUNT, 
+            now, 
+            now
+        ).orElse(null) ?: return null
+
+        // 1. Проверяем, зарегистрирован ли клиент в период действия промо-акции
+        val clientRegisteredAt = client.createdAt ?: return null
+        if (clientRegisteredAt.isBefore(plan.startDate) || clientRegisteredAt.isAfter(plan.endDate)) {
+            return null
+        }
+
+        // 2. Проверяем персональный срок жизни скидки (validityHours) после регистрации
+        if (plan.validityHours != null && plan.validityHours!! > 0) {
+            val expiresAt = clientRegisteredAt.plusHours(plan.validityHours!!.toLong())
+            if (now.isAfter(expiresAt)) {
+                return null
+            }
+        }
+
+        // 3. Проверяем, не использовал ли уже клиент эту акцию
+        val alreadyUsed = clientPromoPlanUsageRepository.existsByClientAndPromoPlanId(client, plan.id)
+        if (alreadyUsed) return null
+
+        // 4. Проверяем глобальный лимит активаций
+        if (plan.maxUses != null) {
+            val currentUsages = clientPromoPlanUsageRepository.countByPromoPlanId(plan.id)
+            if (currentUsages >= plan.maxUses!!) {
+                return null
+            }
+        }
+
+        return plan
     }
 
     @Transactional
@@ -178,24 +217,31 @@ class PromoService(
     fun getActiveDiscountPercent(client: Client): Double {
         val taskReward = findActiveTaskReward(client)
         val codeReward = findActivePromoUsage(client)
+        val regPlan = findActiveRegistrationDiscountPlan(client)
 
         val taskPercent = taskReward?.promoTask?.discountPercent ?: 0.0
         val codePercent = codeReward?.promoCode?.discountPercent ?: 0.0
+        val regPercent = regPlan?.discountPercent ?: 0.0
 
-        return maxOf(taskPercent, codePercent)
+        return maxOf(taskPercent, codePercent, regPercent)
     }
     
     fun getActiveMaxDiscountAmount(client: Client): Double? {
         val taskReward = findActiveTaskReward(client)
         val codeReward = findActivePromoUsage(client)
+        val regPlan = findActiveRegistrationDiscountPlan(client)
         
         val taskPercent = taskReward?.promoTask?.discountPercent ?: 0.0
         val codePercent = codeReward?.promoCode?.discountPercent ?: 0.0
+        val regPercent = regPlan?.discountPercent ?: 0.0
         
-        return if (taskPercent >= codePercent) {
-            taskReward?.promoTask?.maxDiscountAmount
-        } else {
-            codeReward?.promoCode?.maxDiscountAmount
+        val maxPercent = maxOf(taskPercent, codePercent, regPercent)
+        if (maxPercent == 0.0) return null
+
+        return when (maxPercent) {
+            regPercent -> regPlan?.maxDiscountAmount
+            taskPercent -> taskReward?.promoTask?.maxDiscountAmount
+            else -> codeReward?.promoCode?.maxDiscountAmount
         }
     }
 

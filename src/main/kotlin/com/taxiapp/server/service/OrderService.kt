@@ -149,110 +149,126 @@ class OrderService(
     }
 
     fun calculatePricesForRoute(polyline: String, totalMeters: Int, waypointsCount: Int = 0, client: Client? = null): List<CarTariffDto> {
-    // 🚀 ОПТИМИЗИРОВАНО: Берем активные тарифы из оперативного Redis-кеша вместо СУБД
-    val allCachedTariffs = tariffAdminService.getAllTariffs()
-    
-    // 🛠️ ЛОГ ДЛЯ СТОПРОЦЕНТНОЙ ДИАГНОСТИКИ:
-    allCachedTariffs.forEach { 
-        println(">>> ТАРИФ ИЗ КЭША ДЛЯ КЛИЕНТА: ID=${it.id}, Name=${it.name}, isActive=${it.isActive}")
-    }
-
-    val activeTariffs = allCachedTariffs.filter { it.isActive }
-    
-    return activeTariffs.map { tariffDto ->
+        // 🚀 ОПТИМИЗИРОВАНО: Берем активные тарифы из оперативного Redis-кеша вместо СУБД
+        val allCachedTariffs = tariffAdminService.getAllTariffs()
         
-        // 1. Рассчитываем чистую цену по тарифу (используем ID из кеш-DTO)
-        var price = calculateExactTripPrice(
-            tariffId = tariffDto.id!!, 
-            polyline = polyline, 
-            totalDistanceMeters = totalMeters, 
-            serviceIds = emptyList(), 
-            addedValue = 0.0, 
-            waypointsCount = waypointsCount,
-            isDebug = false
-        )
+        // 🛠️ ЛОГ ДЛЯ СТОПРОЦЕНТНОЙ ДИАГНОСТИКИ:
+        allCachedTariffs.forEach { 
+            println(">>> ТАРИФ ИЗ КЭША ДЛЯ КЛИЕНТА: ID=${it.id}, Name=${it.name}, isActive=${it.isActive}")
+        }
+
+        val activeTariffs = allCachedTariffs.filter { it.isActive }
         
-        var oldPrice: Double? = null // 👈 Хранилище для полной стоимости
+        return activeTariffs.map { tariffDto ->
+            
+            // 1. Рассчитываем чистую цену по тарифу (используем ID из кеш-DTO)
+            var price = calculateExactTripPrice(
+                tariffId = tariffDto.id!!, 
+                polyline = polyline, 
+                totalDistanceMeters = totalMeters, 
+                serviceIds = emptyList(), 
+                addedValue = 0.0, 
+                waypointsCount = waypointsCount,
+                isDebug = false
+            )
+            
+            var oldPrice: Double? = null // 👈 Хранилище для полной стоимости
 
-        // 2. Применяем логику скидок
-        if (client != null) {
-            var discountAmount = 0.0
-            var promoCodeApplied = false
+            // 2. Применяем логику скидок
+            if (client != null) {
+                var discountAmount = 0.0
+                var promoCodeApplied = false
 
-            // 🟢 Перевірка: Якщо у клієнта вже є активне замовлення зі знижкою, нові знижки не вираховуємо
-            val hasActiveDiscount = orderRepository.hasActiveOrderWithDiscount(client.id!!)
+                // 🟢 Перевірка: Якщо у клієнта вже є активне замовлення зі знижкою, нові знижки не вираховуємо
+                val hasActiveDiscount = orderRepository.hasActiveOrderWithDiscount(client.id!!)
 
-            if (!hasActiveDiscount) {
-                // Проверяем активный промокод клиента
-                val activePromoUsage = promoCodeService.findActiveUsage(client)
-                if (activePromoUsage != null) {
-                    val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
-                    if (!isExpired) {
-                        val percent = activePromoUsage.promoCode.discountPercent
+                if (!hasActiveDiscount) {
+                    // 1. Проверяем активный промокод клиента
+                    val activePromoUsage = promoCodeService.findActiveUsage(client)
+                    if (activePromoUsage != null) {
+                        val isExpired = activePromoUsage.expiresAt != null && LocalDateTime.now().isAfter(activePromoUsage.expiresAt)
+                        if (!isExpired) {
+                            val percent = activePromoUsage.promoCode.discountPercent
+                            var calcDiscount = kotlin.math.round(price * (percent / 100.0))
+                            val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
+                            if (maxAmount != null && calcDiscount > maxAmount) {
+                                calcDiscount = maxAmount
+                            }
+                            discountAmount = calcDiscount
+                            promoCodeApplied = true
+                        }
+                    }
+
+                    // 2. Если промокод не применился, проверяем маркетинговые награды за задания
+                    if (!promoCodeApplied) {
+                        val activeReward = promoService.findActiveReward(client)
+                        if (activeReward != null) {
+                            val task = activeReward.promoTask
+                            val percent = task.discountPercent
+                            var calcDiscount = kotlin.math.round(price * (percent / 100.0))
+                            if (task.maxDiscountAmount != null && calcDiscount > task.maxDiscountAmount!!) {
+                                calcDiscount = task.maxDiscountAmount!!
+                            }
+                            discountAmount = calcDiscount
+                        }
+                    }
+
+                    // 3. 🎁 НОВОЕ: Проверяем план "Скидка при регистрации"
+                    val activeRegPlan = promoService.findActiveRegistrationDiscountPlan(client)
+                    if (activeRegPlan != null && activeRegPlan.discountPercent != null) {
+                        val percent = activeRegPlan.discountPercent!!
                         var calcDiscount = kotlin.math.round(price * (percent / 100.0))
-                        val maxAmount = activePromoUsage.promoCode.maxDiscountAmount
+                        val maxAmount = activeRegPlan.maxDiscountAmount
                         if (maxAmount != null && calcDiscount > maxAmount) {
                             calcDiscount = maxAmount
                         }
-                        discountAmount = calcDiscount
-                        promoCodeApplied = true
-                    }
-                }
-
-                // Если промокод не применился, проверяем маркетинговые награды
-                if (!promoCodeApplied) {
-                    val activeReward = promoService.findActiveReward(client)
-                    if (activeReward != null) {
-                        val task = activeReward.promoTask
-                        val percent = task.discountPercent
-                        var calcDiscount = kotlin.math.round(price * (percent / 100.0))
-                        if (task.maxDiscountAmount != null && calcDiscount > task.maxDiscountAmount!!) {
-                            calcDiscount = task.maxDiscountAmount!!
+                        // Берем максимальную скидку, если у клиента уже был начислен меньший дисконт
+                        if (calcDiscount > discountAmount) {
+                            discountAmount = calcDiscount
                         }
-                        discountAmount = calcDiscount
                     }
-                }
-                // 🎁 НОВОЕ: Проверяем глобальный акционный план "Бесплатная минималка"
-                val activePlan = promoService.findActiveFreeMinPlan(client)
-                if (activePlan != null) {
-                    // Если акция активна, добавляем стоимость подачи из тарифа к общей скидке
-                    discountAmount += tariffDto.basePrice ?: 0.0
-                }
-            } else {
-                logger.info(">>> [Discount] Розрахунок цін для клієнта #${client.id} без знижки: вже є активне замовлення зі знижкою.")
-            }
 
-            // Если хоть одна скидка сработала, фиксируем старую цену и вычитаем дисконт
-            if (discountAmount > 0.0) {
-                oldPrice = price // 👈 Запоминаем исходную цену без скидки
-                price -= discountAmount
-                
-                // Ставим минимальный порог поездки в 1 грн вместо tariff.basePrice,
-                // чтобы скидки честно работали на коротких поездках!
-                if (price < 1.0) price = 1.0 
+                    // 4. 🎁 Проверяем глобальный акционный план "Бесплатная минималка"
+                    val activeFreeMinPlan = promoService.findActiveFreeMinPlan(client)
+                    if (activeFreeMinPlan != null) {
+                        // Добавляем стоимость подачи из тарифа к общей скидке
+                        discountAmount += tariffDto.basePrice ?: 0.0
+                    }
+                } else {
+                    logger.info(">>> [Discount] Розрахунок цін для клієнта #${client.id} без знижки: вже є активне замовлення зі знижкою.")
+                }
+
+                // Если хоть одна скидка сработала, фиксируем старую цену и вычитаем дисконт
+                if (discountAmount > 0.0) {
+                    oldPrice = price // 👈 Запоминаем исходную цену без скидки
+                    price -= discountAmount
+                    
+                    // Ставим минимальный порог поездки в 1 грн вместо tariff.basePrice,
+                    // чтобы скидки честно работали на коротких поездках!
+                    if (price < 1.0) price = 1.0 
+                }
             }
+            
+            // Собираем финальный DTO для клиента, обогащая его рассчитанной ценой
+            CarTariffDto(
+                id = tariffDto.id,
+                name = tariffDto.name,
+                basePrice = tariffDto.basePrice,
+                pricePerKm = tariffDto.pricePerKm,
+                pricePerKmOutCity = tariffDto.pricePerKmOutCity,
+                extraWaypointPrice = tariffDto.extraWaypointPrice, 
+                freeWaitingMinutes = tariffDto.freeWaitingMinutes,
+                pricePerWaitingMinute = tariffDto.pricePerWaitingMinute,
+                isActive = tariffDto.isActive,
+                imageUrl = tariffDto.imageUrl,
+                isBeta = tariffDto.isBeta,               
+                isUnavailable = tariffDto.isUnavailable,
+                calculatedPrice = price, // 👈 Инжектим рассчитанную стоимость со скидкой
+                description = tariffDto.description,
+                oldPrice = oldPrice // 👈 Передаем старую цену (null если скидки нет)
+            )
         }
-        
-        // Собираем финальный DTO для клиента, обогащая его рассчитанной ценой
-        CarTariffDto(
-            id = tariffDto.id,
-            name = tariffDto.name,
-            basePrice = tariffDto.basePrice,
-            pricePerKm = tariffDto.pricePerKm,
-            pricePerKmOutCity = tariffDto.pricePerKmOutCity,
-            extraWaypointPrice = tariffDto.extraWaypointPrice, 
-            freeWaitingMinutes = tariffDto.freeWaitingMinutes,
-            pricePerWaitingMinute = tariffDto.pricePerWaitingMinute,
-            isActive = tariffDto.isActive,
-            imageUrl = tariffDto.imageUrl,
-            isBeta = tariffDto.isBeta,               
-            isUnavailable = tariffDto.isUnavailable,
-            calculatedPrice = price, // 👈 Инжектим рассчитанную стоимость со скидкой
-            description = tariffDto.description,
-            oldPrice = oldPrice // 👈 Передаем старую цену (null если скидки нет)
-        )
     }
-}
 
     @Transactional
 fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
@@ -353,10 +369,24 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
     var activePlan: com.taxiapp.server.model.promo.PromoPlan? = null
 
     if (!hasActiveDiscount) {
-        // 🎁 ВНЕДРЕНО: Проверка глобального календарного плана "Бесплатная минималка"
+        // 🎁 Проверка глобального плана "Бесплатная минималка"
         activePlan = promoService.findActiveFreeMinPlan(client)
         if (activePlan != null) {
             discountAmount += tariff.basePrice
+        }
+
+        // 🎁 НОВОЕ: Проверка плана "Скидка при регистрации"
+        val activeRegPlan = promoService.findActiveRegistrationDiscountPlan(client)
+        if (activeRegPlan != null && activeRegPlan.discountPercent != null) {
+            val percent = activeRegPlan.discountPercent!!
+            var calcDiscount = kotlin.math.round(calculatedPrice * (percent / 100.0))
+            if (activeRegPlan.maxDiscountAmount != null && calcDiscount > activeRegPlan.maxDiscountAmount!!) {
+                calcDiscount = activeRegPlan.maxDiscountAmount!!
+            }
+            if (calcDiscount > discountAmount) {
+                discountAmount = calcDiscount
+                activePlan = activeRegPlan // Запоминаем план для привязки к promoPlanId заказа
+            }
         }
 
         val activePromoUsage = promoCodeService.findActiveUsage(client)

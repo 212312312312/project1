@@ -21,16 +21,18 @@ class SupportService(
     private val userRepository: UserRepository,
     private val telegramBotService: TelegramBotService,
     private val messagingTemplate: SimpMessagingTemplate,
-    private val antiSpamService: SupportAntiSpamService // 👈 Добавить инжекцию
-){
+    private val antiSpamService: SupportAntiSpamService,
+    private val fileStorageService: FileStorageService
+) {
 
     @Transactional
     fun handleTelegramUpdate(update: TelegramUpdate) {
         val message = update.message ?: return
         val chatId = message.chat.id
 
-        if (antiSpamService.isSpam(chatId, message.text)) {
-        return
+        val rawText = message.text ?: message.caption
+        if (antiSpamService.isSpam(chatId, rawText)) {
+            return
         }
 
         // 1. Користувач надіслав свій контакт (номер телефону)
@@ -76,8 +78,35 @@ class SupportService(
             return
         }
 
-        // 3. Текстове повідомлення
-        val text = message.text?.trim() ?: return
+        // 3. Обробка медіа (Фото або Відео)
+        var uploadedMediaUrl: String? = null
+        var detectedMediaType: String? = null
+
+        if (!message.photo.isNullOrEmpty()) {
+            val largestPhoto = message.photo.maxByOrNull { it.fileSize ?: 0L } ?: message.photo.last()
+            val photoBytes = telegramBotService.downloadTelegramFile(largestPhoto.fileId)
+            if (photoBytes != null) {
+                val fileName = "support_${UUID.randomUUID()}.jpg"
+                uploadedMediaUrl = fileStorageService.storeBytes(photoBytes, fileName)
+                detectedMediaType = "PHOTO"
+            }
+        } else if (message.video != null) {
+            val videoBytes = telegramBotService.downloadTelegramFile(message.video.fileId)
+            if (videoBytes != null) {
+                val fileName = "support_${UUID.randomUUID()}.mp4"
+                uploadedMediaUrl = fileStorageService.storeBytes(videoBytes, fileName)
+                detectedMediaType = "VIDEO"
+            }
+        }
+
+        // 4. Текст повідомлення / підпис до медіа
+        val text = when {
+            !rawText.isNullOrBlank() -> rawText.trim()
+            detectedMediaType == "PHOTO" -> "📷 Фото"
+            detectedMediaType == "VIDEO" -> "🎥 Відео"
+            else -> return
+        }
+
         val activeTicketOpt = ticketRepository.findFirstByTelegramChatIdAndStatusNotOrderByUpdatedAtDesc(
             chatId, TicketStatus.CLOSED
         )
@@ -107,6 +136,8 @@ class SupportService(
                 ticket = ticket,
                 senderType = MessageSenderType.CLIENT,
                 text = text,
+                mediaUrl = uploadedMediaUrl,
+                mediaType = detectedMediaType,
                 telegramMessageId = message.messageId
             )
         )
@@ -187,42 +218,41 @@ class SupportService(
     }
 
     @Transactional
-fun startChat(ticketId: UUID): SupportMessageDto {
-    val ticket = ticketRepository.findById(ticketId)
-        .orElseThrow { IllegalArgumentException("Тікет не знайдено") }
+    fun startChat(ticketId: UUID): SupportMessageDto {
+        val ticket = ticketRepository.findById(ticketId)
+            .orElseThrow { IllegalArgumentException("Тікет не знайдено") }
 
-    ticket.status = TicketStatus.IN_PROGRESS
-    ticket.updatedAt = Instant.now()
-    ticketRepository.save(ticket)
+        ticket.status = TicketStatus.IN_PROGRESS
+        ticket.updatedAt = Instant.now()
+        ticketRepository.save(ticket)
 
-    val autoReplyText = "Підтримка підключилась до чату.\nВітаємо! Ознайомлюємося з вашим питанням і вже працюємо над його вирішенням."
+        val autoReplyText = "Підтримка підключилась до чату.\nВітаємо! Ознайомлюємося з вашим питанням і вже працюємо над його вирішенням."
 
-    val savedMsg = messageRepository.save(
-        SupportMessage(
-            ticket = ticket,
-            senderType = MessageSenderType.DISPATCHER,
-            text = autoReplyText
+        val savedMsg = messageRepository.save(
+            SupportMessage(
+                ticket = ticket,
+                senderType = MessageSenderType.DISPATCHER,
+                text = autoReplyText
+            )
         )
-    )
 
-    telegramBotService.sendMessage(ticket.telegramChatId, autoReplyText)
+        telegramBotService.sendMessage(ticket.telegramChatId, autoReplyText)
 
-    val dto = mapToMessageDto(savedMsg)
-    messagingTemplate.convertAndSend("/topic/support/messages/${ticket.id}", dto)
-    notifyTicketsChanged()
-    return dto
-}
-
-
-// Додати в клас SupportService:
-@Transactional
-fun deleteOldClosedTickets() {
-    val threeDaysAgo = Instant.now().minus(3, java.time.temporal.ChronoUnit.DAYS)
-    val oldTickets = ticketRepository.findAllByStatusAndUpdatedAtBefore(TicketStatus.CLOSED, threeDaysAgo)
-    if (oldTickets.isNotEmpty()) {
-        ticketRepository.deleteAll(oldTickets)
+        val dto = mapToMessageDto(savedMsg)
+        messagingTemplate.convertAndSend("/topic/support/messages/${ticket.id}", dto)
+        notifyTicketsChanged()
+        return dto
     }
-}
+
+    @Transactional
+    fun deleteOldClosedTickets() {
+        val threeDaysAgo = Instant.now().minus(3, java.time.temporal.ChronoUnit.DAYS)
+        val oldTickets = ticketRepository.findAllByStatusAndUpdatedAtBefore(TicketStatus.CLOSED, threeDaysAgo)
+        if (oldTickets.isNotEmpty()) {
+            ticketRepository.deleteAll(oldTickets)
+        }
+    }
+
     private fun notifyTicketsChanged() {
         messagingTemplate.convertAndSend("/topic/support/tickets", "REFRESH")
     }
@@ -232,6 +262,8 @@ fun deleteOldClosedTickets() {
         ticketId = msg.ticket.id!!,
         senderType = msg.senderType,
         text = msg.text,
+        mediaUrl = msg.mediaUrl,
+        mediaType = msg.mediaType,
         createdAt = msg.createdAt
     )
 }

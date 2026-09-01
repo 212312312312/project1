@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
+import java.time.LocalDateTime
 
 data class ApplyPromoRequest(val code: String)
 
@@ -27,8 +28,8 @@ class PromoController(
         
         var user = userRepository.findByUserLogin(userLogin).orElse(null)
         if (user == null) {
-             user = userRepository.findByUserPhone(userLogin)
-                 .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
+            user = userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
         }
 
         if (user !is Client) {
@@ -52,16 +53,17 @@ class PromoController(
                 requiredDistanceMeters = p.promoTask.requiredDistanceMeters,
                 currentDistanceMeters = p.currentDistanceMeters,
                 rewardExpiresAt = p.rewardExpiresAt?.toString(),
-                taskExpiresAt = p.promoTask.expiresAt?.toString() // <- Проброс дедлайна задания
+                taskExpiresAt = p.promoTask.expiresAt?.toString()
             )
         }
         
-        val activePlan = promoService.findActiveFreeMinPlan(user)
-        val finalDtos = if (activePlan != null) {
+        // 1. План "Безкоштовна мінімалка"
+        val activeFreeMinPlan = promoService.findActiveFreeMinPlan(user)
+        val dtosWithFreeMin = if (activeFreeMinPlan != null) {
             dtos + ClientPromoProgressDto(
                 id = -9999L, 
-                title = activePlan.title,
-                description = activePlan.description ?: "Мінімалка 0 грн! Плати тільки за кілометри.",
+                title = activeFreeMinPlan.title,
+                description = activeFreeMinPlan.description ?: "Мінімалка 0 грн! Плати тільки за кілометри.",
                 requiredRides = 1,
                 currentRides = 0,
                 discountPercent = 100.0,
@@ -71,9 +73,36 @@ class PromoController(
                 maxDiscountAmount = null,
                 requiredDistanceMeters = 0L, 
                 currentDistanceMeters = 0L,  
-                rewardExpiresAt = activePlan.endDate.toString()
+                rewardExpiresAt = activeFreeMinPlan.endDate.toString()
             )
         } else dtos
+
+        // 2. План "Знижка при реєстрації"
+        val activeRegPlan = promoService.findActiveRegistrationDiscountPlan(user)
+        val finalDtos = if (activeRegPlan != null) {
+            val clientRegisteredAt = user.createdAt ?: LocalDateTime.now()
+            val expiresAt = if (activeRegPlan.validityHours != null && activeRegPlan.validityHours!! > 0) {
+                clientRegisteredAt.plusHours(activeRegPlan.validityHours!!.toLong()).toString()
+            } else {
+                activeRegPlan.endDate.toString()
+            }
+
+            dtosWithFreeMin + ClientPromoProgressDto(
+                id = -8888L,
+                title = activeRegPlan.title,
+                description = activeRegPlan.description ?: "Знижка ${activeRegPlan.discountPercent?.toInt()}% при реєстрації!",
+                requiredRides = 1,
+                currentRides = 0,
+                discountPercent = activeRegPlan.discountPercent ?: 0.0,
+                isRewardAvailable = true,
+                requiredTariffName = null,
+                isFullyCompleted = false,
+                maxDiscountAmount = activeRegPlan.maxDiscountAmount,
+                requiredDistanceMeters = 0L,
+                currentDistanceMeters = 0L,
+                rewardExpiresAt = expiresAt
+            )
+        } else dtosWithFreeMin
 
         return ResponseEntity.ok(finalDtos)
     }
@@ -83,12 +112,12 @@ class PromoController(
         val userLogin = principal.name
         var user = userRepository.findByUserLogin(userLogin).orElse(null)
         if (user == null) {
-             user = userRepository.findByUserPhone(userLogin)
-                 .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
+            user = userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
         }
 
         if (user !is Client) {
-             return ResponseEntity.ok(ActiveDiscountDto(0.0))
+            return ResponseEntity.ok(ActiveDiscountDto(0.0))
         }
         
         val percent = promoService.getActiveDiscountPercent(user)

@@ -28,6 +28,13 @@ data class SupportMessage(
 
     val telegramMessageId: Long? = null,
 
+    // ➕ НОВІ ПОЛЯ ДЛЯ МЕДІА:
+    @Column(name = "media_url", columnDefinition = "TEXT")
+    val mediaUrl: String? = null,
+
+    @Column(name = "media_type")
+    val mediaType: String? = null, // "PHOTO", "VIDEO", "DOCUMENT"
+
     @Column(nullable = false)
     val createdAt: Instant = Instant.now()
 )

@@ -69,6 +69,16 @@ class FileStorageService {
         return webpFilename
     }
 
+    fun storeBytes(bytes: ByteArray, fileName: String): String {
+        val uploadDir = java.nio.file.Paths.get("uploads")
+        if (!java.nio.file.Files.exists(uploadDir)) {
+            java.nio.file.Files.createDirectories(uploadDir)
+        }
+        val targetPath = uploadDir.resolve(fileName)
+        java.nio.file.Files.write(targetPath, bytes)
+        return "/uploads/$fileName"
+    }
+
     /**
      * Алгоритм сканирования альфа-канала и обрезки прозрачных полей
      */

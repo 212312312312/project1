@@ -65,4 +65,20 @@ class TelegramBotService(
             log.error("Помилка відправки в Telegram [$method]: ${e.message}", e)
         }
     }
+
+    // ➕ Отримання file_path та скачування файлу з Telegram
+    fun downloadTelegramFile(fileId: String): ByteArray? {
+        return try {
+            val fileInfoUrl = "$apiUrl/getFile?file_id=$fileId"
+            val response = restTemplate.getForObject(fileInfoUrl, Map::class.java)
+            val result = response?.get("result") as? Map<*, *>
+            val filePath = result?.get("file_path") as? String ?: return null
+
+            val downloadUrl = "https://api.telegram.org/file/bot$botToken/$filePath"
+            restTemplate.getForObject(downloadUrl, ByteArray::class.java)
+        } catch (e: Exception) {
+            log.error("Помилка завантаження файлу з Telegram [$fileId]: ${e.message}", e)
+            null
+        }
+    }
 }

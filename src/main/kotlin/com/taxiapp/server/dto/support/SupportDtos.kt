@@ -15,12 +15,23 @@ data class TelegramUpdate(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class TelegramMessage(
-    @JsonProperty("message_id") val messageId: Long,
-    @JsonProperty("from") val from: TelegramUser? = null,
-    @JsonProperty("chat") val chat: TelegramChat,
-    @JsonProperty("text") val text: String? = null,
-    @JsonProperty("contact") val contact: TelegramContact? = null
+data class TelegramPhotoSize(
+    @JsonProperty("file_id") val fileId: String,
+    @JsonProperty("file_unique_id") val fileUniqueId: String,
+    val width: Int,
+    val height: Int,
+    @JsonProperty("file_size") val fileSize: Long? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class TelegramVideo(
+    @JsonProperty("file_id") val fileId: String,
+    @JsonProperty("file_unique_id") val fileUniqueId: String,
+    val width: Int,
+    val height: Int,
+    val duration: Int,
+    @JsonProperty("file_size") val fileSize: Long? = null,
+    @JsonProperty("mime_type") val mimeType: String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -44,6 +55,18 @@ data class TelegramContact(
     @JsonProperty("user_id") val userId: Long? = null
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class TelegramMessage(
+    @JsonProperty("message_id") val messageId: Long,
+    @JsonProperty("from") val from: TelegramUser? = null,
+    @JsonProperty("chat") val chat: TelegramChat,
+    @JsonProperty("text") val text: String? = null,
+    @JsonProperty("caption") val caption: String? = null,
+    @JsonProperty("photo") val photo: List<TelegramPhotoSize>? = null,
+    @JsonProperty("video") val video: TelegramVideo? = null,
+    @JsonProperty("contact") val contact: TelegramContact? = null
+)
+
 // ===== DTO для Диспетчерської (React) =====
 data class SupportTicketDto(
     val id: UUID,
@@ -63,6 +86,8 @@ data class SupportMessageDto(
     val ticketId: UUID,
     val senderType: MessageSenderType,
     val text: String,
+    val mediaUrl: String? = null,
+    val mediaType: String? = null,
     val createdAt: Instant
 )
 
