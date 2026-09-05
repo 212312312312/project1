@@ -118,4 +118,15 @@ object GeometryUtils {
 
         return Pair(distanceCity, distanceOutCity)
     }
+    // ➕ ДОБАВИТЬ В GeometryUtils:
+    fun getFirstPointFromPolyline(encoded: String?): Pair<Double, Double>? {
+        if (encoded.isNullOrBlank()) return null
+        return try {
+            val points = decodePolyline(encoded)
+            points.firstOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
 }

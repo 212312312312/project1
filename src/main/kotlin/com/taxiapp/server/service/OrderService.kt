@@ -48,6 +48,7 @@ class OrderService(
     private val messagingTemplate: SimpMessagingTemplate,
     private val driverActivityService: DriverActivityService,
     private val sectorService: SectorService,
+    private val surgePricingService: SurgePricingService,
     private val cancellationReasonRepository: CancellationReasonRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
     private val appSettingRepository: AppSettingRepository,
@@ -66,7 +67,9 @@ class OrderService(
         totalDistanceMeters: Int,
         serviceIds: List<Long>?,
         addedValue: Double,
-        waypointsCount: Int = 0, // <--- НОВЫЙ ПАРАМЕТР: количество промежуточных точек
+        waypointsCount: Int = 0,
+        originLat: Double? = null, // ➕ ДОБАВЛЕНО
+        originLng: Double? = null, // ➕ ДОБАВЛЕНО
         isDebug: Boolean = false
     ): Double {
         val tariff = tariffRepository.findById(tariffId)
@@ -134,21 +137,34 @@ class OrderService(
         // 5. Итоговая сборка цены
         val routePrice = (billableKmCity * tariff.pricePerKm) + (billableKmOutCity * tariff.pricePerKmOutCity)
         
-        // К сумме теперь добавляем waypointsCost
-        var finalPrice = tariff.basePrice + routePrice + servicesCost + addedValue + waypointsCost
+        // 🚀 ВРАХУВАННЯ ДИНАМІЧНИХ КОЕФІЦІЄНТІВ (Час + Погода)
+        val (pickupLat, pickupLng) = if (originLat != null && originLng != null) {
+            Pair(originLat, originLng)
+        } else {
+            GeometryUtils.getFirstPointFromPolyline(polyline) ?: Pair(null, null)
+        }
+
+        val surgeMultiplier = surgePricingService.calculateCurrentSurgeMultiplier(pickupLat, pickupLng)
+        val surgedTripBase = (tariff.basePrice + routePrice) * surgeMultiplier
         
-        logger.info("[PRICE_CALC] Сборка: База(${tariff.basePrice}) + КМ($routePrice) + Услуги($servicesCost) + Точки($waypointsCost) + Надбавка($addedValue) = $finalPrice")
+        var finalPrice = surgedTripBase + servicesCost + addedValue + waypointsCost
+        
+        logger.info("[PRICE_CALC] Збірка: (База + КМ)*Surge($surgeMultiplier) [Lat=$pickupLat, Lng=$pickupLng] + Послуги($servicesCost) + Точки($waypointsCost) + Надбавка($addedValue) = $finalPrice")
 
         finalPrice = ceil(finalPrice)
         val result = max(finalPrice, tariff.basePrice)
         
-        logger.info("[PRICE_CALC] ИТОГО: $result")
-        logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ===")
-        
         return result
     }
 
-    fun calculatePricesForRoute(polyline: String, totalMeters: Int, waypointsCount: Int = 0, client: Client? = null): List<CarTariffDto> {
+    fun calculatePricesForRoute(
+        polyline: String,
+        totalMeters: Int,
+        waypointsCount: Int = 0,
+        client: Client? = null,
+        originLat: Double? = null, // ➕ ДОБАВИТЬ
+        originLng: Double? = null  // ➕ ДОБАВИТЬ
+    ): List<CarTariffDto> {
         // 🚀 ОПТИМИЗИРОВАНО: Берем активные тарифы из оперативного Redis-кеша вместо СУБД
         val allCachedTariffs = tariffAdminService.getAllTariffs()
         
@@ -357,6 +373,8 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
         serviceIds = request.serviceIds,
         addedValue = request.addedValue ?: 0.0,
         waypointsCount = waypointsCount,
+        originLat = request.originLat, // ➕ ДОБАВЛЕНО
+        originLng = request.originLng, // ➕ ДОБАВЛЕНО
         isDebug = true
     )
 

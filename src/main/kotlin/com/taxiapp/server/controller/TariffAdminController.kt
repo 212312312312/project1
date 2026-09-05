@@ -15,8 +15,127 @@ import org.springframework.web.multipart.MultipartFile
 @RequestMapping("/api/v1/admin/tariffs")
 // @PreAuthorize ПРИБРАНО! (Безпека в SecurityConfig)
 class TariffAdminController(
-    private val tariffAdminService: TariffAdminService
+    private val tariffAdminService: TariffAdminService,
+    private val timeSurgeRuleRepository: com.taxiapp.server.repository.TimeSurgeRuleRepository,
+    private val weatherSurgeRuleRepository: com.taxiapp.server.repository.WeatherSurgeRuleRepository,
+    private val openMeteoWeatherService: com.taxiapp.server.service.OpenMeteoWeatherService
 ) {
+
+    @GetMapping("/surge")
+    fun getSurgeConfig(): ResponseEntity<com.taxiapp.server.dto.surge.SurgeConfigDto> {
+        val timeRules = timeSurgeRuleRepository.findAll().map {
+            com.taxiapp.server.dto.surge.TimeSurgeRuleDto(
+                id = it.id,
+                name = it.name,
+                daysOfWeek = it.daysOfWeek,
+                startTime = it.startTime.toString().take(5),
+                endTime = it.endTime.toString().take(5),
+                multiplier = it.multiplier,
+                isActive = it.isActive
+            )
+        }
+
+        // Авто-ініціалізація базових погодних правил за відсутності
+        if (weatherSurgeRuleRepository.count() == 0L) {
+            weatherSurgeRuleRepository.saveAll(
+                listOf(
+                    com.taxiapp.server.model.surge.WeatherSurgeRule(weatherType = "RAIN", name = "Дощ", multiplier = 1.15, isActive = true),
+                    com.taxiapp.server.model.surge.WeatherSurgeRule(weatherType = "HEAVY_RAIN", name = "Злива", multiplier = 1.25, isActive = true),
+                    com.taxiapp.server.model.surge.WeatherSurgeRule(weatherType = "SNOW", name = "Снігопад", multiplier = 1.30, isActive = true),
+                    com.taxiapp.server.model.surge.WeatherSurgeRule(weatherType = "THUNDERSTORM", name = "Гроза", multiplier = 1.35, isActive = true),
+                    com.taxiapp.server.model.surge.WeatherSurgeRule(weatherType = "FOG", name = "Туман", multiplier = 1.10, isActive = true)
+                )
+            )
+        }
+
+        val weatherRules = weatherSurgeRuleRepository.findAll().map {
+            com.taxiapp.server.dto.surge.WeatherSurgeRuleDto(
+                id = it.id,
+                weatherType = it.weatherType,
+                name = it.name,
+                multiplier = it.multiplier,
+                isActive = it.isActive
+            )
+        }
+
+        val currentWeather = openMeteoWeatherService.getCurrentWeather()
+
+        return ResponseEntity.ok(
+            com.taxiapp.server.dto.surge.SurgeConfigDto(
+                weatherSurgeEnabled = openMeteoWeatherService.isWeatherSurgeEnabled(),
+                timeRules = timeRules,
+                weatherRules = weatherRules,
+                currentWeather = currentWeather
+            )
+        )
+    }
+
+    @PostMapping("/surge/time-rules")
+    fun saveTimeRule(@RequestBody dto: com.taxiapp.server.dto.surge.TimeSurgeRuleDto): ResponseEntity<MessageResponse> {
+        val rule = if (dto.id != null && dto.id > 0) {
+            timeSurgeRuleRepository.findById(dto.id).orElseThrow().apply {
+                name = dto.name
+                daysOfWeek = dto.daysOfWeek.toMutableSet()
+                startTime = java.time.LocalTime.parse(dto.startTime)
+                endTime = java.time.LocalTime.parse(dto.endTime)
+                multiplier = dto.multiplier
+                isActive = dto.isActive
+            }
+        } else {
+            com.taxiapp.server.model.surge.TimeSurgeRule(
+                name = dto.name,
+                daysOfWeek = dto.daysOfWeek.toMutableSet(),
+                startTime = java.time.LocalTime.parse(dto.startTime),
+                endTime = java.time.LocalTime.parse(dto.endTime),
+                multiplier = dto.multiplier,
+                isActive = dto.isActive
+            )
+        }
+        timeSurgeRuleRepository.save(rule)
+        return ResponseEntity.ok(MessageResponse("Правило часу збережено"))
+    }
+
+    @DeleteMapping("/surge/time-rules/{id}")
+    fun deleteTimeRule(@PathVariable id: Long): ResponseEntity<MessageResponse> {
+        timeSurgeRuleRepository.deleteById(id)
+        return ResponseEntity.ok(MessageResponse("Правило часу видалено"))
+    }
+
+    @PutMapping("/surge/time-rules/{id}/toggle")
+    fun toggleTimeRule(@PathVariable id: Long): ResponseEntity<MessageResponse> {
+        val rule = timeSurgeRuleRepository.findById(id).orElseThrow()
+        rule.isActive = !rule.isActive
+        timeSurgeRuleRepository.save(rule)
+        return ResponseEntity.ok(MessageResponse("Статус правила змінено"))
+    }
+
+    @PutMapping("/surge/weather-toggle")
+    fun toggleWeatherSurge(@RequestParam enabled: Boolean): ResponseEntity<MessageResponse> {
+        openMeteoWeatherService.setWeatherSurgeEnabled(enabled)
+        return ResponseEntity.ok(MessageResponse("Погодний коефіцієнт оновлено"))
+    }
+
+    @PutMapping("/surge/weather-rules/{id}")
+    fun updateWeatherRule(
+        @PathVariable id: Long,
+        @RequestParam multiplier: Double,
+        @RequestParam isActive: Boolean
+    ): ResponseEntity<MessageResponse> {
+        val rule = weatherSurgeRuleRepository.findById(id).orElseThrow()
+        rule.multiplier = multiplier
+        rule.isActive = isActive
+        weatherSurgeRuleRepository.save(rule)
+        return ResponseEntity.ok(MessageResponse("Погодне правило оновлено"))
+    }
+
+    @GetMapping("/surge/live-weather")
+    fun getLiveWeather(
+        @RequestParam(required = false) lat: Double?,
+        @RequestParam(required = false) lng: Double?
+    ): ResponseEntity<com.taxiapp.server.dto.surge.WeatherStatusDto> {
+        return ResponseEntity.ok(openMeteoWeatherService.getCurrentWeather(lat, lng))
+    }
+    
     @PostMapping("/{id}/reorder")
     fun reorderTariff(
         @PathVariable id: Long,
