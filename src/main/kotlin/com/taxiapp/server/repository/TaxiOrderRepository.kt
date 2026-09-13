@@ -127,7 +127,7 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
     """)
     fun getCancellationStats(): List<CancellationStatProjection>
 
-    @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'ARRIVED', 'IN_PROGRESS')")
+    @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'DRIVER_ARRIVED', 'ARRIVED_AT_WAYPOINT', 'IN_PROGRESS')")
     fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>
 
     // --- МЕТОДЫ ДЛЯ ОПТИМИЗАЦИИ EVOS SCHEDULER ---

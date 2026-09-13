@@ -31,7 +31,8 @@ class EvoSScheduler(
     private val promoService: PromoService,
     private val promoCodeService: PromoCodeService,
     private val chatService: ChatService,
-    private val redisTemplate: RedisTemplate<String, Any>
+    private val redisTemplate: RedisTemplate<String, Any>,
+    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository
 ) {
     private val logger = LoggerFactory.getLogger(EvoSScheduler::class.java)
 
@@ -265,6 +266,23 @@ class EvoSScheduler(
                     order.lastEvosLat = lat
                     order.lastEvosLng = lng
                     order.lastEvosBearing = bearing
+
+                    // 🛑 ГАРАНТОВАНА ФІКСАЦІЯ ТРЕКУ В БД (PostgreSQL) ТА ІСТОРІЇ (Redis)
+                    try {
+                        val dbTrack = com.taxiapp.server.model.order.TaxiOrderTrack(
+                            orderId = order.id!!,
+                            latitude = lat,
+                            longitude = lng
+                        )
+                        taxiOrderTrackRepository.save(dbTrack)
+
+                        val trackKey = "orders:track-history:${order.uuid}"
+                        val timestamp = java.time.Instant.now().toString()
+                        redisTemplate.opsForList().rightPush(trackKey, "$lat,$lng,$timestamp")
+                        redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
+                    } catch (e: Exception) {
+                        logger.error(">>> [EvoS Track] Помилка запису точки в БД: ${e.message}")
+                    }
 
                     // Генерация полилинии подачи для партнера EvoS
                     if (order.driverToPickupPolyline.isNullOrEmpty() && 

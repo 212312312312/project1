@@ -22,13 +22,19 @@ class SupportService(
     private val telegramBotService: TelegramBotService,
     private val messagingTemplate: SimpMessagingTemplate,
     private val antiSpamService: SupportAntiSpamService,
-    private val fileStorageService: FileStorageService
+    private val fileStorageService: FileStorageService,
+    private val blockedUserRepository: com.taxiapp.server.repository.SupportBlockedUserRepository
 ) {
 
     @Transactional
     fun handleTelegramUpdate(update: TelegramUpdate) {
         val message = update.message ?: return
         val chatId = message.chat.id
+
+        // 🛑 Миттєве відсікання заблокованого користувача
+        if (blockedUserRepository.existsByTelegramChatId(chatId)) {
+            return
+        }
 
         val rawText = message.text ?: message.caption
         if (antiSpamService.isSpam(chatId, rawText)) {
@@ -251,6 +257,64 @@ class SupportService(
         if (oldTickets.isNotEmpty()) {
             ticketRepository.deleteAll(oldTickets)
         }
+    }
+
+    @Transactional
+    fun blockUserFromTicket(ticketId: UUID, reason: String?): SupportBlockedUserDto {
+        val ticket = ticketRepository.findById(ticketId)
+            .orElseThrow { IllegalArgumentException("Тікет не знайдено") }
+
+        ticket.status = TicketStatus.CLOSED
+        ticket.updatedAt = Instant.now()
+        ticketRepository.save(ticket)
+
+        val blocked = blockedUserRepository.save(
+            com.taxiapp.server.model.support.SupportBlockedUser(
+                telegramChatId = ticket.telegramChatId,
+                phoneNumber = ticket.phoneNumber,
+                userName = ticket.user?.fullName,
+                reason = reason?.trim().takeIf { !it.isNullOrBlank() } ?: "Порушення правил спілкування"
+            )
+        )
+
+        try {
+            telegramBotService.sendMessage(
+                ticket.telegramChatId,
+                "🚫 Ваш доступ до чату підтримки заблоковано за порушення правил."
+            )
+        } catch (e: Exception) {
+            // Ігноруємо помилки відправки Telegram при блокуванні
+        }
+
+        notifyTicketsChanged()
+
+        return SupportBlockedUserDto(
+            id = blocked.id!!,
+            telegramChatId = blocked.telegramChatId,
+            phoneNumber = blocked.phoneNumber,
+            userName = blocked.userName,
+            reason = blocked.reason,
+            blockedAt = blocked.blockedAt
+        )
+    }
+
+    @Transactional(readOnly = true)
+    fun getBlockedUsers(): List<SupportBlockedUserDto> {
+        return blockedUserRepository.findAllByOrderByBlockedAtDesc().map {
+            SupportBlockedUserDto(
+                id = it.id!!,
+                telegramChatId = it.telegramChatId,
+                phoneNumber = it.phoneNumber,
+                userName = it.userName,
+                reason = it.reason,
+                blockedAt = it.blockedAt
+            )
+        }
+    }
+
+    @Transactional
+    fun unblockUser(blockedId: UUID) {
+        blockedUserRepository.deleteById(blockedId)
     }
 
     private fun notifyTicketsChanged() {

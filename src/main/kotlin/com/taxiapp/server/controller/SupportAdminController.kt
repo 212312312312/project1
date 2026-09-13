@@ -43,4 +43,23 @@ fun startChat(@PathVariable ticketId: UUID): ResponseEntity<SupportMessageDto> {
         supportService.closeTicket(ticketId)
         return ResponseEntity.ok().build()
     }
+
+    @PostMapping("/tickets/{ticketId}/block")
+    fun blockUser(
+        @PathVariable ticketId: UUID,
+        @RequestBody(required = false) request: com.taxiapp.server.dto.support.BlockUserRequest?
+    ): ResponseEntity<com.taxiapp.server.dto.support.SupportBlockedUserDto> {
+        return ResponseEntity.ok(supportService.blockUserFromTicket(ticketId, request?.reason))
+    }
+
+    @GetMapping("/blocked")
+    fun getBlockedUsers(): ResponseEntity<List<com.taxiapp.server.dto.support.SupportBlockedUserDto>> {
+        return ResponseEntity.ok(supportService.getBlockedUsers())
+    }
+
+    @DeleteMapping("/blocked/{blockedId}")
+    fun unblockUser(@PathVariable blockedId: UUID): ResponseEntity<Void> {
+        supportService.unblockUser(blockedId)
+        return ResponseEntity.noContent().build()
+    }
 }

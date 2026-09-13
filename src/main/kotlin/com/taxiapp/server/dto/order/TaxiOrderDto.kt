@@ -122,11 +122,7 @@ data class TaxiOrderDto(
         createdAt = order.createdAt,
         completedAt = order.completedAt,
         
-        price = if (order.price - order.appliedDiscount < 1.0) {
-            1.0
-        } else {
-            order.price - order.appliedDiscount
-        },
+        price = order.price,
 
         clientPayAmount = if (order.price - order.appliedDiscount < 1.0) {
             1.0 

@@ -80,42 +80,35 @@ class DriverLocationService(
             "lat" to request.lat.toString(),
             "lng" to request.lng.toString(),
             "bearing" to newBearing.toString(),
-            "updatedAt" to System.currentTimeMillis().toString() // 👈 Добавили время последнего отклика
+            "updatedAt" to System.currentTimeMillis().toString()
         )
         redisTemplate.opsForHash<String, Any>().put(META_KEY, driverId.toString(), updatedMeta)
 
-        val orderUuidStr = redisTemplate.opsForHash<String, Any>().get("orders:active_drivers", driverId.toString())?.toString()
-        
-        if (!orderUuidStr.isNullOrEmpty()) {
-            val trackingDto = TrackingLocationDto(
-                lat = request.lat,
-                lng = request.lng,
-                bearing = newBearing
-            )
-            messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingDto)
+        // 1. Проверяем активный заказ напрямую в БД (гарантированная запись трека)
+        try {
+            orderRepository.findActiveOrderByDriverId(driverId).ifPresent { order ->
+                val dbTrack = com.taxiapp.server.model.order.TaxiOrderTrack(
+                    orderId = order.id!!,
+                    latitude = request.lat,
+                    longitude = request.lng
+                )
+                taxiOrderTrackRepository.save(dbTrack)
 
-            val trackKey = "orders:track-history:$orderUuidStr"
-            val timestamp = java.time.Instant.now().toString()
-            val trackPoint = "${request.lat},${request.lng},$timestamp"
-            
-            redisTemplate.opsForList().rightPush(trackKey, trackPoint)
-            redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
+                val orderUuid = order.uuid.toString()
+                val trackingDto = TrackingLocationDto(
+                    lat = request.lat,
+                    lng = request.lng,
+                    bearing = newBearing
+                )
+                messagingTemplate.convertAndSend("/topic/order/$orderUuid/tracking", trackingDto)
 
-            try {
-                orderRepository.findActiveOrderByDriverId(driverId).ifPresent { order ->
-                    val statusStr = order.status.name
-                    if (statusStr == "ACCEPTED" || statusStr == "IN_PROGRESS" || statusStr == "DRIVER_ARRIVED" || statusStr == "ARRIVED") {
-                        val dbTrack = com.taxiapp.server.model.order.TaxiOrderTrack(
-                            orderId = order.id!!,
-                            latitude = request.lat,
-                            longitude = request.lng
-                        )
-                        taxiOrderTrackRepository.save(dbTrack)
-                    }
-                }
-            } catch (e: Exception) {
-                println(">>> ОШИБКА СОХРАНЕНИЯ ТРЕКА В POSTGRES: ${e.message}")
+                val trackKey = "orders:track-history:$orderUuid"
+                val timestamp = java.time.Instant.now().toString()
+                redisTemplate.opsForList().rightPush(trackKey, "${request.lat},${request.lng},$timestamp")
+                redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
             }
+        } catch (e: Exception) {
+            println(">>> ОШИБКА СОХРАНЕНИЯ ТРЕКА В POSTGRES: ${e.message}")
         }
 
         val locationDto = DriverLocationDto(
@@ -209,7 +202,7 @@ class DriverLocationService(
                 lng = lng,
                 bearing = (meta["bearing"] as? String)?.toFloatOrNull() ?: 0f,
                 status = meta["status"] as? String ?: "MANUAL",
-                isOnline = isOnline, // 👈 Возвращаем реальный статус (true - 🟢, false - ⚪)
+                isOnline = isOnline,
                 carModel = meta["carModel"] as? String ?: "Не вказано",
                 carColor = meta["carColor"] as? String ?: ""
             )

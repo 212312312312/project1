@@ -94,3 +94,17 @@ data class SupportMessageDto(
 data class SendSupportReplyRequest(
     val text: String
 )
+
+
+data class SupportBlockedUserDto(
+    val id: UUID,
+    val telegramChatId: Long,
+    val phoneNumber: String,
+    val userName: String?,
+    val reason: String?,
+    val blockedAt: Instant
+)
+
+data class BlockUserRequest(
+    val reason: String? = null
+)

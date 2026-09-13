@@ -91,10 +91,10 @@ class TaxiOrder(
     @Column(nullable = true)
     var destLng: Double? = null,
 
-    @Column(nullable = true, length = 4096)
+    @Column(name = "google_route_polyline", columnDefinition = "TEXT", nullable = true)
     var googleRoutePolyline: String? = null,
 
-    @Column(name = "driver_to_pickup_polyline", nullable = true, length = 4096)
+    @Column(name = "driver_to_pickup_polyline", columnDefinition = "TEXT", nullable = true)
     var driverToPickupPolyline: String? = null,
 
     @Column(nullable = false)
