@@ -185,6 +185,8 @@ class OrderService(
                 serviceIds = emptyList(), 
                 addedValue = 0.0, 
                 waypointsCount = waypointsCount,
+                originLat = originLat, // 👈 ДОБАВЛЕНО
+                originLng = originLng, // 👈 ДОБАВЛЕНО
                 isDebug = false
             )
             
