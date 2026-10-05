@@ -98,3 +98,27 @@ data class EvoSCancelResponseDto(
     @JsonProperty("dispatching_order_uid") val dispatchingOrderUid: String,
     @JsonProperty("order_client_cancel_result") val orderClientCancelResult: Int
 )
+
+
+// --- ПОЛУЧЕНИЕ КООРДИНАТ АВТОМОБИЛЕЙ В РАДИУСЕ (GET /api/drivers/position) ---
+data class EvoSCarPositionDetailsDto(
+    @JsonProperty("lat") val lat: Double?,
+    @JsonProperty("lng") val lng: Double?,
+    @JsonProperty("time_positioned_utc") val timePositionedUtc: String? = null,
+    @JsonProperty("altitude") val altitude: Double? = null,
+    @JsonProperty("accuracy") val accuracy: Double? = null,
+    @JsonProperty("bearing") val bearing: Float? = null,
+    @JsonProperty("speed") val speed: Int? = 0,
+    @JsonProperty("status") val status: String? = null
+)
+
+data class EvoSCarDetailsDto(
+    @JsonProperty("types") val types: List<String>? = emptyList(),
+    @JsonProperty("options") val options: List<String>? = emptyList()
+)
+
+data class EvoSDriverPositionItemDto(
+    @JsonProperty("drivercar_position") val drivercarPosition: EvoSCarPositionDetailsDto?,
+    @JsonProperty("car") val car: EvoSCarDetailsDto?,
+    @JsonProperty("state") val state: String?
+)

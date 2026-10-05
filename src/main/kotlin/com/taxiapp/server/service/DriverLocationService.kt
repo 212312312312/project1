@@ -22,12 +22,92 @@ class DriverLocationService(
     private val orderRepository: TaxiOrderRepository,
     private val messagingTemplate: SimpMessagingTemplate,
     private val redisTemplate: RedisTemplate<String, Any>,
-    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository
+    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository,
+    private val evoSService: EvoSService // 👈 ДОБАВЛЕНО
 ) {
     // Ключи для Redis
     private val GEO_KEY = "drivers:geo"
     private val META_KEY = "drivers:meta"
     private val UUID_MAP_KEY = "drivers:uuid-to-id"
+    private val objectMapper = com.fasterxml.jackson.databind.ObjectMapper()
+        .registerModule(com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build())
+        .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+
+
+    private fun calculateDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return r * c
+    }
+
+    private fun getCachedEvoSDrivers(lat: Double, lng: Double): List<DriverLocationDto> {
+        val gridLat = String.format(java.util.Locale.US, "%.2f", lat)
+        val gridLng = String.format(java.util.Locale.US, "%.2f", lng)
+        val cacheKey = "evos:drivers:cache:$gridLat:$gridLng"
+
+        val cachedJson = try {
+            redisTemplate.opsForValue().get(cacheKey) as? String
+        } catch (e: Exception) {
+            null
+        }
+
+        if (!cachedJson.isNullOrBlank()) {
+            return try {
+                val listType = objectMapper.typeFactory.constructCollectionType(List::class.java, DriverLocationDto::class.java)
+                objectMapper.readValue<List<DriverLocationDto>>(cachedJson, listType)
+            } catch (e: Exception) {
+                println("⚠️ [Redis Deserialization Error]: ${e.message}")
+                emptyList()
+            }
+        }
+
+        // Запрашиваем радиус 6.0 км
+        val evosItems = evoSService.getNearbyDrivers(lat, lng, radiusKm = 6.0)
+        
+        val drivers = evosItems.mapNotNull { item ->
+            val pos = item.drivercarPosition ?: return@mapNotNull null
+            val isFree = item.state?.equals("Free", ignoreCase = true) == true
+            val isGpsOk = pos.status?.equals("gpsOk", ignoreCase = true) == true
+
+            if (!isFree || !isGpsOk) {
+                println("⚠️ [EvoS Driver Filtered] state=${item.state}, gpsStatus=${pos.status}")
+                return@mapNotNull null
+            }
+
+            val carLat = pos.lat ?: return@mapNotNull null
+            val carLng = pos.lng ?: return@mapNotNull null
+            if (carLat == 0.0 && carLng == 0.0) return@mapNotNull null
+
+            val pseudoId = Math.abs((carLat.toString() + carLng.toString()).hashCode().toLong())
+            val carModel = item.car?.types?.firstOrNull() ?: "Стандарт"
+
+            DriverLocationDto(
+                driverId = pseudoId,
+                fullName = "Партнер",
+                lat = carLat,
+                lng = carLng,
+                bearing = pos.bearing ?: 0f,
+                status = "FREE",
+                isOnline = true,
+                carModel = carModel,
+                carColor = ""
+            )
+        }
+
+        println("🚕 [EvoS Valid Drivers] Пройшло фільтрацію вільних авто: ${drivers.size} з ${evosItems.size}")
+
+        try {
+            val jsonToCache = objectMapper.writeValueAsString(drivers)
+            redisTemplate.opsForValue().set(cacheKey, jsonToCache, 10, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Exception) {}
+
+        return drivers
+    }
 
     @Transactional
     fun updateLocation(driverUuid: String, request: UpdateLocationRequest) {
@@ -147,9 +227,9 @@ class DriverLocationService(
             .includeCoordinates().sortAscending().limit(5)
             
         val circle = Circle(Point(lng, lat), Distance(10.0, Metrics.KILOMETERS))
-        val results = redisTemplate.opsForGeo().radius(GEO_KEY, circle, args) ?: return emptyList()
+        val results = redisTemplate.opsForGeo().radius(GEO_KEY, circle, args)
         
-        return results.content.map { result ->
+        val localDrivers = results?.content?.map { result ->
             val driverIdStr = result.content.name
             val point = result.content.point
             val meta = redisTemplate.opsForHash<String, Any>().get(META_KEY, driverIdStr.toString()) as? Map<*, *>
@@ -165,7 +245,21 @@ class DriverLocationService(
                 carModel = meta?.get("carModel") as? String ?: "Не вказано",
                 carColor = meta?.get("carColor") as? String ?: ""
             )
+        } ?: emptyList()
+
+        // Если в системе есть свои активные водители — отдаем их
+        if (localDrivers.isNotEmpty()) {
+            return localDrivers
         }
+
+        // Если своих нет — берем машины из кэша EvoS в радиусе до 800м от пина клиента
+        val evosDrivers = getCachedEvoSDrivers(lat, lng)
+        return evosDrivers
+            .map { driver -> Pair(driver, calculateDistanceMeters(lat, lng, driver.lat, driver.lng)) }
+            .filter { it.second <= 2000.0 } // 👈 Расширили до 2 км
+            .sortedBy { it.second }
+            .take(5)
+            .map { it.first }
     }
 
     fun getAllActiveDriversForMap(): List<DriverLocationDto> {

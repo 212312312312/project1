@@ -180,6 +180,30 @@ class EvoSService(
         }
     }
 
+    // --- ПОЛУЧЕНИЕ КООРДИНАТ СВОБОДНЫХ АВТОМОБИЛЕЙ В РАДИУСЕ ---
+    fun getNearbyDrivers(lat: Double, lng: Double, radiusKm: Double = 5.0): List<EvoSDriverPositionItemDto> {
+        if (!settingsService.isEvosEnabled()) return emptyList()
+
+        val baseUrl = settingsService.getEvosUrl().trimEnd('/')
+        val intRadius = radiusKm.toInt().coerceAtLeast(1)
+    val url = "$baseUrl/api/drivers/position?lat=$lat&lng=$lng&radius=$intRadius"
+
+        return try {
+            val requestEntity = HttpEntity<Void>(createHeaders())
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                requestEntity,
+                Array<EvoSDriverPositionItemDto>::class.java
+            )
+            val items = response.body?.toList() ?: emptyList()
+            logger.info(">>> [EvoS Raw Positions] Отримано від EvoS машин: ${items.size} (radius=${radiusKm}km)")
+            items
+        } catch (e: Exception) {
+            logger.error(">>> [EvoS] Помилка отримання координат водіїв з EvoS: ${e.message}")
+            emptyList()
+        }
+    }
 
     // --- 3.1. СИНХРОНИЗАЦИЯ ЦЕНЫ НА ЛЕТУ С УЧЕТОМ БАЗЫ EVOS ---
     fun updateOrderPriceInEvoS(order: TaxiOrder): Boolean {
