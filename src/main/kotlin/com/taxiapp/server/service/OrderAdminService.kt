@@ -30,6 +30,7 @@ class OrderAdminService(
         return orderRepository.findActiveOrders().map { TaxiOrderDto(it) }
     }
 
+    @Transactional(readOnly = true)
     fun getArchivedOrders(): List<TaxiOrderDto> {
         val archiveStatuses = listOf(OrderStatus.COMPLETED, OrderStatus.CANCELLED)
         return orderRepository.findAllByStatusInOrderByIdDesc(archiveStatuses)

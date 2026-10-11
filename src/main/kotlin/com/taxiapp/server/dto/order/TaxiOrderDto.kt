@@ -69,7 +69,15 @@ data class TaxiOrderDto(
 
     val currentStopOrder: Int = 0,
     val waypointArrivedAt: LocalDateTime? = null,
-    val cancellationReason: String? = null
+    val cancellationReason: String? = null,
+
+    // ➕ ДЕТАЛИЗАЦИЯ СТОИМОСТИ И ТАРИФА
+    val basePrice: Double = 0.0,
+    val pricePerKm: Double = 0.0,
+    val pricePerKmOutCity: Double = 0.0,
+    val extraWaypointPrice: Double = 0.0,
+    val boostAdded: Double = 0.0,
+    val appliedDiscount: Double = 0.0
 ) {
     constructor(order: TaxiOrder) : this(
         id = order.uuid.toString(),
@@ -226,7 +234,15 @@ data class TaxiOrderDto(
 
         currentStopOrder = order.currentStopOrder,
         waypointArrivedAt = order.waypointArrivedAt,
-        cancellationReason = order.cancellationReason
+        cancellationReason = order.cancellationReason,
+
+        // ➕ МАППИНГ ДЕТАЛИЗАЦИИ
+        basePrice = if (order.basePrice > 0.0) order.basePrice else order.tariff.basePrice,
+        pricePerKm = order.tariff.pricePerKm,
+        pricePerKmOutCity = order.tariff.pricePerKmOutCity,
+        extraWaypointPrice = order.tariff.extraWaypointPrice,
+        boostAdded = order.boostAdded,
+        appliedDiscount = order.appliedDiscount
     )
 
     companion object {
