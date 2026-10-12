@@ -881,42 +881,85 @@ fun createOrder(client: Client, request: CreateOrderRequestDto): TaxiOrderDto {
     }
 
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
-    if (!driver.isOnline) return emptyList()
-    if (driver.activityScore <= 0) return emptyList()
+        // 1. Синхронізація статусу Онлайн та координат з Redis (якщо в БД ще старі дані)
+        val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", driver.id.toString()) as? Map<*, *>
+        val isOnlineRedis = (meta?.get("isOnline") as? String)?.toBoolean()
+            ?: (meta?.get("isOnline") as? Boolean)
+            ?: false
 
-    val allOrders = orderRepository.findAllAvailableForEther()
-
-    // 🛡️ ДОБАВЛЕНО: Сначала жестко фильтруем заказы по активным тарифам водителя
-    val availableOrdersByTariff = allOrders.filter { order -> 
-        if (driver.selectedTariffs.isEmpty()) {
-            driver.allowedTariffs.contains(order.tariff)
-        } else {
-            driver.selectedTariffs.contains(order.tariff)
+        val isOnline = driver.isOnline || isOnlineRedis
+        if (!isOnline) {
+            logger.info(">>> [ETHER] Водій #${driver.id} офлайн (DB=${driver.isOnline}, Redis=$isOnlineRedis). Ефір порожній.")
+            return emptyList()
         }
+
+        if (driver.activityScore <= 0) {
+            logger.info(">>> [ETHER] Водій #${driver.id} заблокований за низьку активність (${driver.activityScore}).")
+            return emptyList()
+        }
+
+        // Підтягуємо координати з Redis, якщо в сутності БД вони ще null або 0.0
+        if (driver.latitude == null || driver.longitude == null || driver.latitude == 0.0) {
+            val rLat = (meta?.get("lat") as? String)?.toDoubleOrNull() ?: (meta?.get("lat") as? Double)
+            val rLng = (meta?.get("lng") as? String)?.toDoubleOrNull() ?: (meta?.get("lng") as? Double)
+            if (rLat != null && rLng != null) {
+                driver.latitude = rLat
+                driver.longitude = rLng
+            }
+        }
+
+        val allOrders = orderRepository.findAllAvailableForEther()
+
+        // 2. Безпечна фільтрація за тарифами через порівняння ID (уникаємо помилок proxy Hibernate)
+        val driverTariffIds = if (driver.selectedTariffs.isNotEmpty()) {
+            driver.selectedTariffs.mapNotNull { it.id }.toSet()
+        } else {
+            driver.allowedTariffs.mapNotNull { it.id }.toSet()
+        }
+
+        allOrders.forEach { ord ->
+            logger.info(">>> [ETHER TARIFF CHECK] Водій #${driver.id} має тарифи ID: $driverTariffIds | Замовлення #${ord.id} має тариф ID: ${ord.tariff.id} (${ord.tariff.name})")
+        }
+
+        val availableOrdersByTariff = allOrders.filter { order ->
+            // Якщо у водія немає обмежень, або ID збігається, або це базовий Стандарт
+            driverTariffIds.isEmpty() || 
+            driverTariffIds.contains(order.tariff.id) || 
+            order.tariff.name.equals("Стандарт", ignoreCase = true)
+        }
+
+        val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
+            .filter { it.isActive }
+
+        logger.info(">>> [ETHER] Водій #${driver.id} (Online=$isOnline, Lat=${driver.latitude}, Lng=${driver.longitude}): Всього замовлень в ефірі=${allOrders.size}, підійшло по тарифу=${availableOrdersByTariff.size}, активних фільтрів=${activeFilters.size}")
+
+        if (activeFilters.isEmpty()) {
+            return availableOrdersByTariff.map { TaxiOrderDto(it) }
+        }
+
+        // 3. Застосування активних фільтрів водія
+        val filtered = availableOrdersByTariff.filter { order ->
+            activeFilters.any { filter -> matchesFilter(order, filter, driver) }
+        }
+
+        logger.info(">>> [ETHER] Фінально віддано водію #${driver.id}: ${filtered.size} замовлень.")
+        return filtered.map { TaxiOrderDto(it) }
     }
-
-    val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
-        .filter { it.isActive }
-
-    if (activeFilters.isEmpty()) {
-        return availableOrdersByTariff.map { TaxiOrderDto(it) } // 👈 Поменяли на отфильтрованный список
-    }
-
-    // Применяем кастомные фильтры (радиусы/сектора) поверх валидных тарифов
-    val filtered = availableOrdersByTariff.filter { order ->
-        activeFilters.any { filter -> matchesFilter(order, filter, driver) }
-    }
-
-    return filtered.map { TaxiOrderDto(it) }
-}
 
     private fun matchesFilter(order: TaxiOrder, filter: DriverFilter, driver: Driver): Boolean {
         if (filter.fromType == "DISTANCE") {
-            val distToOrder = GeometryUtils.calculateDistance(
-                driver.latitude ?: 0.0, driver.longitude ?: 0.0,
-                order.originLat ?: 0.0, order.originLng ?: 0.0
-            )
-            if (distToOrder > (filter.fromDistance ?: 30.0)) return false
+            val dLat = driver.latitude
+            val dLng = driver.longitude
+            // Якщо координати водія валідні (не 0.0), рахуємо реальну відстань
+            if (dLat != null && dLng != null && dLat != 0.0 && dLng != 0.0) {
+                val distToOrder = GeometryUtils.calculateDistance(
+                    dLat, dLng,
+                    order.originLat ?: 0.0, order.originLng ?: 0.0
+                )
+                val maxDist = filter.fromDistance ?: 30.0
+                if (distToOrder > maxDist) return false
+            }
+            // Якщо координати водія ще не встигли визначитися, не відкидаємо замовлення
         } else {
             if (filter.fromSectors.isNotEmpty()) {
                 val startSectors = sectorRepository.findAllById(filter.fromSectors)

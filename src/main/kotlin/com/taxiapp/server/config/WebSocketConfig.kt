@@ -32,13 +32,54 @@ class WebSocketConfig(
         config.setApplicationDestinationPrefixes("/app")
     }
 
-    override fun registerStompEndpoints(registry: StompEndpointRegistry) {
-    val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
+    private val wsLogger = org.slf4j.LoggerFactory.getLogger(WebSocketConfig::class.java)
 
-    // Добавляем /ws-taxi/websocket в список эндпоинтов
-    registry.addEndpoint("/ws-taxi", "/ws-taxi/websocket").setAllowedOriginPatterns(*origins).withSockJS()
-    registry.addEndpoint("/ws-taxi", "/ws-taxi/websocket").setAllowedOriginPatterns(*origins)
-}
+    override fun registerStompEndpoints(registry: StompEndpointRegistry) {
+        val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
+
+        // Перехватчик токена из параметров URL handshake (?token=... или ?access_token=...)
+        val queryInterceptor = object : org.springframework.web.socket.server.HandshakeInterceptor {
+            override fun beforeHandshake(
+                request: org.springframework.http.server.ServerHttpRequest,
+                response: org.springframework.http.server.ServerHttpResponse,
+                wsHandler: org.springframework.web.socket.WebSocketHandler,
+                attributes: MutableMap<String, Any>
+            ): Boolean {
+                val query = request.uri.query
+                if (!query.isNullOrBlank()) {
+                    val params = query.split("&").associate {
+                        val parts = it.split("=")
+                        parts[0] to (parts.getOrNull(1) ?: "")
+                    }
+                    val t = params["token"] ?: params["accessToken"] ?: params["access_token"]
+                    if (!t.isNullOrBlank()) {
+                        attributes["token"] = t
+                    }
+                }
+                val authHeader = request.headers.getFirst("Authorization") ?: request.headers.getFirst("authorization")
+                if (!authHeader.isNullOrBlank()) {
+                    attributes["authHeader"] = authHeader
+                }
+                return true
+            }
+
+            override fun afterHandshake(
+                request: org.springframework.http.server.ServerHttpRequest,
+                response: org.springframework.http.server.ServerHttpResponse,
+                wsHandler: org.springframework.web.socket.WebSocketHandler,
+                exception: Exception?
+            ) {}
+        }
+
+        registry.addEndpoint("/ws-taxi", "/ws-taxi/websocket")
+            .setAllowedOriginPatterns(*origins)
+            .addInterceptors(queryInterceptor)
+            .withSockJS()
+
+        registry.addEndpoint("/ws-taxi", "/ws-taxi/websocket")
+            .setAllowedOriginPatterns(*origins)
+            .addInterceptors(queryInterceptor)
+    }
 
     override fun configureClientInboundChannel(registration: ChannelRegistration) {
         registration.interceptors(object : ChannelInterceptor {
@@ -51,13 +92,40 @@ class WebSocketConfig(
                         return message
                     }
 
-                    var authHeader = accessor.getFirstNativeHeader("Authorization")
-                    if (authHeader == null) {
-                        authHeader = accessor.getFirstNativeHeader("authorization")
+                    // 1. Проверяем все возможные варианты названий заголовков токена
+                    val headerCandidates = listOf(
+                        "Authorization", "authorization", 
+                        "token", "Token", 
+                        "access_token", "accessToken", 
+                        "X-Authorization", "passcode"
+                    )
+                    var rawToken: String? = null
+                    for (headerName in headerCandidates) {
+                        val h = accessor.getFirstNativeHeader(headerName)
+                        if (!h.isNullOrBlank()) {
+                            rawToken = h
+                            break
+                        }
                     }
 
-                    if (authHeader != null && authHeader.startsWith("Bearer ")) {
-                        val token = authHeader.substring(7).trim()
+                    // 2. Проверяем системный passcode фрейма CONNECT
+                    if (rawToken.isNullOrBlank() && !accessor.passcode.isNullOrBlank()) {
+                        rawToken = accessor.passcode
+                    }
+
+                    // 3. Проверяем атрибуты сессии из HTTP handshake (URL query params)
+                    if (rawToken.isNullOrBlank()) {
+                        rawToken = (accessor.sessionAttributes?.get("token") as? String)
+                            ?: (accessor.sessionAttributes?.get("authHeader") as? String)
+                    }
+
+                    if (!rawToken.isNullOrBlank()) {
+                        val token = if (rawToken.startsWith("Bearer ", ignoreCase = true)) {
+                            rawToken.substring(7).trim()
+                        } else {
+                            rawToken.trim()
+                        }
+
                         try {
                             val username = jwtUtils.extractUsername(token)
                             if (username != null) {
@@ -67,13 +135,17 @@ class WebSocketConfig(
                                         userDetails, null, userDetails.authorities
                                     )
                                     accessor.user = authentication
+                                    wsLogger.info(">>> [WS Auth OK] Успішна авторизація для: $username")
                                     return message
                                 }
                             }
                         } catch (e: Exception) {
+                            wsLogger.warn(">>> [WS Auth] Недійсний токен: ${e.message}")
                             throw org.springframework.messaging.MessageDeliveryException("Invalid Token")
                         }
                     }
+
+                    wsLogger.warn(">>> [WS Auth] Вхід відхилено: токен не знайдено! Headers: ${accessor.toNativeHeaderMap()}, sessionAttr: ${accessor.sessionAttributes}")
                     throw org.springframework.messaging.MessageDeliveryException("Unauthorized: Access Denied")
                 }
                 return message
