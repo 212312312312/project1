@@ -195,4 +195,50 @@ class ClientAppController(
         // Передаем нашего user (который точно Client) в DTO
         return ResponseEntity.ok(com.taxiapp.server.dto.client.ClientDto(user))
     }
+
+    // ОДЕРЖАННЯ АКТИВНОГО АБО ЩОЙНО ЗАВЕРШЕНОГО ЗАМОВЛЕННЯ (ДЛЯ СИНХРОНІЗАЦІЇ ПРИ ONRESUME)
+    @GetMapping("/orders/active")
+    fun getActiveOrder(principal: Principal): ResponseEntity<TaxiOrderDto> {
+        val userLogin = principal.name
+        var user = userRepository.findByUserLogin(userLogin).orElse(null)
+        if (user == null) {
+            user = userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
+        }
+        if (user !is Client) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Користувач не є клієнтом")
+        }
+
+        val activeOrder = orderService.findActiveOrRecentlyCompletedOrder(user)
+            ?: return ResponseEntity.noContent().build() // 204 No Content якщо замовлень немає
+
+        return ResponseEntity.ok(activeOrder)
+    }
+
+    // ЗАКРИТТЯ КАРТКИ ЗАВЕРШЕНОГО ЗАМОВЛЕННЯ
+    @PostMapping("/orders/{id}/dismiss")
+    fun dismissOrder(
+        @PathVariable id: String,
+        principal: Principal
+    ): ResponseEntity<MessageResponse> {
+        val userLogin = principal.name
+        var user = userRepository.findByUserLogin(userLogin).orElse(null)
+        if (user == null) {
+            user = userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED, "Користувача не знайдено") }
+        }
+        if (user !is Client) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Користувач не є клієнтом")
+        }
+
+        val internalId = try {
+            orderRepository.findByUuid(UUID.fromString(id)).map { it.id }.orElse(null)
+                ?: id.toLongOrNull()
+        } catch (e: IllegalArgumentException) {
+            id.toLongOrNull()
+        } ?: 0L
+
+        orderService.dismissCompletedOrder(user, internalId)
+        return ResponseEntity.ok(MessageResponse("Замовлення успішно закрито"))
+    }
 }

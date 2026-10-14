@@ -1227,14 +1227,22 @@ fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrder
 
     order.status = OrderStatus.CANCELLED
     order.completedAt = LocalDateTime.now()
-    order.cancelledAt = LocalDateTime.now() // ➕ ДОБАВИТЬ ЭТУ СТРОКУ
+    order.cancelledAt = LocalDateTime.now()
     val saved = orderRepository.save(order)
 
-        // <--- ОЧИСТКА ЧАТА --->
-        chatService.clearChatForOrder(orderId)
+    // 🚀 КЕШУЄМО СКАСОВАНЕ ВОДІЄМ ЗАМОВЛЕННЯ НА 10 ХВ ДЛЯ СИНХРОНІЗАЦІЇ КЛІЄНТА В ФОНІ
+    redisTemplate.opsForValue().set(
+        "client:last_completed_order:${order.client.id}",
+        saved.id.toString(),
+        10,
+        java.util.concurrent.TimeUnit.MINUTES
+    )
 
-        broadcastOrderChange(saved, "REMOVE")
-        return TaxiOrderDto(saved)
+    // <--- ОЧИСТКА ЧАТА --->
+    chatService.clearChatForOrder(orderId)
+
+    broadcastOrderChange(saved, "REMOVE")
+    return TaxiOrderDto(saved)
     }
     
     @Transactional
@@ -1324,6 +1332,81 @@ fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
 
     return TaxiOrderDto(saved)
 }
+
+// 🚀 ВИСОКОНАВАНТАЖЕНИЙ ПОШУК АКТИВНОГО / ЩОЙНО ЗАВЕРШЕНОГО ЗАМОВЛЕННЯ ДЛЯ КЛІЄНТА
+    fun findActiveOrRecentlyCompletedOrder(client: Client): TaxiOrderDto? {
+        val clientActiveOrdersKey = "client:active_orders:${client.id}"
+        val activeIdsRaw = redisTemplate.opsForSet().members(clientActiveOrdersKey) ?: emptySet<Any>()
+        val activeIds = activeIdsRaw.mapNotNull { it.toString().toLongOrNull() }
+
+        // 1. Якщо є активні замовлення в Redis Set — перевіряємо їх
+        if (activeIds.isNotEmpty()) {
+            val activeStatuses = listOf(
+                OrderStatus.REQUESTED,
+                OrderStatus.OFFERING,
+                OrderStatus.ACCEPTED,
+                OrderStatus.DRIVER_ARRIVED,
+                OrderStatus.IN_PROGRESS,
+                OrderStatus.ARRIVED_AT_WAYPOINT,
+                OrderStatus.SCHEDULED
+            )
+            val activeOrders = orderRepository.findAllById(activeIds)
+                .filter { it.status in activeStatuses }
+
+            if (activeOrders.isNotEmpty()) {
+                val currentOrder = activeOrders.maxByOrNull { it.id ?: 0L }
+                if (currentOrder != null) {
+                    return TaxiOrderDto(currentOrder)
+                }
+            } else {
+                // Якщо замовлення вже закриті, очищаємо битий кеш
+                redisTemplate.delete(clientActiveOrdersKey)
+            }
+        }
+
+        // 2. Якщо активних немає, перевіряємо, чи завершився заказ щойно (поки клієнт спав у фоні)
+        val lastFinishedKey = "client:last_completed_order:${client.id}"
+        val lastFinishedIdStr = redisTemplate.opsForValue().get(lastFinishedKey)?.toString()
+        if (!lastFinishedIdStr.isNullOrBlank()) {
+            // 🚀 ОДНОРАЗОВА ВИДАЧА (Consume on Read):
+            // Видаляємо ключ із Redis МИТТЄВО при першому ж читанні! Повторно цей заказ клієнту ніколи не повернеться.
+            redisTemplate.delete(lastFinishedKey)
+
+            val finishedId = lastFinishedIdStr.toLongOrNull()
+            if (finishedId != null) {
+                val finishedOrder = orderRepository.findById(finishedId).orElse(null)
+                if (finishedOrder != null) {
+                    if (finishedOrder.isRatedByClient) {
+                        return null
+                    }
+                    if (finishedOrder.status == OrderStatus.COMPLETED || finishedOrder.status == OrderStatus.CANCELLED) {
+                        return TaxiOrderDto(finishedOrder)
+                    }
+                }
+            }
+        }
+
+        return null
+    }
+
+    // 🚀 СКИДАННЯ КЕШУ ЗАВЕРШЕНОГО ЗАМОВЛЕННЯ ПІСЛЯ ЗАКРИТТЯ ШТОРКИ / ОЦІНКИ КЛІЄНТОМ
+    fun dismissCompletedOrder(client: Client, orderId: Long) {
+        val lastFinishedIdStr = redisTemplate.opsForValue().get("client:last_completed_order:${client.id}")?.toString()
+        val targetId = if (orderId != 0L) orderId else (lastFinishedIdStr?.toLongOrNull() ?: 0L)
+
+        redisTemplate.delete("client:last_completed_order:${client.id}")
+        logger.info(">>> [OrderService] Завершене замовлення #$targetId очищено з Redis для клієнта #${client.id}")
+
+        // 🛡️ Гарантуємо, що замовлення помічено як оцінене, щоб уникнути повторних спливань
+        if (targetId != 0L) {
+            orderRepository.findById(targetId).ifPresent { order ->
+                if (order.client.id == client.id && !order.isRatedByClient) {
+                    order.isRatedByClient = true
+                    orderRepository.save(order)
+                }
+            }
+        }
+    }
 
     @Transactional
     fun driverArrived(driver: Driver, orderId: Long): TaxiOrderDto {
@@ -1674,6 +1757,14 @@ fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
     
     val savedOrder = orderRepository.save(order)
     chatService.clearChatForOrder(orderId)
+
+    // 🚀 КЕШУЄМО ОСТАННЄ ЗАВЕРШЕНЕ ЗАМОВЛЕННЯ НА 10 ХВ ДЛЯ КЛІЄНТА В ФОНІ
+    redisTemplate.opsForValue().set(
+        "client:last_completed_order:${order.client.id}",
+        savedOrder.id.toString(),
+        10,
+        java.util.concurrent.TimeUnit.MINUTES
+    )
 
     notificationService.sendOrderStatusToClient(
         token = savedOrder.client.fcmToken,

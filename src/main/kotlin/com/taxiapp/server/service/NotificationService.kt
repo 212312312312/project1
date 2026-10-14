@@ -156,11 +156,9 @@ class NotificationService(
     fun sendOrderStatusToClient(token: String?, orderId: Long, status: String, title: String, body: String) {
         if (token.isNullOrEmpty()) return
 
-        try {
-            val message = Message.builder()
+        val message = try {
+            Message.builder()
                 .setToken(token)
-                // ВАЖЛИВО: Використовуємо ТІЛЬКИ putData (Data Push), без setNotification!
-                // Це не створить нове сповіщення автоматично, а розбудит MyFirebaseMessagingService клиента
                 .putData("type", "ORDER_STATUS_UPDATE")
                 .putData("orderId", orderId.toString())
                 .putData("status", status)
@@ -172,14 +170,20 @@ class NotificationService(
                         .build()
                 )
                 .build()
-
-            FirebaseMessaging.getInstance().send(message)
-            // 🔥 ИСПРАВЛЕНО: Убран экранирующий бэкслеш \, чтобы логи выводились корректно
-            logger.info(">>> PUSH (Data Status Update) відправлено клієнту на токен: ${token.take(10)}...")
         } catch (e: Exception) {
-            // 🔥 ИСПРАВЛЕНО: Убран экранирующий бэкслеш \, добавлен вывод стек-трейса
-            logger.error(">>> Помилка FCM (Status Update): ${e.message}")
-            e.printStackTrace()
+            logger.error(">>> Помилка формування FCM повідомлення (Status Update): ${e.message}")
+            return
+        }
+
+        // 🚀 Безпечна відправка строго після комміту транзакції в БД
+        sendAfterCommit {
+            try {
+                FirebaseMessaging.getInstance().send(message)
+                logger.info(">>> PUSH (Data Status Update) відправлено клієнту на токен: ${token.take(10)}...")
+            } catch (e: Exception) {
+                logger.error(">>> Помилка FCM (Status Update): ${e.message}")
+                e.printStackTrace()
+            }
         }
     }
     fun sendPhotoControlRequestNotification(driver: Driver, deadlineAt: LocalDateTime?) {
