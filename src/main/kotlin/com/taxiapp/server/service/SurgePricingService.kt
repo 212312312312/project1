@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service
 import java.time.DayOfWeek
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.round
 
@@ -17,25 +18,47 @@ class SurgePricingService(
 ) {
     private val logger = LoggerFactory.getLogger(SurgePricingService::class.java)
 
+    // L1 In-Memory кэш активных правил часов пик (TTL 30 секунд)
+    // Избавляет PostgreSQL от 5-6 одинаковых SQL-запросов на каждый просчет маршрута клиентом
+    @Volatile
+    private var cachedActiveRules: List<TimeSurgeRule> = emptyList()
+
+    @Volatile
+    private var rulesCacheExpiresAtMs: Long = 0L
+
+    fun invalidateCache() {
+        rulesCacheExpiresAtMs = 0L
+    }
+
+    private fun getActiveTimeRulesCached(): List<TimeSurgeRule> {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs < rulesCacheExpiresAtMs) {
+            return cachedActiveRules
+        }
+        val freshRules = timeRuleRepository.findAllByIsActiveTrue()
+        cachedActiveRules = freshRules
+        rulesCacheExpiresAtMs = nowMs + 30_000L
+        return freshRules
+    }
+
     fun calculateCurrentSurgeMultiplier(lat: Double? = null, lng: Double? = null): Double {
         val now = LocalDateTime.now()
-        val currentTime = now.toLocalTime()
 
-        // 1. Поиск правил часов пик
-        val activeTimeRules = timeRuleRepository.findAllByIsActiveTrue()
+        // 1. Поиск правил часов пик из быстрого кэша в памяти
+        val activeTimeRules = getActiveTimeRulesCached()
         val matchingRules = activeTimeRules.filter { rule -> isRuleActiveAt(rule, now) }
 
         val bestRule = matchingRules.maxByOrNull { it.multiplier }
         val timeMultiplier = bestRule?.multiplier ?: 1.0
 
-        // Логирование часа пик по образцу погоды
-        val dayUa = getDayOfWeekUkrainian(now.dayOfWeek)
-        val timeStr = String.format("%02d:%02d", now.hour, now.minute)
-
-        if (bestRule != null && timeMultiplier > 1.0) {
-            logger.info("[PEAK_HOUR] Час: $timeStr $dayUa | Активне правило: '${bestRule.name}' (${bestRule.startTime}-${bestRule.endTime}) | Коефіцієнт: ${String.format(java.util.Locale.US, "%.2f", timeMultiplier)}")
-        } else {
-            logger.info("[PEAK_HOUR] Час: $timeStr $dayUa | Немає активних правил (активних у БД: ${activeTimeRules.size}) | Коефіцієнт: 1.00")
+        if (logger.isDebugEnabled) {
+            val dayUa = getDayOfWeekUkrainian(now.dayOfWeek)
+            val timeStr = String.format("%02d:%02d", now.hour, now.minute)
+            if (bestRule != null && timeMultiplier > 1.0) {
+                logger.debug("[PEAK_HOUR] Час: $timeStr $dayUa | Активне правило: '${bestRule.name}' (${bestRule.startTime}-${bestRule.endTime}) | Коефіцієнт: ${String.format(Locale.US, "%.2f", timeMultiplier)}")
+            } else {
+                logger.debug("[PEAK_HOUR] Час: $timeStr $dayUa | Немає активних правил (активних у БД: ${activeTimeRules.size}) | Коефіцієнт: 1.00")
+            }
         }
 
         // 2. Коэффициент погоды
@@ -47,35 +70,25 @@ class SurgePricingService(
         val timeSurplus = max(0.0, timeMultiplier - 1.0)
         val totalSurge = 1.0 + weatherSurplus + timeSurplus
 
-        // Округляем до 2 знаков после запятой, минимум 1.0
         return max(1.0, round(totalSurge * 100.0) / 100.0)
     }
 
-    /**
-     * Проверка активности правила с учетом ночных смен (переход через 00:00)
-     */
     private fun isRuleActiveAt(rule: TimeSurgeRule, now: LocalDateTime): Boolean {
         val currentDay = now.dayOfWeek
         val currentTime = now.toLocalTime()
         val start = rule.startTime
         val end = rule.endTime
 
-        // Граница суток: если в UI указали 00:00, интерпретируем как конец суток 23:59:59.999
         val isMidnightEnd = end == LocalTime.MIDNIGHT || (end.hour == 0 && end.minute == 0)
 
         return if (isMidnightEnd) {
-            // Например: 22:00 - 00:00 (до конца текущего дня)
             rule.daysOfWeek.contains(currentDay) && !currentTime.isBefore(start)
         } else if (end.isAfter(start)) {
-            // Дневной интервал: например 07:30 - 10:00
             rule.daysOfWeek.contains(currentDay) && !currentTime.isBefore(start) && !currentTime.isAfter(end)
         } else {
-            // Ночной интервал с переходом на следующий день: например 22:00 - 04:00
             if (!currentTime.isBefore(start)) {
-                // До полуночи (вечер текущего дня)
                 rule.daysOfWeek.contains(currentDay)
             } else if (!currentTime.isAfter(end)) {
-                // После полуночи (утро следующего дня -> относим к дню начала смены)
                 val previousDay = now.minusDays(1).dayOfWeek
                 rule.daysOfWeek.contains(previousDay)
             } else {

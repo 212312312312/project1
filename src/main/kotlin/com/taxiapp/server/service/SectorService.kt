@@ -1,16 +1,16 @@
 package com.taxiapp.server.service
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.taxiapp.server.dto.sector.CreateSectorRequest
 import com.taxiapp.server.dto.sector.PointDto
 import com.taxiapp.server.dto.sector.SectorDto
-import org.springframework.data.redis.core.RedisTemplate
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.taxiapp.server.model.sector.Sector
 import com.taxiapp.server.model.sector.SectorPoint
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.SectorRepository
-import com.taxiapp.server.repository.TaxiOrderRepository // <-- ДОДАНО
+import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.utils.GeometryUtils
+import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -21,52 +21,87 @@ class SectorService(
     private val sectorRepository: SectorRepository,
     private val driverRepository: DriverRepository,
     private val orderRepository: TaxiOrderRepository,
-    private val redisTemplate: RedisTemplate<String, Any>, // <-- ДОБАВЛЕНО
-    private val objectMapper: ObjectMapper // <-- ДОБАВЛЕНО
+    private val redisTemplate: RedisTemplate<String, Any>,
+    private val objectMapper: ObjectMapper
 ) {
-    private val CACHE_KEY = "sectors:all" // Ключ кэша в Redis
+    private val CACHE_KEY = "sectors:all"
+
+    // L1 In-Memory кэш готовых сущностей Sector с предсортированными точками (TTL 60 сек)
+    // Исключает тысячи вызовов objectMapper.convertValue и аллокаций SectorPoint в секунду
+    @Volatile
+    private var localSectorsCache: List<Sector> = emptyList()
+
+    @Volatile
+    private var localDtosCache: List<SectorDto> = emptyList()
+
+    @Volatile
+    private var cacheExpiresAtMs: Long = 0L
+
+    private fun invalidateCache() {
+        cacheExpiresAtMs = 0L
+        localSectorsCache = emptyList()
+        localDtosCache = emptyList()
+        try {
+            redisTemplate.delete(CACHE_KEY)
+        } catch (_: Exception) {}
+    }
 
     @Transactional(readOnly = true)
-    fun getAllSectors(): List<SectorDto> {
-        val cached = redisTemplate.opsForValue().get(CACHE_KEY) as? List<*>
-        if (cached != null) {
-            return cached.map { objectMapper.convertValue(it, SectorDto::class.java) }
+    fun getCachedSectorEntities(): List<Sector> {
+        val now = System.currentTimeMillis()
+        val current = localSectorsCache
+        if (now < cacheExpiresAtMs && current.isNotEmpty()) {
+            return current
         }
 
-        val sectors = sectorRepository.findAll().map { mapToDto(it) }
-        redisTemplate.opsForValue().set(CACHE_KEY, sectors)
+        val sectors = sectorRepository.findAll().map { sector ->
+            // Гарантируем, что точки инициализированы и отсортированы в памяти
+            val sortedPoints = sector.points.sortedBy { it.pointOrder }.toMutableList()
+            sector.points = sortedPoints
+            sector
+        }
+        val dtos = sectors.map { mapToDto(it) }
+
+        localSectorsCache = sectors
+        localDtosCache = dtos
+        cacheExpiresAtMs = now + 60_000L
+
+        try {
+            redisTemplate.opsForValue().set(CACHE_KEY, dtos)
+        } catch (_: Exception) {}
+
         return sectors
     }
 
-    // Пошук сектора за координатами — МЕГА-ОПТИМИЗАЦИЯ С REDIS!
     @Transactional(readOnly = true)
-    fun findSectorByCoordinates(lat: Double, lng: Double): Sector? {
-        // 1. Берем гео-зоны из быстрого кэша Redis, а не из тяжелой БД
-        val allSectorsDtos = getAllSectors()
-        
-        // 2. Делаем математический просчет полигона прямо в памяти
-        val foundSectorDto = allSectorsDtos.find { sectorDto ->
-            if (sectorDto.points.size < 3) return@find false
-            
-            // Воссоздаем временные объекты SectorPoint для совместимости с GeometryUtils
-            val tempSectorPoints = sectorDto.points.mapIndexed { index, p ->
-                SectorPoint(
-                    lat = p.lat, 
-                    lng = p.lng, 
-                    pointOrder = index, 
-                    sector = Sector(name = sectorDto.name, isCity = sectorDto.isCity) // <-- ФИКС: Передаем имя и статус города
-                )
-            }
-            GeometryUtils.isPointInPolygon(lat, lng, tempSectorPoints)
+    fun getCitySectors(): List<Sector> {
+        return getCachedSectorEntities().filter { it.isCity }
+    }
+
+    @Transactional(readOnly = true)
+    fun getAllSectors(): List<SectorDto> {
+        val now = System.currentTimeMillis()
+        val currentDtos = localDtosCache
+        if (now < cacheExpiresAtMs && currentDtos.isNotEmpty()) {
+            return currentDtos
         }
 
-        // 3. Если точка попала в сектор, делаем моментальный поиск ОДНОЙ записи по ID в БД
-        return foundSectorDto?.let { 
-            sectorRepository.findById(it.id).orElse(null) 
+        getCachedSectorEntities()
+        return localDtosCache
+    }
+
+    /**
+     * Сверхбыстрый поиск сектора по координатам в памяти L1 без аллокации временных объектов и без запросов к БД.
+     */
+    @Transactional(readOnly = true)
+    fun findSectorByCoordinates(lat: Double, lng: Double): Sector? {
+        val allSectors = getCachedSectorEntities()
+
+        return allSectors.find { sector ->
+            sector.points.size >= 3 && GeometryUtils.isPointInPolygon(lat, lng, sector.points)
         }
     }
 
-    // Створити сектор — Сбрасываем кэш
     @Transactional
     fun createSector(request: CreateSectorRequest): SectorDto {
         if (request.points.size < 3) {
@@ -77,7 +112,7 @@ class SectorService(
             name = request.name,
             isCity = request.isCity
         )
-        
+
         val points = request.points.mapIndexed { index, p ->
             SectorPoint(
                 lat = p.lat,
@@ -86,15 +121,14 @@ class SectorService(
                 sector = sector
             )
         }.toMutableList()
-        
+
         sector.points = points
         val saved = sectorRepository.save(sector)
-        
-        redisTemplate.delete(CACHE_KEY) // <-- Инвалидация кэша секторов
+
+        invalidateCache()
         return mapToDto(saved)
     }
 
-    // Видалити сектор — Сбрасываем кэш
     @Transactional
     fun deleteSector(id: Long) {
         val sector = sectorRepository.findById(id)
@@ -104,25 +138,23 @@ class SectorService(
 
         val driversWithSector = driverRepository.findAllByHomeSectorsId(id)
         for (driver in driversWithSector) {
-            // ФИКС: удаляем связь по ID, чтобы обойти баги сравнения Hibernate-прокси объектов
             driver.homeSectors.removeIf { it.id == id }
             driverRepository.save(driver)
         }
 
         sectorRepository.delete(sector)
-        
-        redisTemplate.delete(CACHE_KEY) // Инвалидация кэша секторов
+        invalidateCache()
     }
 
     @Transactional
     fun updateSectorName(id: Long, newName: String): SectorDto {
         val sector = sectorRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Сектор не знайдено") }
-        
+
         sector.name = newName
         val saved = sectorRepository.save(sector)
-        
-        redisTemplate.delete(CACHE_KEY) // Инвалидация кэша секторов, чтобы диспетчерская сразу увидела апдейт
+
+        invalidateCache()
         return mapToDto(saved)
     }
 

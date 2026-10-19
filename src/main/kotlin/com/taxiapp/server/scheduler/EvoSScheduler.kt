@@ -2,22 +2,28 @@ package com.taxiapp.server.scheduler
 
 import com.taxiapp.server.dto.order.TrackingLocationDto
 import com.taxiapp.server.model.enums.OrderStatus
+import com.taxiapp.server.model.order.TaxiOrderTrack
 import com.taxiapp.server.repository.TaxiOrderRepository
+import com.taxiapp.server.repository.TaxiOrderTrackRepository
+import com.taxiapp.server.service.ChatService
+import com.taxiapp.server.service.DriverPayoutService
 import com.taxiapp.server.service.EvoSService
 import com.taxiapp.server.service.NotificationService
 import com.taxiapp.server.service.OrderService
-import com.taxiapp.server.service.DriverPayoutService
-import com.taxiapp.server.service.SettingsService
-import org.slf4j.LoggerFactory
-import com.taxiapp.server.service.PromoService
 import com.taxiapp.server.service.PromoCodeService
-import com.taxiapp.server.service.ChatService
+import com.taxiapp.server.service.PromoService
+import com.taxiapp.server.service.SettingsService
+import com.taxiapp.server.utils.GeometryUtils
+import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
+import java.time.Instant
 import java.time.LocalDateTime
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 @Component
 class EvoSScheduler(
@@ -32,9 +38,12 @@ class EvoSScheduler(
     private val promoCodeService: PromoCodeService,
     private val chatService: ChatService,
     private val redisTemplate: RedisTemplate<String, Any>,
-    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository
+    private val taxiOrderTrackRepository: TaxiOrderTrackRepository
 ) {
     private val logger = LoggerFactory.getLogger(EvoSScheduler::class.java)
+
+    // Локальный кэш последней записанной в БД точки трека для заказа EvoS (orderId -> Triple(lat, lng, timestampMs))
+    private val lastSavedEvosTrackMap = ConcurrentHashMap<Long, Triple<Double, Double, Long>>()
 
     // 1. Проверка и передача заказов в сеть EvoS (каждые 5 сек)
     @Scheduled(fixedDelay = 5000)
@@ -114,13 +123,11 @@ class EvoSScheduler(
                     pushTitle = "Поїздку завершено"
                     pushBody = "Дякуємо, що скористалися нашими послугами!"
 
-                    // 1. Очистка активного заказа клиента в Redis
                     redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
+                    lastSavedEvosTrackMap.remove(order.id)
 
-                    // 2. Увеличение счетчика поездок клиента
                     order.client.tripsCount += 1
 
-                    // 3. Гашение скидки (акционный план, промокод или награда)
                     if (order.appliedDiscount > 0.0) {
                         if (order.promoPlanId != null) {
                             promoService.markPromoPlanAsUsed(order.client, order.promoPlanId!!)
@@ -131,7 +138,6 @@ class EvoSScheduler(
                             promoService.markRewardAsUsed(order.client)
                         }
 
-                        // Фиксация доплаты в "Розрахунки з водіями"
                         val clientPays = (order.price - order.appliedDiscount).toInt()
                         val subsidy = order.appliedDiscount.toInt()
                         driverPayoutService.createPayout(
@@ -143,7 +149,6 @@ class EvoSScheduler(
                         logger.info(">>> [EvoS Payout] Створено розрахунок на суму ${order.appliedDiscount} грн для замовлення #${order.id}")
                     }
 
-                    // 4. Прогресс в маркетинговых заданиях и очистка чата
                     promoService.updateProgressOnRideCompletion(order.client, order)
                     chatService.clearChatForOrder(order.id!!)
                 }
@@ -156,13 +161,13 @@ class EvoSScheduler(
                     statusChanged = true
                     pushTitle = "Замовлення скасовано"
                     pushBody = order.cancellationReason
+                    redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
+                    lastSavedEvosTrackMap.remove(order.id)
                 }
             } else {
-                // Статусы активного выполнения
                 val hasCar = !evosState.orderCarInfo.isNullOrBlank()
 
                 when {
-                    // Машина на месте ожидает клиента
                     execStatus.equals("CarAtPlace", ignoreCase = true) || driverExecStatus == 2 || driverExecStatus == 4 -> {
                         if (order.status != OrderStatus.DRIVER_ARRIVED) {
                             order.status = OrderStatus.DRIVER_ARRIVED
@@ -174,7 +179,6 @@ class EvoSScheduler(
                             pushBody = "Вас очікує: ${order.evosDriverCarInfo ?: "автомобіль"}"
                         }
                     }
-                    // Поездка началась (в пути)
                     execStatus.equals("Executing", ignoreCase = true) || execStatus.equals("Running", ignoreCase = true) || driverExecStatus == 5 -> {
                         if (order.status != OrderStatus.IN_PROGRESS) {
                             order.status = OrderStatus.IN_PROGRESS
@@ -186,7 +190,6 @@ class EvoSScheduler(
                             pushBody = "Поїздка розпочалася. Гарної дороги!"
                         }
                     }
-                    // Водитель забронировал предзаказ заранее (driver_execution_status == 10)
                     driverExecStatus == 10 -> {
                         if (!order.isEvosDriverAssigned) {
                             order.isEvosDriverAssigned = true
@@ -196,10 +199,8 @@ class EvoSScheduler(
                             pushBody = "Водій підтвердив завчасну подачу: ${order.evosDriverCarInfo ?: "автомобіль"}"
                         }
                     }
-                    // Водитель назначен / принял заказ (CarAssigned / CarFound)
                     execStatus.equals("CarAssigned", ignoreCase = true) || execStatus.equals("CarFound", ignoreCase = true) || hasCar || driverExecStatus == 3 -> {
                         if (order.status == OrderStatus.SCHEDULED) {
-                            // Для предзаказа сохраняем назначение борта, статус переводим в ACCEPTED только если до подачи осталось <= 30 мин
                             val isNearExecution = order.scheduledAt?.isBefore(LocalDateTime.now().plusMinutes(30)) ?: true
                             if (!order.isEvosDriverAssigned) {
                                 order.isEvosDriverAssigned = true
@@ -224,7 +225,6 @@ class EvoSScheduler(
                             pushBody = "До вас прямує: ${order.evosDriverCarInfo ?: "автомобіль"}"
                         }
                     }
-                    // Ожидание поиска машины для предзаказа
                     execStatus.equals("WaitingCarSearch", ignoreCase = true) -> {
                         logger.debug(">>> [EvoS] Предзаказ #${order.id} в статусе WaitingCarSearch")
                     }
@@ -251,10 +251,10 @@ class EvoSScheduler(
                 logger.info(">>> [EvoSScheduler] Замовлення #${order.id}: $oldStatus -> ${order.status} (${order.evosDriverCarInfo})")
             }
 
-            // --- 4) GPS трекинг позиции автомобиля (запрашиваем только если борт уже найден/назначен) ---
+            // --- 4) GPS трекинг позиции автомобиля ---
             val hasAssignedCar = !evosState.orderCarInfo.isNullOrBlank() || order.isEvosDriverAssigned
 
-            if (hasAssignedCar) {
+            if (hasAssignedCar && order.status != OrderStatus.COMPLETED && order.status != OrderStatus.CANCELLED) {
                 val pos = evosState.drivercarPosition ?: evoSService.getDriverPosition(uid)
 
                 if (pos != null && pos.lat != null && pos.lng != null && pos.lat != 0.0 && pos.lng != 0.0) {
@@ -262,34 +262,48 @@ class EvoSScheduler(
                     val lng = pos.lng
                     val bearing = pos.bearing ?: 0f
                     val speed = pos.speed ?: 0
+                    val nowMs = System.currentTimeMillis()
+                    val orderIdLong = order.id!!
 
                     order.lastEvosLat = lat
                     order.lastEvosLng = lng
                     order.lastEvosBearing = bearing
 
-                    // 🛑 ГАРАНТОВАНА ФІКСАЦІЯ ТРЕКУ В БД (PostgreSQL) ТА ІСТОРІЇ (Redis)
+                    // Троттлинг записи в PostgreSQL (пишем в БД только при смещении >= 10 м или раз в 15 сек)
+                    val prevTrack = lastSavedEvosTrackMap[orderIdLong]
+                    val shouldSaveToDb = if (prevTrack == null) {
+                        true
+                    } else {
+                        val distMoved = GeometryUtils.calculateDistanceMeters(prevTrack.first, prevTrack.second, lat, lng)
+                        val timeElapsed = nowMs - prevTrack.third
+                        distMoved >= 10.0 || timeElapsed >= 15_000L
+                    }
+
                     try {
-                        val dbTrack = com.taxiapp.server.model.order.TaxiOrderTrack(
-                            orderId = order.id!!,
-                            latitude = lat,
-                            longitude = lng
-                        )
-                        taxiOrderTrackRepository.save(dbTrack)
+                        if (shouldSaveToDb) {
+                            val dbTrack = TaxiOrderTrack(
+                                orderId = orderIdLong,
+                                latitude = lat,
+                                longitude = lng
+                            )
+                            taxiOrderTrackRepository.save(dbTrack)
+                            lastSavedEvosTrackMap[orderIdLong] = Triple(lat, lng, nowMs)
+                        }
 
                         val trackKey = "orders:track-history:${order.uuid}"
-                        val timestamp = java.time.Instant.now().toString()
+                        val timestamp = Instant.now().toString()
                         redisTemplate.opsForList().rightPush(trackKey, "$lat,$lng,$timestamp")
-                        redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
+                        redisTemplate.expire(trackKey, 7, TimeUnit.DAYS)
                     } catch (e: Exception) {
                         logger.error(">>> [EvoS Track] Помилка запису точки в БД: ${e.message}")
                     }
 
                     // Генерация полилинии подачи для партнера EvoS
-                    if (order.driverToPickupPolyline.isNullOrEmpty() && 
-                        order.status == OrderStatus.ACCEPTED && 
+                    if (order.driverToPickupPolyline.isNullOrEmpty() &&
+                        order.status == OrderStatus.ACCEPTED &&
                         order.originLat != null && order.originLng != null &&
                         order.originLat != 0.0 && order.originLng != 0.0) {
-                        
+
                         val pickupPoly = orderService.fetchDirectionsPolyline(lat, lng, order.originLat!!, order.originLng!!)
                         if (!pickupPoly.isNullOrEmpty()) {
                             order.driverToPickupPolyline = pickupPoly
@@ -319,17 +333,13 @@ class EvoSScheduler(
                     val orderUuidStr = order.uuid.toString()
                     val orderIdLongStr = order.id.toString()
 
-                    // Рассылка клиенту
                     messagingTemplate.convertAndSend("/topic/order/$orderUuidStr/tracking", trackingPayload)
                     messagingTemplate.convertAndSend("/topic/order/$orderIdLongStr/tracking", trackingPayload)
                     messagingTemplate.convertAndSend("/topic/orders/$orderUuidStr/tracking", trackingMap)
 
-                    // Рассылка в диспетчерскую
                     messagingTemplate.convertAndSend("/topic/admin/tracking/$orderUuidStr", trackingMap)
                     messagingTemplate.convertAndSend("/topic/admin/tracking/$orderIdLongStr", trackingMap)
                     messagingTemplate.convertAndSend("/topic/admin/drivers-location", listOf(trackingMap))
-                    
-                    logger.info(">>> [EvoS GPS STOMP SENT] Координати успішно відправлені в сокети для #${order.id}")
                 }
             }
         }
@@ -347,7 +357,6 @@ class EvoSScheduler(
         for (order in pendingOrders) {
             val uid = order.evosOrderUid ?: continue
 
-            // 1. Проверяем текущее состояние в EvoS
             val evosState = evoSService.getOrderState(uid)
             val isAlreadyClosed = evosState != null && (
                 evosState.executionStatus.equals("Canceled", ignoreCase = true) ||
@@ -363,7 +372,6 @@ class EvoSScheduler(
                 continue
             }
 
-            // 2. Если всё еще открыт — повторяем запрос на отмену
             logger.info(">>> [EvoS Retry] Повторная попытка отмены заказа #${order.id} (UID: $uid)...")
             val isSuccess = evoSService.cancelOrderInEvoS(uid)
             if (isSuccess) {

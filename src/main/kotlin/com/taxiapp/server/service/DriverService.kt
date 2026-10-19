@@ -2,38 +2,40 @@ package com.taxiapp.server.service
 
 import com.taxiapp.server.dto.driver.DriverDto
 import com.taxiapp.server.dto.driver.DriverSearchSettingsDto
-import com.taxiapp.server.model.user.Car
-import com.taxiapp.server.repository.CarBrandRepository
-import com.taxiapp.server.repository.CarModelRepository
-import com.taxiapp.server.repository.CarTariffRepository
-import com.taxiapp.server.service.CarClassifierService
 import com.taxiapp.server.dto.driver.DriverSearchStateDto
 import com.taxiapp.server.dto.driver.UpdateDisabilityRequest
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.dto.driver.UpdateDriverStatusRequest
 import com.taxiapp.server.model.enums.DriverSearchMode
+import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.finance.WalletTransaction
+import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
+import com.taxiapp.server.repository.CarBrandRepository
+import com.taxiapp.server.repository.CarModelRepository
+import com.taxiapp.server.repository.CarTariffRepository
+import com.taxiapp.server.repository.DriverCardRepository
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.SectorRepository
+import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.repository.UserRepository
-import com.taxiapp.server.repository.WalletTransactionRepository // <--- ДОДАНО
-import org.springframework.data.domain.PageRequest // <--- ДОДАНО
-import org.springframework.data.domain.Sort // <--- ДОДАНО
+import com.taxiapp.server.repository.WalletTransactionRepository
+import org.springframework.data.domain.PageRequest
+import org.springframework.data.domain.Sort
+import org.springframework.data.geo.Point
+import org.springframework.data.redis.core.RedisTemplate
+import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
-import org.springframework.data.redis.core.RedisTemplate
-import org.springframework.data.geo.Point
+import java.security.SecureRandom
 import java.time.LocalDateTime
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.random.Random
-
+import java.util.concurrent.TimeUnit
 
 @Service
 class DriverService(
@@ -43,33 +45,31 @@ class DriverService(
     private val smsService: SmsService,
     private val walletTransactionRepository: WalletTransactionRepository,
     private val userRepository: UserRepository,
-    private val driverCardRepository: com.taxiapp.server.repository.DriverCardRepository,
-    // Находим конструктор DriverService и добавляем туда:
-    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository,
-    private val redisTemplate: org.springframework.data.redis.core.StringRedisTemplate,
+    private val driverCardRepository: DriverCardRepository,
+    private val taxiOrderRepository: TaxiOrderRepository,
+    private val redisTemplate: StringRedisTemplate,
     private val redisTemplateAny: RedisTemplate<String, Any>,
     private val carBrandRepository: CarBrandRepository,
     private val carModelRepository: CarModelRepository,
     private val carClassifierService: CarClassifierService,
     private val tariffRepository: CarTariffRepository
 ) {
+    private val secureRandom = SecureRandom()
 
     @Transactional(readOnly = true)
     fun getDriverProfile(user: User): DriverDto {
         val driver = driverRepository.findById(user.id)
             .orElseThrow { RuntimeException("Водій не знайдений") }
-            
+
         return DriverDto(driver)
     }
 
-    // --- ОБНОВЛЕНИЕ ОСНОВНОГО ПРОФИЛЯ ---
     @Transactional
     fun updateProfile(driver: Driver, request: UpdateDriverRequest): DriverDto {
         val savedDriver = driverRepository.save(driver)
         return DriverDto(savedDriver)
     }
 
-    // --- ОБНОВЛЕНИЕ МЕДИЦИНСКИХ ДАННЫХ ---
     @Transactional
     fun updateDisabilityStatus(driverId: Long, request: UpdateDisabilityRequest) {
         val driver = driverRepository.findById(driverId)
@@ -86,22 +86,19 @@ class DriverService(
     fun getDriverTransactions(driver: Driver): List<WalletTransaction> {
         val pageable = PageRequest.of(0, 50, Sort.by("createdAt").descending())
         val transactions = walletTransactionRepository.findAllByDriverIdOrderByCreatedAtDesc(driver.id!!, pageable).content
-        // Записываем правильный баланс в зависимости от типа операции для старых данных
         transactions.forEach { if (it.balanceAfter == 0.0) { it.balanceAfter = driver.balance } }
         return transactions
     }
 
-    // Получение незавершенных транзакций (Для экрана "Ваші кошти")
     fun getPendingDriverTransactions(driver: Driver): List<WalletTransaction> {
         val pageable = PageRequest.of(0, 50, Sort.by("createdAt").descending())
         return walletTransactionRepository.findAllByDriverIdAndStatusOrderByCreatedAtDesc(
-            driver.id!!, 
-            com.taxiapp.server.model.enums.TransactionStatus.PENDING, 
+            driver.id!!,
+            com.taxiapp.server.model.enums.TransactionStatus.PENDING,
             pageable
         ).content
     }
 
-    // --- ЛОГИКА УПРАВЛЕНИЯ КАРТАМИ ВОДИТЕЛЯ ---
     @Transactional(readOnly = true)
     fun getDriverCards(driverId: Long): List<com.taxiapp.server.model.user.DriverCard> {
         return driverCardRepository.findAllByDriverId(driverId)
@@ -111,13 +108,13 @@ class DriverService(
     fun completeDriverCardBinding(driverId: Long, cardToken: String, cardMask: String) {
         val driver = driverRepository.findById(driverId).orElseThrow { RuntimeException("Водій не знайдений") }
         val cards = driverCardRepository.findAllByDriverId(driverId)
-        
+
         val newCard = com.taxiapp.server.model.user.DriverCard(
             driver = driver,
             cardNumber = cardMask,
             cardToken = cardToken,
             cardHolder = "Картка Водія",
-            isMain = cards.isEmpty() // Если первая карта — делаем основной
+            isMain = cards.isEmpty()
         )
         driverCardRepository.save(newCard)
     }
@@ -126,9 +123,9 @@ class DriverService(
     fun deleteDriverCard(driverId: Long, cardId: Long) {
         val card = driverCardRepository.findById(cardId).orElseThrow { RuntimeException("Картку не знайдено") }
         if (card.driver.id != driverId) throw RuntimeException("Помилка безпеки")
-        
+
         driverCardRepository.delete(card)
-        
+
         if (card.isMain) {
             val remaining = driverCardRepository.findAllByDriverId(driverId)
             if (remaining.isNotEmpty()) {
@@ -141,7 +138,10 @@ class DriverService(
     @Transactional
     fun updateDriverAllowedTariffsForCar(driver: Driver, car: Car) {
         val cityName = driver.city ?: "Київ"
-        
+
+        // Загружаем список всех тарифов РОВНО 1 РАЗ вместо 4-х вызовов findAll()
+        val allTariffs = tariffRepository.findAll()
+
         val brand = carBrandRepository.findAll()
             .find { it.name.equals(car.make, ignoreCase = true) }
 
@@ -160,24 +160,23 @@ class DriverService(
                 )
             )
 
-            tariffRepository.findAll().filter { tariff ->
-                eval.allowedTariffs.any { allowed -> 
-                    tariff.name.contains(allowed, ignoreCase = true) || 
+            allTariffs.filter { tariff ->
+                eval.allowedTariffs.any { allowed ->
+                    tariff.name.contains(allowed, ignoreCase = true) ||
                     (allowed == "STANDARD" && tariff.name.contains("Стандарт", ignoreCase = true)) ||
                     (allowed == "COMFORT" && tariff.name.contains("Комфорт", ignoreCase = true)) ||
                     (allowed == "BUSINESS" && tariff.name.contains("Бізнес", ignoreCase = true))
                 }
             }.toMutableSet()
         } else {
-            tariffRepository.findAll().filter { 
-                it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true) 
+            allTariffs.filter {
+                it.name.contains("Стандарт", ignoreCase = true) || it.name.contains("STANDARD", ignoreCase = true)
             }.toMutableSet()
         }
 
-        // 🔥 ДОБАВЛЕНО: Автоматическое назначение кузовных тарифов (Универсал, Микроавтобус и т.д.)
         if (!car.carType.isNullOrBlank()) {
             val normalizedCarType = car.carType!!.trim().uppercase()
-            val bodyTariffs = tariffRepository.findAll().filter { tariff ->
+            val bodyTariffs = allTariffs.filter { tariff ->
                 tariff.bodyType != null && (
                     tariff.bodyType!!.equals(normalizedCarType, ignoreCase = true) ||
                     (normalizedCarType.contains("UNIVERSAL") && tariff.bodyType!!.contains("UNIVERSAL", ignoreCase = true)) ||
@@ -189,13 +188,13 @@ class DriverService(
             newAllowed.addAll(bodyTariffs)
         }
 
-        val finalAllowed = if (newAllowed.isEmpty()) tariffRepository.findAll().toMutableSet() else newAllowed
+        val finalAllowed = if (newAllowed.isEmpty()) allTariffs.toMutableSet() else newAllowed
 
         driver.allowedTariffs = finalAllowed
-        
+
         val allowedIds = finalAllowed.map { it.id }.toSet()
         driver.selectedTariffs.retainAll { it.id in allowedIds }
-        
+
         if (driver.selectedTariffs.isEmpty()) {
             driver.selectedTariffs.addAll(finalAllowed)
         }
@@ -212,8 +211,6 @@ class DriverService(
         driverCardRepository.saveAll(cards)
     }
 
-    // --- ОБНОВЛЕНИЕ СТАТУСА (ОНЛАЙН/ОФФЛАЙН) ---
-    // --- ОБНОВЛЕНИЕ СТАТУСА (ОНЛАЙН/ОФФЛАЙН) ---
     @Transactional
     fun updateDriverStatus(driver: Driver, request: UpdateDriverStatusRequest): DriverDto {
         if (request.isOnline) {
@@ -221,33 +218,32 @@ class DriverService(
             driver.latitude = request.latitude
             driver.longitude = request.longitude
             driver.lastUpdate = LocalDateTime.now()
-            
         } else {
-            // --- МЕТОД ВЫХОДА В ОФЛАЙН ---
+            // HIGH-LOAD ФИКС: Вместо выгрузки ВСЕХ исторических заказов водителя (findAllByDriverId)
+            // делаем мгновенный индексный поиск активного заказа
             val activeStatuses = listOf(
-                com.taxiapp.server.model.enums.OrderStatus.ACCEPTED,
-                com.taxiapp.server.model.enums.OrderStatus.DRIVER_ARRIVED,
-                com.taxiapp.server.model.enums.OrderStatus.IN_PROGRESS,
-                com.taxiapp.server.model.enums.OrderStatus.SCHEDULED
+                OrderStatus.ACCEPTED,
+                OrderStatus.DRIVER_ARRIVED,
+                OrderStatus.IN_PROGRESS,
+                OrderStatus.SCHEDULED
             )
-            val hasActiveOrders = taxiOrderRepository.findAllByDriverId(driver.id!!)
-                .any { it.status in activeStatuses }
+            val hasActiveOrder = taxiOrderRepository.findActiveOrderByDriverId(driver.id!!).isPresent ||
+                taxiOrderRepository.findByDriverAndStatusIn(driver, activeStatuses) != null
 
-            if (hasActiveOrders) {
+            if (hasActiveOrder) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Неможливо вийти в офлайн під час виконання замовлення")
             }
 
             driver.isOnline = false
-            
+
             if (driver.searchMode == DriverSearchMode.CHAIN || driver.searchMode == DriverSearchMode.HOME) {
                 driver.searchMode = DriverSearchMode.MANUAL
             }
         }
-        
+
         val updatedDriver = driverRepository.save(driver)
         val driverDto = DriverDto(updatedDriver)
 
-        // 🔥 СИНХРОНИЗАЦИЯ С REAL-TIME КЭШЕМ REDIS
         val driverIdStr = updatedDriver.id.toString()
         val metaKey = "drivers:meta"
         val geoKey = "drivers:geo"
@@ -267,15 +263,15 @@ class DriverService(
                 "isOnline" to "true",
                 "lat" to (updatedDriver.latitude?.toString() ?: existingMeta?.get("lat")?.toString() ?: "0.0"),
                 "lng" to (updatedDriver.longitude?.toString() ?: existingMeta?.get("lng")?.toString() ?: "0.0"),
-                "bearing" to (existingMeta?.get("bearing")?.toString() ?: "0.0")
+                "bearing" to (existingMeta?.get("bearing")?.toString() ?: "0.0"),
+                "updatedAt" to System.currentTimeMillis().toString()
             )
             redisTemplateAny.opsForHash<String, Any>().put(metaKey, driverIdStr, updatedMeta)
-            
+
             if (updatedDriver.longitude != null && updatedDriver.latitude != null) {
                 redisTemplateAny.opsForGeo().add(geoKey, Point(updatedDriver.longitude!!, updatedDriver.latitude!!), driverIdStr)
             }
         } else {
-            // СТД: Оставляем мету, но меняем isOnline на "false"
             val existingMeta = redisTemplateAny.opsForHash<String, Any>().get(metaKey, driverIdStr) as? Map<*, *>
             val updatedMeta = (existingMeta?.toMutableMap() ?: mutableMapOf()).apply {
                 this["fullName"] = updatedDriver.fullName ?: "Водій"
@@ -285,8 +281,6 @@ class DriverService(
                 this["isOnline"] = "false"
             }
             redisTemplateAny.opsForHash<String, Any>().put(metaKey, driverIdStr, updatedMeta)
-
-            // 🔥 ДОБАВЛЕНО: Явно удаляем водителя из гео-индекса Redis при выходе в офлайн
             redisTemplateAny.opsForGeo().remove(geoKey, driverIdStr)
         }
 
@@ -294,16 +288,13 @@ class DriverService(
         return driverDto
     }
 
-    // --- СМЕНА НОМЕРА ТЕЛЕФОНА ---
-
     fun sendVerificationCodeToCurrentPhone(user: User) {
         val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
-        val code = Random.nextInt(100000, 999999).toString()
-        
-        // Сохраняем код в Redis на 10 минут, сбрасываем старые попытки
-        redisTemplate.opsForValue().set("driver:phone:current-code:$phone", code, 10, java.util.concurrent.TimeUnit.MINUTES)
+        val code = (100000 + secureRandom.nextInt(900000)).toString()
+
+        redisTemplate.opsForValue().set("driver:phone:current-code:$phone", code, 10, TimeUnit.MINUTES)
         redisTemplate.delete("driver:phone:current-attempts:$phone")
-        
+
         smsService.sendSms(phone, "Код зміни номера: $code")
     }
 
@@ -311,7 +302,7 @@ class DriverService(
         val phone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
         val attemptsKey = "driver:phone:current-attempts:$phone"
         val codeKey = "driver:phone:current-code:$phone"
-        
+
         val attempts = redisTemplate.opsForValue().get(attemptsKey)?.toIntOrNull() ?: 0
         if (attempts >= 3) {
             redisTemplate.delete(codeKey)
@@ -319,9 +310,8 @@ class DriverService(
         }
 
         val savedCode = redisTemplate.opsForValue().get(codeKey)
-        if (savedCode == null) throw RuntimeException("Код застарів або не існує")
+            ?: throw RuntimeException("Код застарів або не існує")
 
-        // --- ЗАЩИТА: Бэкдор "000000" ПОЛНОСТЬЮ УДАЛЕН ---
         if (savedCode != code) {
             val newAttempts = attempts + 1
             if (newAttempts >= 3) {
@@ -329,15 +319,13 @@ class DriverService(
                 redisTemplate.delete(attemptsKey)
                 throw RuntimeException("Перевищено кількість спроб. Код анульовано.")
             }
-            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, java.util.concurrent.TimeUnit.MINUTES)
+            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, TimeUnit.MINUTES)
             throw RuntimeException("Невірний код. Залишилось спроб: ${3 - newAttempts}")
         }
 
-        // Код верный — генерируем токен и сохраняем связь в Redis на 5 минут
         val token = UUID.randomUUID().toString()
-        redisTemplate.opsForValue().set("driver:phone:change-token:$token", phone, 5, java.util.concurrent.TimeUnit.MINUTES)
-        
-        // Зачищаем использованные ключи кода
+        redisTemplate.opsForValue().set("driver:phone:change-token:$token", phone, 5, TimeUnit.MINUTES)
+
         redisTemplate.delete(codeKey)
         redisTemplate.delete(attemptsKey)
         return token
@@ -347,12 +335,11 @@ class DriverService(
         if (userRepository.existsByUserPhone(newPhone)) {
             throw RuntimeException("Цей номер вже зареєстрований")
         }
-        val code = Random.nextInt(100000, 999999).toString()
-        
-        // Сохраняем в Redis на 10 минут
-        redisTemplate.opsForValue().set("driver:phone:new-code:$newPhone", code, 10, java.util.concurrent.TimeUnit.MINUTES)
+        val code = (100000 + secureRandom.nextInt(900000)).toString()
+
+        redisTemplate.opsForValue().set("driver:phone:new-code:$newPhone", code, 10, TimeUnit.MINUTES)
         redisTemplate.delete("driver:phone:new-attempts:$newPhone")
-        
+
         smsService.sendSms(newPhone, "Код підтвердження нового номера: $code")
     }
 
@@ -360,16 +347,15 @@ class DriverService(
     fun changePhone(user: User, newPhone: String, code: String, changeToken: String): User {
         val currentPhone = user.userPhone ?: throw RuntimeException("Телефон не знайдено")
 
-        // Проверяем токен владения операцией в Redis
         val tokenKey = "driver:phone:change-token:$changeToken"
         val savedPhoneForToken = redisTemplate.opsForValue().get(tokenKey)
         if (savedPhoneForToken == null || savedPhoneForToken != currentPhone) {
-             throw RuntimeException("Помилка безпеки: підтвердіть старий номер знову")
+            throw RuntimeException("Помилка безпеки: підтвердіть старий номер знову")
         }
-        
+
         val codeKey = "driver:phone:new-code:$newPhone"
         val attemptsKey = "driver:phone:new-attempts:$newPhone"
-        
+
         val attempts = redisTemplate.opsForValue().get(attemptsKey)?.toIntOrNull() ?: 0
         if (attempts >= 3) {
             redisTemplate.delete(codeKey)
@@ -377,7 +363,7 @@ class DriverService(
         }
 
         val savedCode = redisTemplate.opsForValue().get(codeKey)
-        if (savedCode == null) throw RuntimeException("Код для нового номера застарів")
+            ?: throw RuntimeException("Код для нового номера застарів")
 
         if (savedCode != code) {
             val newAttempts = attempts + 1
@@ -387,11 +373,10 @@ class DriverService(
                 redisTemplate.delete(tokenKey)
                 throw RuntimeException("Перевищено спроби для нового номера. Процес анульовано.")
             }
-            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, java.util.concurrent.TimeUnit.MINUTES)
+            redisTemplate.opsForValue().set(attemptsKey, newAttempts.toString(), 10, TimeUnit.MINUTES)
             throw RuntimeException("Невірний код нового номера. Залишилось спроб: ${3 - newAttempts}")
         }
 
-        // Все проверки пройдены — выжигаем токены из Redis и обновляем БД
         redisTemplate.delete(codeKey)
         redisTemplate.delete(attemptsKey)
         redisTemplate.delete(tokenKey)
@@ -400,30 +385,27 @@ class DriverService(
         if (user.userLogin == currentPhone) {
             user.userLogin = newPhone
         }
-        
+
         return userRepository.save(user)
     }
 
     fun updateRnokpp(user: User, rnokpp: String) {
         val driver = driverRepository.findById(user.id)
             .orElseThrow { RuntimeException("Водій не знайдений") }
-        
+
         driver.rnokpp = rnokpp
         driverRepository.save(driver)
     }
 
-    // --- ПОИСК И НАСТРОЙКИ (ИСПРАВЛЕНО ДЛЯ УДАЛЕНИЯ ЭФИРА) ---
-
     @Transactional
     fun getSearchState(driver: Driver): DriverSearchStateDto {
         checkAndResetHomeLimit(driver)
-        
+
         val sectorNames = driver.homeSectors.joinToString(", ") { it.name }
         val sectorIds = driver.homeSectors.mapNotNull { it.id }
 
-        // --- СТАЛО: Возвращаем чистый режим из базы данных без подмен ---
         return DriverSearchStateDto(
-            mode = driver.searchMode, 
+            mode = driver.searchMode,
             radius = driver.searchRadius,
             homeSectorIds = sectorIds,
             homeSectorNames = if (sectorNames.isNotEmpty()) sectorNames else null,
@@ -433,18 +415,13 @@ class DriverService(
 
     @Transactional
     fun updateSearchSettings(driver: Driver, settings: DriverSearchSettingsDto): DriverSearchStateDto {
-        // Проверка активности (пример)
-        // Если активность низкая, можно запретить переключение в HOME, но CHAIN должен работать.
-        // if (driver.activityScore <= 400 && settings.mode == DriverSearchMode.HOME) { ... }
+        checkAndResetHomeLimit(driver)
 
-        checkAndResetHomeLimit(driver) 
-
-        // Обработка режима "Домой"
         if (settings.mode == DriverSearchMode.HOME) {
             if (driver.homeRidesLeft <= 0) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Вичерпано ліміт поїздок 'Додому' на сьогодні.")
             }
-            
+
             val ids = settings.homeSectorIds
             if (ids.isNullOrEmpty()) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оберіть хоча б один сектор.")
@@ -457,43 +434,36 @@ class DriverService(
             if (sectors.isEmpty()) {
                 throw ResponseStatusException(HttpStatus.NOT_FOUND, "Сектори не знайдено")
             }
-            
+
             driver.homeSectors.clear()
             driver.homeSectors.addAll(sectors)
         }
 
-        driver.searchMode = settings.mode 
-        
-        driver.searchRadius = settings.radius.coerceIn(0.5, 30.0) 
+        driver.searchMode = settings.mode
+        driver.searchRadius = settings.radius.coerceIn(0.5, 30.0)
         driverRepository.save(driver)
 
-        // Возвращаем обновленный статус (используем наш метод getSearchState для консистентности)
         return getSearchState(driver)
     }
 
     private fun checkAndResetHomeLimit(driver: Driver) {
         val now = LocalDateTime.now()
         val lastUsage = driver.lastHomeUsageDate
-        
-        // Сбрасываем лимит, если наступил новый день
+
         if (lastUsage == null || lastUsage.toLocalDate() != now.toLocalDate()) {
-            driver.homeRidesLeft = 2
-            // Дата обновится, когда он реально возьмет заказ "Домой", но здесь мы просто обновляем счетчик для отображения
             if (driver.homeRidesLeft != 2) {
-                 driver.homeRidesLeft = 2
-                 driverRepository.save(driver)
+                driver.homeRidesLeft = 2
+                driverRepository.save(driver)
             }
         }
     }
-
-    // --- ЛОГІКА ВИДАЛЕННЯ АКАУНТА ---
 
     @Transactional
     fun requestAccountDeletion(driver: Driver) {
         driver.deletionRequestedAt = LocalDateTime.now()
         driver.isOnline = false
         driver.searchMode = DriverSearchMode.OFFLINE
-        driver.fcmToken = null // Очищаємо токен, щоб не йшли пуші
+        driver.fcmToken = null
         driverRepository.save(driver)
     }
 
@@ -504,15 +474,13 @@ class DriverService(
         return DriverDto(saved)
     }
 
-    // Автоматичне анонімізування через 30 днів (запускається щодня о 03:00 ночі)
     @Scheduled(cron = "0 0 3 * * *")
     @Transactional
     fun processPendingDeletions() {
         val threshold = LocalDateTime.now().minusDays(30)
         val driversToDelete = driverRepository.findAllPendingDeletionBefore(threshold)
-        
+
         for (driver in driversToDelete) {
-            // Анонімізуємо дані, але залишаємо в базі для фінансової історії
             driver.userLogin = "deleted_${driver.id}"
             driver.userPhone = "deleted_${driver.id}"
             driver.fullName = "Видалений Водій"
@@ -520,36 +488,30 @@ class DriverService(
             driver.latitude = null
             driver.longitude = null
             driver.fcmToken = null
-            // Можна також стерти номер авто, документи тощо
-            
+
             driverRepository.save(driver)
         }
     }
-    
+
     @Scheduled(cron = "0 0 0 * * *")
     @Transactional
     fun resetAllDailyLimits() {
-        // Можно реализовать массовый сброс, если нужно
     }
 
     @Transactional
-fun updateSelectedTariffs(driverId: Long, selectedTariffIds: Set<Long>): DriverDto {
-    // 🛡️ ДОБАВЛЕНО: Водитель обязан выбрать хотя бы один тариф
-    if (selectedTariffIds.isEmpty()) {
-        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно вибрати хоча б один тариф")
-    }
+    fun updateSelectedTariffs(driverId: Long, selectedTariffIds: Set<Long>): DriverDto {
+        if (selectedTariffIds.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно вибрати хоча б один тариф")
+        }
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій не знайдений") }
 
-        // 🛡️ ЗАЩИТА: водитель может выбрать только те тарифы, которые ему одобрил диспетчер (allowedTariffs)
         val allowedTariffsMap = driver.allowedTariffs.associateBy { it.id }
-        
-        // Фильтруем присланные мобилкой ID, отсекая любые неразрешенные
         val newSelectedTariffs = selectedTariffIds.mapNotNull { allowedTariffsMap[it] }.toMutableSet()
 
         driver.selectedTariffs.clear()
         driver.selectedTariffs.addAll(newSelectedTariffs)
-        
+
         val updatedDriver = driverRepository.save(driver)
         return DriverDto(updatedDriver)
     }

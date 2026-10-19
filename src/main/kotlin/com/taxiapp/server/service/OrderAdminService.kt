@@ -6,6 +6,7 @@ import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Lazy
+import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.stereotype.Service
@@ -18,6 +19,8 @@ class OrderAdminService(
     private val orderRepository: TaxiOrderRepository,
     private val driverRepository: DriverRepository,
     private val evoSService: EvoSService,
+    private val liqPayService: LiqPayService,
+    private val redisTemplate: RedisTemplate<String, Any>,
     private val notificationService: NotificationService,
     private val messagingTemplate: SimpMessagingTemplate,
     @Lazy private val orderService: OrderService
@@ -44,11 +47,11 @@ class OrderAdminService(
 
     @Transactional
     fun cancelOrder(orderId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId)
+        val order = orderRepository.findByIdWithLock(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Заказ $orderId не найден") }
-        
-        if (order.status == OrderStatus.COMPLETED) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Нельзя отменить уже выполненный заказ")
+
+        if (order.status == OrderStatus.COMPLETED || order.status == OrderStatus.CANCELLED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Заказ уже завершен или отменен")
         }
 
         // 1. Отмена заказа у партнеров (EvoS), если он туда транслировался
@@ -56,25 +59,41 @@ class OrderAdminService(
         if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
             val isCanceledInEvos = evoSService.cancelOrderInEvoS(evosUid)
             logger.info(">>> [AdminCancel] Отмена заказа $orderId в EvoS (UID: $evosUid). Результат: $isCanceledInEvos")
-            order.isSentToEvos = false
-            order.evosOrderUid = null
+            if (isCanceledInEvos) {
+                order.isSentToEvos = false
+                order.evosOrderUid = null
+            } else {
+                order.evosCancelPending = true
+            }
         }
 
-        // 2. Обновляем статус заказа
+        // 2. Размораживаем холд на карте клиента, если заказ был оплачен картой
+        if (order.paymentMethod == "CARD" && order.authorizedAmount > 0.0) {
+            liqPayService.voidFunds("ride_${order.id}")
+            order.authorizedAmount = 0.0
+        }
+
+        // 3. Очищаем активные ключи в Redis
+        redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
+        redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
+        order.driver?.id?.let { drvId ->
+            redisTemplate.opsForHash<String, Any>().delete("orders:active_drivers", drvId.toString())
+        }
+
+        // 4. Обновляем статус заказа
         order.status = OrderStatus.CANCELLED
         order.cancellationReason = "Скасовано диспетчером"
-        order.completedAt = LocalDateTime.now() 
-        
+        order.completedAt = LocalDateTime.now()
+        order.cancelledAt = LocalDateTime.now()
+
         val updatedOrder = orderRepository.save(order)
         val dto = TaxiOrderDto(updatedOrder)
 
-        // 3. 🟢 WEBSOCKET ПАССАЖИРУ: транслируем отмену на персональный топик заказа
+        // 5. WEBSOCKET ПАССАЖИРУ, ВОДИТЕЛЮ И ДИСПЕТЧЕРУ
         messagingTemplate.convertAndSend("/topic/orders/${updatedOrder.id}", dto)
-
-        // 4. 🟢 WEBSOCKET ДИСПЕТЧЕРУ И ЭФИРУ: убираем из активных списков
         orderService.broadcastOrderChange(updatedOrder, "REMOVE")
 
-        // 5. 🟢 FCM PUSH ПАССАЖИРУ: мгновенно закрывает UI приложения
+        // 6. FCM PUSH ПАССАЖИРУ И ВОДИТЕЛЮ
         if (!updatedOrder.client.fcmToken.isNullOrBlank()) {
             notificationService.sendOrderStatusToClient(
                 token = updatedOrder.client.fcmToken,
@@ -85,23 +104,27 @@ class OrderAdminService(
             )
         }
 
+        updatedOrder.driver?.let { drv ->
+            notificationService.sendOrderCancelToDriver(drv, updatedOrder)
+        }
+
         return dto
     }
 
     @Transactional
     fun assignDriverToOrder(orderId: Long, driverId: Long): TaxiOrderDto {
-        val order = orderRepository.findById(orderId)
+        val order = orderRepository.findByIdWithLock(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Заказ $orderId не найден") }
-        
+
         if (order.status != OrderStatus.REQUESTED) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Назначить водителя можно только на заказ в статусе 'REQUESTED'")
         }
-        
+
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водитель $driverId не найден") }
 
         if (!driver.isOnline) {
-             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Водитель (ID ${driver.id}) не в сети (OFFLINE)")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Водитель (ID ${driver.id}) не в сети (OFFLINE)")
         }
 
         val activeStatuses = listOf(OrderStatus.ACCEPTED, OrderStatus.IN_PROGRESS)
@@ -110,27 +133,29 @@ class OrderAdminService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Водитель (ID ${driver.id}) уже выполняет заказ (ID ${existingOrder.id})")
         }
 
-        // Если диспетчер вручную назначает нашего водителя — снимаем заказ у партнеров
         val evosUid = order.evosOrderUid
         if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
-            evoSService.cancelOrderInEvoS(evosUid)
-            order.isSentToEvos = false
-            order.evosOrderUid = null
+            val cancelled = evoSService.cancelOrderInEvoS(evosUid)
+            if (cancelled) {
+                order.isSentToEvos = false
+                order.evosOrderUid = null
+            } else {
+                order.evosCancelPending = true
+            }
         }
 
         order.driver = driver
-        order.status = OrderStatus.ACCEPTED 
+        order.status = OrderStatus.ACCEPTED
+        order.acceptedAt = LocalDateTime.now()
 
         val updatedOrder = orderRepository.save(order)
+        redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), updatedOrder.uuid.toString())
+
         val dto = TaxiOrderDto(updatedOrder)
 
-        // 1. 🟢 WEBSOCKET ПАССАЖИРУ: обновляем состояние поездки на экране приложения
         messagingTemplate.convertAndSend("/topic/orders/${updatedOrder.id}", dto)
-        
-        // 2. 🟢 WEBSOCKET ДИСПЕТЧЕРУ И ЭФИРУ
         orderService.broadcastOrderChange(updatedOrder, "UPDATE")
 
-        // 3. 🟢 FCM PUSH ПАССАЖИРУ: оповещаем о назначении водителя
         if (!updatedOrder.client.fcmToken.isNullOrBlank()) {
             notificationService.sendOrderStatusToClient(
                 token = updatedOrder.client.fcmToken,

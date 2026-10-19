@@ -2,6 +2,7 @@ package com.taxiapp.server.service
 
 import com.google.gson.JsonParser
 import com.taxiapp.server.dto.surge.WeatherStatusDto
+import com.taxiapp.server.model.surge.WeatherSurgeRule
 import com.taxiapp.server.repository.AppSettingRepository
 import com.taxiapp.server.repository.WeatherSurgeRuleRepository
 import org.slf4j.LoggerFactory
@@ -20,13 +21,33 @@ class OpenMeteoWeatherService(
 ) {
     private val logger = LoggerFactory.getLogger(OpenMeteoWeatherService::class.java)
 
-    // Координати Києва за замовчуванням
     private val DEFAULT_LAT = 50.4501
     private val DEFAULT_LNG = 30.5234
 
+    // L1 In-Memory кэш для флага weather_surge_enabled и таблицы правил погоды (TTL 30 сек)
+    // Убирает 2 SQL-запроса к БД на каждый тариф при каждом расчете цены поездки!
+    @Volatile
+    private var cachedEnabled: Boolean = true
+
+    @Volatile
+    private var enabledExpiresAtMs: Long = 0L
+
+    @Volatile
+    private var cachedRulesByType: Map<String, WeatherSurgeRule> = emptyMap()
+
+    @Volatile
+    private var rulesExpiresAtMs: Long = 0L
+
     fun isWeatherSurgeEnabled(): Boolean {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs < enabledExpiresAtMs) {
+            return cachedEnabled
+        }
         val setting = appSettingRepository.findById("weather_surge_enabled").orElse(null)
-        return setting?.value?.toBooleanStrictOrNull() ?: true
+        val enabled = setting?.value?.toBooleanStrictOrNull() ?: true
+        cachedEnabled = enabled
+        enabledExpiresAtMs = nowMs + 30_000L
+        return enabled
     }
 
     fun setWeatherSurgeEnabled(enabled: Boolean) {
@@ -34,6 +55,18 @@ class OpenMeteoWeatherService(
             .orElseGet { com.taxiapp.server.model.setting.AppSetting("weather_surge_enabled", "true") }
         setting.value = enabled.toString()
         appSettingRepository.save(setting)
+        cachedEnabled = enabled
+        enabledExpiresAtMs = System.currentTimeMillis() + 30_000L
+    }
+
+    private fun getWeatherRuleCached(weatherType: String): WeatherSurgeRule? {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs >= rulesExpiresAtMs || cachedRulesByType.isEmpty()) {
+            val rules = weatherRuleRepository.findAll().associateBy { it.weatherType }
+            cachedRulesByType = rules
+            rulesExpiresAtMs = nowMs + 30_000L
+        }
+        return cachedRulesByType[weatherType]
     }
 
     fun getCurrentWeather(lat: Double? = null, lng: Double? = null): WeatherStatusDto {
@@ -41,12 +74,16 @@ class OpenMeteoWeatherService(
         val targetLat = lat ?: DEFAULT_LAT
         val targetLng = lng ?: DEFAULT_LNG
 
-        // Округлюємо координати до 2 знаків (~1.1 км) для надійного та ефективного Redis-кешу
         val gridLat = round(targetLat * 100.0) / 100.0
         val gridLng = round(targetLng * 100.0) / 100.0
         val cacheKey = "weather:$gridLat:$gridLng"
 
-        val cached = redisTemplate.opsForValue().get(cacheKey) as? Map<*, *>
+        val cached = try {
+            redisTemplate.opsForValue().get(cacheKey) as? Map<*, *>
+        } catch (_: Exception) {
+            null
+        }
+
         val (temp, code) = if (cached != null) {
             val t = (cached["temp"] as? Number)?.toDouble()
             val c = (cached["code"] as? Number)?.toInt()
@@ -54,12 +91,14 @@ class OpenMeteoWeatherService(
         } else {
             val fetched = fetchFromOpenMeteo(gridLat, gridLng)
             if (fetched != null) {
-                redisTemplate.opsForValue().set(
-                    cacheKey,
-                    mapOf("temp" to fetched.first, "code" to fetched.second),
-                    10,
-                    TimeUnit.MINUTES
-                )
+                try {
+                    redisTemplate.opsForValue().set(
+                        cacheKey,
+                        mapOf("temp" to fetched.first, "code" to fetched.second),
+                        10,
+                        TimeUnit.MINUTES
+                    )
+                } catch (_: Exception) {}
             }
             fetched ?: Pair(null, 0)
         }
@@ -69,13 +108,13 @@ class OpenMeteoWeatherService(
 
         var multiplier = 1.0
         if (isEnabled && weatherType != "CLEAR") {
-            val rule = weatherRuleRepository.findByWeatherType(weatherType)
+            val rule = getWeatherRuleCached(weatherType)
             if (rule != null && rule.isActive) {
                 multiplier = rule.multiplier
             }
         }
 
-        logger.info("[WEATHER] Локація: $targetLat, $targetLng | Код WMO: $code ($description) | Тип: $weatherType | Коефіцієнт: $multiplier (Ввімкнено: $isEnabled)")
+        logger.debug("[WEATHER] Локація: $targetLat, $targetLng | Код WMO: $code ($description) | Тип: $weatherType | Коефіцієнт: $multiplier (Ввімкнено: $isEnabled)")
 
         return WeatherStatusDto(
             isEnabled = isEnabled,
@@ -84,18 +123,17 @@ class OpenMeteoWeatherService(
             weatherType = weatherType,
             weatherDescription = description,
             activeMultiplier = multiplier,
-            location = if (lat == null || (lat == DEFAULT_LAT && lng == DEFAULT_LNG)) "Київ" else "${gridLat}, ${gridLng}"
+            location = if (lat == null || (lat == DEFAULT_LAT && lng == DEFAULT_LNG)) "Київ" else "$gridLat, $gridLng"
         )
     }
 
     private fun fetchFromOpenMeteo(lat: Double, lng: Double): Pair<Double?, Int?>? {
         return try {
-            // Додаємо запит опадів (precipitation, rain, snowfall)
             val urlString = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lng&current=temperature_2m,weather_code,precipitation,rain,snowfall"
             val connection = URL(urlString).openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
-            connection.connectTimeout = 3000
-            connection.readTimeout = 3000
+            connection.connectTimeout = 2500
+            connection.readTimeout = 2500
 
             if (connection.responseCode == 200) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
@@ -107,12 +145,11 @@ class OpenMeteoWeatherService(
                 val rain = current.get("rain")?.asDouble ?: 0.0
                 val snowfall = current.get("snowfall")?.asDouble ?: 0.0
 
-                // 🛡️ СТРАХОВКА: якщо код показує хмарність, але датчики фіксують опади
                 if (code in 0..3) {
                     if (snowfall > 0.05) {
-                        code = 71 // Легкий сніг
+                        code = 71
                     } else if (rain > 0.05 || precipitation > 0.05) {
-                        code = 51 // Дрібний дощ
+                        code = 51
                     }
                 }
 
@@ -130,13 +167,9 @@ class OpenMeteoWeatherService(
     private fun mapWmoCodeToType(code: Int): String {
         return when (code) {
             45, 48 -> "FOG"
-            // Усі типи дрібного та помірного дощу
             51, 53, 55, 56, 57, 61, 66, 80 -> "RAIN"
-            // Сильні дощі, зливи
             63, 65, 67, 81, 82 -> "HEAVY_RAIN"
-            // Снігопади та хуртовини
             71, 73, 75, 77, 85, 86 -> "SNOW"
-            // Грози
             95, 96, 99 -> "THUNDERSTORM"
             else -> "CLEAR"
         }

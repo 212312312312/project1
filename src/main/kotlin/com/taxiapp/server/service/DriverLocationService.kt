@@ -1,20 +1,31 @@
 package com.taxiapp.server.service
 
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.taxiapp.server.dto.driver.DriverLocationDto
 import com.taxiapp.server.dto.driver.UpdateLocationRequest
 import com.taxiapp.server.dto.order.TrackingLocationDto
 import com.taxiapp.server.model.enums.DriverSearchMode
+import com.taxiapp.server.model.order.TaxiOrderTrack
+import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.DriverRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
-import org.springframework.messaging.simp.SimpMessagingTemplate
-import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
-import org.springframework.data.redis.core.RedisTemplate
-import org.springframework.data.geo.Point
+import com.taxiapp.server.repository.TaxiOrderTrackRepository
+import org.slf4j.LoggerFactory
 import org.springframework.data.geo.Circle
 import org.springframework.data.geo.Distance
 import org.springframework.data.geo.Metrics
+import org.springframework.data.geo.Point
 import org.springframework.data.redis.connection.RedisGeoCommands
+import org.springframework.data.redis.core.RedisTemplate
+import org.springframework.messaging.simp.SimpMessagingTemplate
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+import java.time.Instant
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 @Service
 class DriverLocationService(
@@ -22,17 +33,23 @@ class DriverLocationService(
     private val orderRepository: TaxiOrderRepository,
     private val messagingTemplate: SimpMessagingTemplate,
     private val redisTemplate: RedisTemplate<String, Any>,
-    private val taxiOrderTrackRepository: com.taxiapp.server.repository.TaxiOrderTrackRepository,
-    private val evoSService: EvoSService // 👈 ДОБАВЛЕНО
+    private val taxiOrderTrackRepository: TaxiOrderTrackRepository,
+    private val evoSService: EvoSService
 ) {
-    // Ключи для Redis
+    private val logger = LoggerFactory.getLogger(DriverLocationService::class.java)
+
     private val GEO_KEY = "drivers:geo"
     private val META_KEY = "drivers:meta"
     private val UUID_MAP_KEY = "drivers:uuid-to-id"
-    private val objectMapper = com.fasterxml.jackson.databind.ObjectMapper()
-        .registerModule(com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build())
-        .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+    private val ACTIVE_DRIVERS_ORDER_KEY = "orders:active_drivers"
 
+    // Локальный кэш последней записанной в БД точки трека (driverId -> Triple(lat, lng, timestampMs))
+    // Защищает PostgreSQL от записи тысяч дубликатов координат стоящей на светофоре машины
+    private val lastSavedTrackMap = ConcurrentHashMap<Long, Triple<Double, Double, Long>>()
+
+    private val objectMapper = ObjectMapper()
+        .registerModule(KotlinModule.Builder().build())
+        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
     private fun calculateDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371000.0
@@ -46,8 +63,8 @@ class DriverLocationService(
     }
 
     private fun getCachedEvoSDrivers(lat: Double, lng: Double): List<DriverLocationDto> {
-        val gridLat = String.format(java.util.Locale.US, "%.2f", lat)
-        val gridLng = String.format(java.util.Locale.US, "%.2f", lng)
+        val gridLat = String.format(Locale.US, "%.2f", lat)
+        val gridLng = String.format(Locale.US, "%.2f", lng)
         val cacheKey = "evos:drivers:cache:$gridLat:$gridLng"
 
         val cachedJson = try {
@@ -61,23 +78,19 @@ class DriverLocationService(
                 val listType = objectMapper.typeFactory.constructCollectionType(List::class.java, DriverLocationDto::class.java)
                 objectMapper.readValue<List<DriverLocationDto>>(cachedJson, listType)
             } catch (e: Exception) {
-                println("⚠️ [Redis Deserialization Error]: ${e.message}")
+                logger.debug("[Redis Deserialization Error]: {}", e.message)
                 emptyList()
             }
         }
 
-        // Запрашиваем радиус 6.0 км
         val evosItems = evoSService.getNearbyDrivers(lat, lng, radiusKm = 6.0)
-        
+
         val drivers = evosItems.mapNotNull { item ->
             val pos = item.drivercarPosition ?: return@mapNotNull null
             val isFree = item.state?.equals("Free", ignoreCase = true) == true
             val isGpsOk = pos.status?.equals("gpsOk", ignoreCase = true) == true
 
-            if (!isFree || !isGpsOk) {
-                println("⚠️ [EvoS Driver Filtered] state=${item.state}, gpsStatus=${pos.status}")
-                return@mapNotNull null
-            }
+            if (!isFree || !isGpsOk) return@mapNotNull null
 
             val carLat = pos.lat ?: return@mapNotNull null
             val carLng = pos.lng ?: return@mapNotNull null
@@ -99,19 +112,47 @@ class DriverLocationService(
             )
         }
 
-        println("🚕 [EvoS Valid Drivers] Пройшло фільтрацію вільних авто: ${drivers.size} з ${evosItems.size}")
-
         try {
             val jsonToCache = objectMapper.writeValueAsString(drivers)
-            redisTemplate.opsForValue().set(cacheKey, jsonToCache, 10, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (e: Exception) {}
+            redisTemplate.opsForValue().set(cacheKey, jsonToCache, 10, TimeUnit.SECONDS)
+        } catch (_: Exception) {}
 
         return drivers
     }
 
-    @Transactional
+    /**
+     * Быстрое обновление локации из DriverAppController без лишних SQL-запросов к таблице drivers и cars.
+     * НЕ помечено @Transactional, чтобы GPS-пинги не занимали соединения из пула HikariCP!
+     */
+    fun updateLocation(driver: Driver, request: UpdateLocationRequest) {
+        val driverId = driver.id ?: return
+        val driverIdStr = driverId.toString()
+        val existingMeta = redisTemplate.opsForHash<String, Any>().get(META_KEY, driverIdStr) as? Map<*, *>
+
+        val fullName = driver.fullName ?: (existingMeta?.get("fullName") as? String) ?: "Водій"
+        // Берем модель и цвет авто из Redis-меты (куда они пишутся при выходе на линию), чтобы не будить Lazy-запрос к таблице cars
+        val carModel = (existingMeta?.get("carModel") as? String) ?: try { driver.car?.model } catch (_: Exception) { null } ?: "Не вказано"
+        val carColor = (existingMeta?.get("carColor") as? String) ?: try { driver.car?.color } catch (_: Exception) { null } ?: ""
+        val searchMode = driver.searchMode.name
+        val isOnline = driver.isOnline
+
+        processLocationUpdate(
+            driverId = driverId,
+            fullName = fullName,
+            carModel = carModel,
+            carColor = carColor,
+            searchMode = searchMode,
+            isOnline = isOnline,
+            request = request
+        )
+    }
+
+    /**
+     * Обновление локации по UUID (сохранено для обратной совместимости).
+     * Берет метаданные из Redis и обращается к PostgreSQL только один раз при холодном старте.
+     */
     fun updateLocation(driverUuid: String, request: UpdateLocationRequest) {
-        val driverIdStr = redisTemplate.opsForHash<String, String>().get(UUID_MAP_KEY, driverUuid)
+        var driverIdStr = redisTemplate.opsForHash<String, String>().get(UUID_MAP_KEY, driverUuid)
         val driverId: Long
         var fullName = "Водій"
         var carModel = "Не вказано"
@@ -119,36 +160,68 @@ class DriverLocationService(
         var searchMode = DriverSearchMode.MANUAL.name
         var isOnline = true
 
-        if (driverIdStr == null) {
+        if (driverIdStr != null) {
+            driverId = driverIdStr.toLong()
+            val existingMeta = redisTemplate.opsForHash<String, Any>().get(META_KEY, driverIdStr) as? Map<*, *>
+            if (existingMeta != null) {
+                fullName = existingMeta["fullName"] as? String ?: "Водій"
+                carModel = existingMeta["carModel"] as? String ?: "Не вказано"
+                carColor = existingMeta["carColor"] as? String ?: ""
+                searchMode = existingMeta["status"] as? String ?: DriverSearchMode.MANUAL.name
+                isOnline = (existingMeta["isOnline"] as? String)?.toBoolean() ?: true
+            } else {
+                val driver = driverRepository.findById(driverId).orElse(null)
+                if (driver != null) {
+                    fullName = driver.fullName ?: "Водій"
+                    carModel = driver.car?.model ?: "Не вказано"
+                    carColor = driver.car?.color ?: ""
+                    searchMode = driver.searchMode.name
+                    isOnline = driver.isOnline
+                } else {
+                    isOnline = false
+                }
+            }
+        } else {
             val driver = driverRepository.findByUuid(driverUuid).orElseThrow { RuntimeException("Driver not found") }
             driverId = driver.id!!
+            driverIdStr = driverId.toString()
             fullName = driver.fullName ?: "Водій"
             carModel = driver.car?.model ?: "Не вказано"
             carColor = driver.car?.color ?: ""
             searchMode = driver.searchMode.name
             isOnline = driver.isOnline
-            
-            redisTemplate.opsForHash<String, String>().put(UUID_MAP_KEY, driverUuid, driverId.toString())
-        } else {
-            driverId = driverIdStr.toLong()
-            val driver = driverRepository.findById(driverId).orElse(null)
-            if (driver != null) {
-                fullName = driver.fullName ?: "Водій"
-                carModel = driver.car?.model ?: "Не вказано"
-                carColor = driver.car?.color ?: ""
-                searchMode = driver.searchMode.name
-                isOnline = driver.isOnline
-            } else {
-                isOnline = false
-            }
+
+            redisTemplate.opsForHash<String, String>().put(UUID_MAP_KEY, driverUuid, driverIdStr)
         }
 
+        processLocationUpdate(
+            driverId = driverId,
+            fullName = fullName,
+            carModel = carModel,
+            carColor = carColor,
+            searchMode = searchMode,
+            isOnline = isOnline,
+            request = request
+        )
+    }
+
+    private fun processLocationUpdate(
+        driverId: Long,
+        fullName: String,
+        carModel: String,
+        carColor: String,
+        searchMode: String,
+        isOnline: Boolean,
+        request: UpdateLocationRequest
+    ) {
+        val driverIdStr = driverId.toString()
         val newBearing = request.bearing ?: 0f
+        val nowMs = System.currentTimeMillis()
 
         if (isOnline) {
-            redisTemplate.opsForGeo().add(GEO_KEY, Point(request.lng, request.lat), driverId.toString())
+            redisTemplate.opsForGeo().add(GEO_KEY, Point(request.lng, request.lat), driverIdStr)
         } else {
-            redisTemplate.opsForGeo().remove(GEO_KEY, driverId.toString())
+            redisTemplate.opsForGeo().remove(GEO_KEY, driverIdStr)
         }
 
         val updatedMeta = mapOf(
@@ -160,35 +233,55 @@ class DriverLocationService(
             "lat" to request.lat.toString(),
             "lng" to request.lng.toString(),
             "bearing" to newBearing.toString(),
-            "updatedAt" to System.currentTimeMillis().toString()
+            "updatedAt" to nowMs.toString()
         )
-        redisTemplate.opsForHash<String, Any>().put(META_KEY, driverId.toString(), updatedMeta)
+        redisTemplate.opsForHash<String, Any>().put(META_KEY, driverIdStr, updatedMeta)
 
-        // 1. Проверяем активный заказ напрямую в БД (гарантированная запись трека)
-        try {
-            orderRepository.findActiveOrderByDriverId(driverId).ifPresent { order ->
-                val dbTrack = com.taxiapp.server.model.order.TaxiOrderTrack(
-                    orderId = order.id!!,
-                    latitude = request.lat,
-                    longitude = request.lng
-                )
-                taxiOrderTrackRepository.save(dbTrack)
+        // HIGH-LOAD ОПТИМИЗАЦИЯ: Проверяем наличие активного заказа сначала в Redis за O(1)!
+        // Если водитель свободен (90%+ времени), мы НЕ делаем ни одного SQL-запроса к PostgreSQL!
+        val activeOrderUuidObj = redisTemplate.opsForHash<String, Any>().get(ACTIVE_DRIVERS_ORDER_KEY, driverIdStr)
+        val activeOrderUuid = activeOrderUuidObj?.toString()
 
-                val orderUuid = order.uuid.toString()
-                val trackingDto = TrackingLocationDto(
-                    lat = request.lat,
-                    lng = request.lng,
-                    bearing = newBearing
-                )
-                messagingTemplate.convertAndSend("/topic/order/$orderUuid/tracking", trackingDto)
+        if (!activeOrderUuid.isNullOrBlank()) {
+            val trackingDto = TrackingLocationDto(
+                lat = request.lat,
+                lng = request.lng,
+                bearing = newBearing
+            )
+            messagingTemplate.convertAndSend("/topic/order/$activeOrderUuid/tracking", trackingDto)
 
-                val trackKey = "orders:track-history:$orderUuid"
-                val timestamp = java.time.Instant.now().toString()
-                redisTemplate.opsForList().rightPush(trackKey, "${request.lat},${request.lng},$timestamp")
-                redisTemplate.expire(trackKey, 7, java.util.concurrent.TimeUnit.DAYS)
+            val trackKey = "orders:track-history:$activeOrderUuid"
+            val timestamp = Instant.now().toString()
+            redisTemplate.opsForList().rightPush(trackKey, "${request.lat},${request.lng},$timestamp")
+            redisTemplate.expire(trackKey, 7, TimeUnit.DAYS)
+
+            // Записываем точку в PostgreSQL только если водитель сдвинулся >= 10 метров или прошло >= 15 секунд
+            val prevTrack = lastSavedTrackMap[driverId]
+            val shouldSaveToDb = if (prevTrack == null) {
+                true
+            } else {
+                val distMoved = calculateDistanceMeters(prevTrack.first, prevTrack.second, request.lat, request.lng)
+                val timeElapsed = nowMs - prevTrack.third
+                distMoved >= 10.0 || timeElapsed >= 15_000L
             }
-        } catch (e: Exception) {
-            println(">>> ОШИБКА СОХРАНЕНИЯ ТРЕКА В POSTGRES: ${e.message}")
+
+            if (shouldSaveToDb) {
+                try {
+                    orderRepository.findActiveOrderByDriverId(driverId).ifPresent { order ->
+                        val dbTrack = TaxiOrderTrack(
+                            orderId = order.id!!,
+                            latitude = request.lat,
+                            longitude = request.lng
+                        )
+                        taxiOrderTrackRepository.save(dbTrack)
+                        lastSavedTrackMap[driverId] = Triple(request.lat, request.lng, nowMs)
+                    }
+                } catch (e: Exception) {
+                    logger.warn(">>> ОШИБКА СОХРАНЕНИЯ ТРЕКА В POSTGRES: {}", e.message)
+                }
+            }
+        } else {
+            lastSavedTrackMap.remove(driverId)
         }
 
         val locationDto = DriverLocationDto(
@@ -207,6 +300,7 @@ class DriverLocationService(
 
     @Transactional
     fun clearLocation(driverId: Long) {
+        lastSavedTrackMap.remove(driverId)
         val driver = driverRepository.findById(driverId).orElse(null) ?: return
         driver.latitude = null
         driver.longitude = null
@@ -225,21 +319,21 @@ class DriverLocationService(
     fun getTop5NearestDrivers(lat: Double, lng: Double): List<DriverLocationDto> {
         val args = RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
             .includeCoordinates().sortAscending().limit(5)
-            
+
         val circle = Circle(Point(lng, lat), Distance(10.0, Metrics.KILOMETERS))
         val results = redisTemplate.opsForGeo().radius(GEO_KEY, circle, args)
-        
+
         val localDrivers = results?.content?.map { result ->
             val driverIdStr = result.content.name
             val point = result.content.point
             val meta = redisTemplate.opsForHash<String, Any>().get(META_KEY, driverIdStr.toString()) as? Map<*, *>
-            
+
             DriverLocationDto(
                 driverId = driverIdStr.toString().toLong(),
                 fullName = meta?.get("fullName") as? String ?: "Водій",
                 lat = point.y,
                 lng = point.x,
-                bearing = (meta?.get("bearing") as? String)?.toFloat() ?: 0f,
+                bearing = (meta?.get("bearing") as? String)?.toFloatOrNull() ?: 0f,
                 status = meta?.get("status") as? String ?: "MANUAL",
                 isOnline = (meta?.get("isOnline") as? String)?.toBoolean() ?: true,
                 carModel = meta?.get("carModel") as? String ?: "Не вказано",
@@ -247,16 +341,14 @@ class DriverLocationService(
             )
         } ?: emptyList()
 
-        // Если в системе есть свои активные водители — отдаем их
         if (localDrivers.isNotEmpty()) {
             return localDrivers
         }
 
-        // Если своих нет — берем машины из кэша EvoS в радиусе до 800м от пина клиента
         val evosDrivers = getCachedEvoSDrivers(lat, lng)
         return evosDrivers
             .map { driver -> Pair(driver, calculateDistanceMeters(lat, lng, driver.lat, driver.lng)) }
-            .filter { it.second <= 2000.0 } // 👈 Расширили до 2 км
+            .filter { it.second <= 2000.0 }
             .sortedBy { it.second }
             .take(5)
             .map { it.first }
@@ -278,7 +370,6 @@ class DriverLocationService(
             val lat = latStr.toDoubleOrNull() ?: return@mapIndexedNotNull null
             val lng = lngStr.toDoubleOrNull() ?: return@mapIndexedNotNull null
 
-            // 🛡️ Защита от "зависших" водителей: если от мобилки не было координат > 60 секунд, очищаем кэш
             val lastUpdateStr = meta["updatedAt"] as? String
             val lastUpdate = lastUpdateStr?.toLongOrNull() ?: 0L
             if (lastUpdate > 0 && (now - lastUpdate > 60_000)) {
@@ -311,7 +402,7 @@ class DriverLocationService(
         return UpdateLocationRequest(
             lat = latStr.toDouble(),
             lng = lngStr.toDouble(),
-            bearing = bearingStr?.toFloat()
+            bearing = bearingStr?.toFloatOrNull()
         )
     }
 }

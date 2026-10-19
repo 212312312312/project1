@@ -102,13 +102,22 @@ data class TaxiOrderDto(
         "Партнерське авто"
     }
 
+    val resolvedEvosColor = com.taxiapp.server.model.enums.CarColor.fromRawString(carColor)
+    val resolvedEvosVisualType = com.taxiapp.server.model.enums.CarVisualType.resolveForCar(
+        carType = order.tariff.bodyType,
+        carModel = cleanCarModel,
+        allowedTariffNames = listOfNotNull(order.tariffName, order.tariff.name)
+    )
+
     OrderDriverDto(
         id = -1L,
-        fullName = "Водій", // Убрали приписку "(Партнерська мережа)"
+        fullName = "Водій",
         phoneNumber = order.evosDriverPhone ?: "",
         carModel = cleanCarModel,
-        carColor = carColor,
+        carColor = if (carColor.isNotBlank()) resolvedEvosColor.labelUk else "Білий",
         carPlateNumber = carNumber,
+        carColorKey = resolvedEvosColor.key,
+        carVisualType = resolvedEvosVisualType.name,
         photoUrl = null,
         completedRides = 100,
         monthsInService = 12,

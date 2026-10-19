@@ -3,6 +3,8 @@ package com.taxiapp.server.controller
 import com.taxiapp.server.dto.classifier.*
 import com.taxiapp.server.service.CarClassifierService
 import org.springframework.http.ResponseEntity
+import com.taxiapp.server.model.enums.CarBodyType
+import com.taxiapp.server.model.enums.CarColor
 import org.springframework.web.bind.annotation.*
 
 @RestController
@@ -30,5 +32,21 @@ class CarClassifierController(
     @PostMapping("/evaluate")
     fun evaluate(@RequestBody request: EvaluateCarRequest): ResponseEntity<EvaluateCarResponse> {
         return ResponseEntity.ok(classifierService.evaluateCar(request))
+    }
+
+    @GetMapping("/colors")
+    fun getColors(): ResponseEntity<List<CarColorDto>> {
+        val colors = com.taxiapp.server.model.enums.CarColor.entries.map {
+            CarColorDto(key = it.key, name = it.labelUk, hexCode = it.hexCode)
+        }
+        return ResponseEntity.ok(colors)
+    }
+
+    @GetMapping("/body-types")
+    fun getBodyTypes(): ResponseEntity<List<CarBodyTypeDto>> {
+        val types = com.taxiapp.server.model.enums.CarBodyType.entries.map {
+            CarBodyTypeDto(key = it.name, name = it.labelUk)
+        }
+        return ResponseEntity.ok(types)
     }
 }

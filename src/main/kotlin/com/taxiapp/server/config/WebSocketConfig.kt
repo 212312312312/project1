@@ -1,10 +1,13 @@
 package com.taxiapp.server.config
 
+import com.taxiapp.server.model.user.User
 import com.taxiapp.server.security.JwtUtils
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Configuration
 import org.springframework.messaging.Message
 import org.springframework.messaging.MessageChannel
+import org.springframework.messaging.MessageDeliveryException
 import org.springframework.messaging.simp.config.ChannelRegistration
 import org.springframework.messaging.simp.config.MessageBrokerRegistry
 import org.springframework.messaging.simp.stomp.StompCommand
@@ -12,10 +15,12 @@ import org.springframework.messaging.simp.stomp.StompHeaderAccessor
 import org.springframework.messaging.support.ChannelInterceptor
 import org.springframework.messaging.support.MessageHeaderAccessor
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+import org.springframework.security.core.Authentication
 import org.springframework.security.core.userdetails.UserDetailsService
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer
+import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -27,17 +32,23 @@ class WebSocketConfig(
     @Value("\${app.cors.allowed-origins:https://admin.unitua.com,http://localhost:5173,http://localhost:3000}")
     private lateinit var allowedOriginsStr: String
 
+    private val wsLogger = LoggerFactory.getLogger(WebSocketConfig::class.java)
+
     override fun configureMessageBroker(config: MessageBrokerRegistry) {
         config.enableSimpleBroker("/topic")
         config.setApplicationDestinationPrefixes("/app")
     }
 
-    private val wsLogger = org.slf4j.LoggerFactory.getLogger(WebSocketConfig::class.java)
+    override fun configureWebSocketTransport(registration: WebSocketTransportRegistration) {
+        // Защита от OOM на медленных мобильных соединениях
+        registration.setMessageSizeLimit(64 * 1024)       // 64 KB макс размер фрейма
+        registration.setSendTimeLimit(10_000)             // 10 сек таймаут отправки
+        registration.setSendBufferSizeLimit(512 * 1024)   // 512 KB буфер на клиента
+    }
 
     override fun registerStompEndpoints(registry: StompEndpointRegistry) {
         val origins = allowedOriginsStr.split(",").map { it.trim() }.toTypedArray()
 
-        // Перехватчик токена из параметров URL handshake (?token=... или ?access_token=...)
         val queryInterceptor = object : org.springframework.web.socket.server.HandshakeInterceptor {
             override fun beforeHandshake(
                 request: org.springframework.http.server.ServerHttpRequest,
@@ -85,68 +96,117 @@ class WebSocketConfig(
         registration.interceptors(object : ChannelInterceptor {
             override fun preSend(message: Message<*>, channel: MessageChannel): Message<*>? {
                 val accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor::class.java)
+                    ?: return message
 
-                if (accessor != null && StompCommand.CONNECT == accessor.command) {
-                    val user = accessor.user
-                    if (user is org.springframework.security.core.Authentication && user.isAuthenticated) {
-                        return message
-                    }
-
-                    // 1. Проверяем все возможные варианты названий заголовков токена
-                    val headerCandidates = listOf(
-                        "Authorization", "authorization", 
-                        "token", "Token", 
-                        "access_token", "accessToken", 
-                        "X-Authorization", "passcode"
-                    )
-                    var rawToken: String? = null
-                    for (headerName in headerCandidates) {
-                        val h = accessor.getFirstNativeHeader(headerName)
-                        if (!h.isNullOrBlank()) {
-                            rawToken = h
-                            break
-                        }
-                    }
-
-                    // 2. Проверяем системный passcode фрейма CONNECT
-                    if (rawToken.isNullOrBlank() && !accessor.passcode.isNullOrBlank()) {
-                        rawToken = accessor.passcode
-                    }
-
-                    // 3. Проверяем атрибуты сессии из HTTP handshake (URL query params)
-                    if (rawToken.isNullOrBlank()) {
-                        rawToken = (accessor.sessionAttributes?.get("token") as? String)
-                            ?: (accessor.sessionAttributes?.get("authHeader") as? String)
-                    }
-
-                    if (!rawToken.isNullOrBlank()) {
-                        val token = if (rawToken.startsWith("Bearer ", ignoreCase = true)) {
-                            rawToken.substring(7).trim()
-                        } else {
-                            rawToken.trim()
+                when (accessor.command) {
+                    StompCommand.CONNECT -> {
+                        val existingUser = accessor.user
+                        if (existingUser is Authentication && existingUser.isAuthenticated) {
+                            return message
                         }
 
-                        try {
-                            val username = jwtUtils.extractUsername(token)
-                            if (username != null) {
-                                val userDetails = userDetailsService.loadUserByUsername(username)
-                                if (jwtUtils.validateToken(token, userDetails)) {
-                                    val authentication = UsernamePasswordAuthenticationToken(
-                                        userDetails, null, userDetails.authorities
-                                    )
-                                    accessor.user = authentication
-                                    wsLogger.info(">>> [WS Auth OK] Успішна авторизація для: $username")
-                                    return message
-                                }
+                        val headerCandidates = listOf(
+                            "Authorization", "authorization",
+                            "token", "Token",
+                            "access_token", "accessToken",
+                            "X-Authorization", "passcode"
+                        )
+                        var rawToken: String? = null
+                        for (headerName in headerCandidates) {
+                            val h = accessor.getFirstNativeHeader(headerName)
+                            if (!h.isNullOrBlank()) {
+                                rawToken = h
+                                break
                             }
-                        } catch (e: Exception) {
-                            wsLogger.warn(">>> [WS Auth] Недійсний токен: ${e.message}")
-                            throw org.springframework.messaging.MessageDeliveryException("Invalid Token")
+                        }
+
+                        if (rawToken.isNullOrBlank() && !accessor.passcode.isNullOrBlank()) {
+                            rawToken = accessor.passcode
+                        }
+
+                        if (rawToken.isNullOrBlank()) {
+                            rawToken = (accessor.sessionAttributes?.get("token") as? String)
+                                ?: (accessor.sessionAttributes?.get("authHeader") as? String)
+                        }
+
+                        if (!rawToken.isNullOrBlank()) {
+                            val token = if (rawToken.startsWith("Bearer ", ignoreCase = true)) {
+                                rawToken.substring(7).trim()
+                            } else {
+                                rawToken.trim()
+                            }
+
+                            try {
+                                val username = jwtUtils.extractUsername(token)
+                                if (username != null) {
+                                    val userDetails = userDetailsService.loadUserByUsername(username)
+                                    if (userDetails.isAccountNonLocked && jwtUtils.validateToken(token, userDetails)) {
+                                        val authentication = UsernamePasswordAuthenticationToken(
+                                            userDetails, null, userDetails.authorities
+                                        )
+                                        accessor.user = authentication
+                                        wsLogger.info(">>> [WS Auth OK] Успішна авторизація для: $username")
+                                        return message
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                wsLogger.warn(">>> [WS Auth] Недійсний токен: ${e.message}")
+                                throw MessageDeliveryException("Invalid Token")
+                            }
+                        }
+
+                        wsLogger.warn(">>> [WS Auth] Вхід відхилено: токен не знайдено!")
+                        throw MessageDeliveryException("Unauthorized: Access Denied")
+                    }
+
+                    StompCommand.SUBSCRIBE -> {
+                        val auth = accessor.user as? Authentication
+                            ?: throw MessageDeliveryException("Unauthorized subscribe")
+                        val principalUser = auth.principal as? User
+                            ?: throw MessageDeliveryException("Invalid principal")
+                        val roles = auth.authorities.map { it.authority }.toSet()
+                        val isAdminOrDispatcher = "ROLE_ADMINISTRATOR" in roles || "ROLE_DISPATCHER" in roles
+                        val isDriver = "ROLE_DRIVER" in roles
+                        val dest = accessor.destination ?: ""
+
+                        // 1. Защита админских и саппорт-топиков
+                        if ((dest.startsWith("/topic/admin") || dest.startsWith("/app/admin") || dest.startsWith("/topic/support")) && !isAdminOrDispatcher) {
+                            throw MessageDeliveryException("Forbidden: Admin/Dispatcher topic")
+                        }
+
+                        // 2. Защита общего эфира водителей
+                        if ((dest.startsWith("/topic/drivers/ether") || dest.startsWith("/app/drivers/ether")) && !isDriver && !isAdminOrDispatcher) {
+                            throw MessageDeliveryException("Forbidden: Driver ether topic")
+                        }
+
+                        // 3. Защита персональных топиков водителя (/topic/drivers/{id}/... или /topic/driver/{id})
+                        val driverMatch = Regex("^/(?:topic|app)/drivers?/(\\d+)(?:/.*)?$").find(dest)
+                        if (driverMatch != null && !isAdminOrDispatcher) {
+                            val targetDriverId = driverMatch.groupValues[1].toLongOrNull()
+                            if (!isDriver || principalUser.id != targetDriverId) {
+                                throw MessageDeliveryException("Forbidden: Another driver's topic")
+                            }
+                        }
+
+                        // 4. Защита персональных топиков клиента (/topic/clients/{id}/...)
+                        val clientMatch = Regex("^/topic/clients/(\\d+)(?:/.*)?$").find(dest)
+                        if (clientMatch != null && !isAdminOrDispatcher) {
+                            val targetClientId = clientMatch.groupValues[1].toLongOrNull()
+                            if (principalUser.id != targetClientId) {
+                                throw MessageDeliveryException("Forbidden: Another client's topic")
+                            }
                         }
                     }
 
-                    wsLogger.warn(">>> [WS Auth] Вхід відхилено: токен не знайдено! Headers: ${accessor.toNativeHeaderMap()}, sessionAttr: ${accessor.sessionAttributes}")
-                    throw org.springframework.messaging.MessageDeliveryException("Unauthorized: Access Denied")
+                    StompCommand.SEND -> {
+                        val dest = accessor.destination ?: ""
+                        // Клиентам разрешено отправлять сообщения только в /app/**, но НЕ напрямую в /topic/**!
+                        if (dest.startsWith("/topic/")) {
+                            throw MessageDeliveryException("Forbidden: Direct publishing to /topic is prohibited")
+                        }
+                    }
+
+                    else -> {}
                 }
                 return message
             }

@@ -26,15 +26,23 @@ data class OrderDriverDto(
     val hasHearingIssue: Boolean,
     val isDeaf: Boolean,
     val hasSpeechIssue: Boolean,
-    val rating: Double
+    val rating: Double,
+    val carColorKey: String = "WHITE",
+    val carVisualType: String = "STANDARD",
 ) {
     constructor(driver: Driver) : this(
         id = driver.id!!,
         fullName = driver.fullName ?: "Водій",
         phoneNumber = driver.userPhone ?: "",
         carModel = driver.car?.let { "${it.make} ${it.model}" } ?: "Авто",
-        carColor = driver.car?.color ?: "Колір не вказано",
+        carColor = com.taxiapp.server.model.enums.CarColor.fromRawString(driver.car?.color).labelUk,
         carPlateNumber = driver.car?.plateNumber,
+        carColorKey = com.taxiapp.server.model.enums.CarColor.fromRawString(driver.car?.color).key,
+        carVisualType = com.taxiapp.server.model.enums.CarVisualType.resolveForCar(
+            carType = driver.car?.carType,
+            carModel = driver.car?.let { "${it.make} ${it.model}" },
+            allowedTariffNames = driver.allowedTariffs.map { it.name }
+        ).name,
         
         photoUrl = driver.photoUrl?.let { filename ->
             if (filename.startsWith("http")) {

@@ -4,6 +4,7 @@ import io.jsonwebtoken.ExpiredJwtException
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.slf4j.LoggerFactory
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.security.core.userdetails.UserDetails
@@ -18,8 +19,16 @@ class JwtAuthFilter(
     private val userDetailsService: UserDetailsService
 ) : OncePerRequestFilter() {
 
+    private val jwtLogger = LoggerFactory.getLogger(JwtAuthFilter::class.java)
+
     override fun shouldNotFilter(request: HttpServletRequest): Boolean {
         val path = request.servletPath
+
+        // ВАЖНО: Эти 2 эндпоинта внутри /api/v1/auth/ требуют Principal (авторизованного пользователя)!
+        if (path == "/api/v1/auth/client/link-phone" || path == "/api/v1/auth/fcm-token") {
+            return false
+        }
+
         return path.startsWith("/api/v1/auth/") ||
                path.startsWith("/assets/") ||
                path.startsWith("/ws") ||
@@ -60,8 +69,8 @@ class JwtAuthFilter(
             }
         }
 
-        // 3. 👈 ДОБАВЛЕНО: Достаем токен из параметра URL ?token=... (для WebView в мобильных приложениях)
-        if (jwtToken == null) {
+        // 3. Достаем токен из параметра URL ?token=... ТОЛЬКО для специализированных WebView-маршрутов
+        if (jwtToken == null && (request.servletPath.startsWith("/api/v1/driver/forms/") || request.servletPath.startsWith("/add-car"))) {
             val tokenParam = request.getParameter("token")
             if (!tokenParam.isNullOrEmpty()) {
                 jwtToken = tokenParam.trim()
@@ -79,6 +88,14 @@ class JwtAuthFilter(
             if (username != null && SecurityContextHolder.getContext().authentication == null) {
                 val userDetails: UserDetails = userDetailsService.loadUserByUsername(username)
 
+                // ЗАЩИТА: Проверяем, что аккаунт НЕ заблокирован (постоянно или временно)
+                if (!userDetails.isAccountNonLocked || !userDetails.isEnabled) {
+                    response.status = HttpServletResponse.SC_FORBIDDEN
+                    response.contentType = "application/json;charset=UTF-8"
+                    response.writer.write("""{"error": "ACCOUNT_BLOCKED", "message": "Ваш акаунт заблоковано"}""")
+                    return
+                }
+
                 if (jwtUtils.validateToken(jwtToken, userDetails)) {
                     val authToken = UsernamePasswordAuthenticationToken(
                         userDetails,
@@ -90,19 +107,19 @@ class JwtAuthFilter(
                 }
             }
         } catch (e: ExpiredJwtException) {
-            println(">>> JWT FILTER: Token EXPIRED for: ${request.requestURI}")
-            response.status = HttpServletResponse.SC_UNAUTHORIZED 
+            jwtLogger.debug(">>> JWT FILTER: Token EXPIRED for: ${request.requestURI}")
+            response.status = HttpServletResponse.SC_UNAUTHORIZED
             response.setHeader("WWW-Authenticate", "Bearer")
             response.contentType = "application/json;charset=UTF-8"
             response.writer.write("""{"error": "TOKEN_EXPIRED", "message": "Access token is expired"}""")
-            return 
+            return
         } catch (e: Exception) {
-            println(">>> JWT FILTER: Error parsing token: ${e.message}")
-            response.status = HttpServletResponse.SC_UNAUTHORIZED 
+            jwtLogger.debug(">>> JWT FILTER: Error parsing token: ${e.message}")
+            response.status = HttpServletResponse.SC_UNAUTHORIZED
             response.setHeader("WWW-Authenticate", "Bearer")
             response.contentType = "application/json;charset=UTF-8"
             response.writer.write("""{"error": "INVALID_TOKEN", "message": "Invalid access token"}""")
-            return 
+            return
         }
 
         filterChain.doFilter(request, response)

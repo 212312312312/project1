@@ -95,7 +95,7 @@ private val carModelRepository: CarModelRepository,
             driver = driver,
             make = request.make,
             model = request.model,
-            color = request.color,
+            color = com.taxiapp.server.model.enums.CarColor.fromRawString(request.color).labelUk,
             plateNumber = request.plateNumber.trim().uppercase(),
             vin = "", 
             year = request.year,
@@ -135,7 +135,7 @@ private val carModelRepository: CarModelRepository,
             
             request.make?.let { driverCar.make = it }
             request.model?.let { driverCar.model = it }
-            request.color?.let { driverCar.color = it }
+            request.color?.let { driverCar.color = com.taxiapp.server.model.enums.CarColor.fromRawString(it).labelUk }
             request.plateNumber?.let { driverCar.plateNumber = it }
             request.year?.let { driverCar.year = it }
             
@@ -333,7 +333,7 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
         car.make = request.make
         car.model = request.model
         car.plateNumber = request.plateNumber.trim().uppercase()
-        car.color = request.color
+        car.color = com.taxiapp.server.model.enums.CarColor.fromRawString(request.color).labelUk
         car.year = request.year
         
         car.vin = request.vin ?: "" 

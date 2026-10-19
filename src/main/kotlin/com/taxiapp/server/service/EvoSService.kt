@@ -4,9 +4,11 @@ import com.taxiapp.server.dto.evos.*
 import com.taxiapp.server.model.order.TaxiOrder
 import org.slf4j.LoggerFactory
 import org.springframework.http.*
+import org.springframework.http.client.SimpleClientHttpRequestFactory
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestTemplate
 import java.security.MessageDigest
+import java.time.format.DateTimeFormatter
 import java.util.Base64
 
 @Service
@@ -14,15 +16,21 @@ class EvoSService(
     private val settingsService: SettingsService
 ) {
     private val logger = LoggerFactory.getLogger(EvoSService::class.java)
-    private val restTemplate = RestTemplate()
 
-    // Хеширование пароля SHA-512 по спецификации EvoS
+    // HIGH-LOAD ФИКС: Жесткие таймауты на подключение (3 сек) и чтение (5 сек).
+    // Без них зависание внешнего сервера EvoS навсегда блокирует потоки шедулера и пул соединений!
+    private val restTemplate = RestTemplate(
+        SimpleClientHttpRequestFactory().apply {
+            setConnectTimeout(3000)
+            setReadTimeout(5000)
+        }
+    )
+
     private fun computeSha512Hash(password: String): String {
         val bytes = MessageDigest.getInstance("SHA-512").digest(password.toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
-    // Формирование HTTP заголовков авторизации
     private fun createHeaders(): HttpHeaders {
         val login = settingsService.getEvosLogin()
         val password = settingsService.getEvosPassword()
@@ -37,11 +45,10 @@ class EvoSService(
         headers.set("Accept", "application/json")
         headers.set("Authorization", "Basic $basicAuth")
         headers.set("X-WO-API-APP-ID", appId)
-        headers.set("X-API-VERSION", "1.46.0") // 👈 ДОБАВЛЕНО: поддержка доп. кодов и расширенных статусов
+        headers.set("X-API-VERSION", "1.46.0")
         return headers
     }
 
-    // --- 1. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ БАЗОВОЙ СТОИМОСТИ В EVOS ---
     fun calculateEvoSCost(body: EvoSCreateOrderRequestDto): Double? {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val url = "$baseUrl/api/weborders/cost"
@@ -56,7 +63,6 @@ class EvoSService(
         }
     }
 
-    // --- 2. СОЗДАНИЕ ЗАКАЗА С ГАРАНТИРОВАННОЙ НАШЕЙ ЦЕНОЙ ---
     fun sendOrderToEvoS(order: TaxiOrder): String? {
         if (!settingsService.isEvosEnabled()) return null
 
@@ -71,7 +77,7 @@ class EvoSService(
 
         val isReservation = order.scheduledAt != null
         val formattedRequiredTime = order.scheduledAt?.let {
-            it.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")) // 👈 ИСПРАВЛЕНО: строгий формат без миллисекунд
+            it.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss"))
         }
 
         var hasAnimal = false
@@ -125,7 +131,6 @@ class EvoSService(
         }
         routeList.add(EvoSRoutePointDto(name = order.toAddress, lat = order.destLat, lng = order.destLng))
 
-        // Черновой DTO для запроса базовой стоимости в EvoS
         val draftBody = EvoSCreateOrderRequestDto(
             userFullName = clientName,
             userPhone = clientPhone,
@@ -147,11 +152,9 @@ class EvoSService(
             paymentType = pType
         )
 
-        // 🟢 РАСЧЕТ РАЗНИЦЫ: Вычисляем add_cost для фиксации нашей цены
         val evosBaseCost = calculateEvoSCost(draftBody) ?: 0.0
-        order.evosBaseCost = evosBaseCost // Сохраняем базу EvoS для последующих пересчетов цены на лету
+        order.evosBaseCost = evosBaseCost
 
-        // order.price УЖЕ содержит в себе order.addedValue, повторно прибавлять его НЕЛЬЗЯ
         val finalAddCost = if (order.price > evosBaseCost && evosBaseCost > 0.0) {
             order.price - evosBaseCost
         } else {
@@ -180,13 +183,12 @@ class EvoSService(
         }
     }
 
-    // --- ПОЛУЧЕНИЕ КООРДИНАТ СВОБОДНЫХ АВТОМОБИЛЕЙ В РАДИУСЕ ---
     fun getNearbyDrivers(lat: Double, lng: Double, radiusKm: Double = 5.0): List<EvoSDriverPositionItemDto> {
         if (!settingsService.isEvosEnabled()) return emptyList()
 
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val intRadius = radiusKm.toInt().coerceAtLeast(1)
-    val url = "$baseUrl/api/drivers/position?lat=$lat&lng=$lng&radius=$intRadius"
+        val url = "$baseUrl/api/drivers/position?lat=$lat&lng=$lng&radius=$intRadius"
 
         return try {
             val requestEntity = HttpEntity<Void>(createHeaders())
@@ -197,7 +199,7 @@ class EvoSService(
                 Array<EvoSDriverPositionItemDto>::class.java
             )
             val items = response.body?.toList() ?: emptyList()
-            logger.info(">>> [EvoS Raw Positions] Отримано від EvoS машин: ${items.size} (radius=${radiusKm}km)")
+            logger.debug(">>> [EvoS Raw Positions] Отримано від EvoS машин: ${items.size} (radius=${radiusKm}km)")
             items
         } catch (e: Exception) {
             logger.error(">>> [EvoS] Помилка отримання координат водіїв з EvoS: ${e.message}")
@@ -205,12 +207,10 @@ class EvoSService(
         }
     }
 
-    // --- 3.1. СИНХРОНИЗАЦИЯ ЦЕНЫ НА ЛЕТУ С УЧЕТОМ БАЗЫ EVOS ---
     fun updateOrderPriceInEvoS(order: TaxiOrder): Boolean {
         val evosOrderUid = order.evosOrderUid ?: return false
         val evosBase = order.evosBaseCost
 
-        // Считаем точный add_cost для EvoS, чтобы сумма (evosBase + addCost) была равна order.price
         val targetAddCost = if (order.price > evosBase && evosBase > 0.0) {
             order.price - evosBase
         } else {
@@ -221,7 +221,6 @@ class EvoSService(
         return updateAdditionalCost(evosOrderUid, targetAddCost)
     }
 
-    // --- ПОЛУЧЕНИЕ СПИСКА ТАРИФОВ ИЗ EVOS (GET /api/tariffs) ---
     fun getEvoSTariffs(): List<String> {
         if (!settingsService.isEvosEnabled()) return emptyList()
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
@@ -242,7 +241,6 @@ class EvoSService(
         }
     }
 
-    // --- 3. ОБНОВЛЕНИЕ ДОБАВОЧНОЙ СТОИМОСТИ (КОГДА КЛИЕНТ ПОДНИМАЕТ ЦЕНУ В ПРИЛОЖЕНИИ) ---
     fun updateAdditionalCost(evosOrderUid: String, newAddCost: Double): Boolean {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val url = "$baseUrl/api/weborders/$evosOrderUid/cost/additional"
@@ -261,7 +259,7 @@ class EvoSService(
             false
         }
     }
-    // --- ЗАПРОС СОСТОЯНИЯ ЗАКАЗА ---
+
     fun getOrderState(evosOrderUid: String): EvoSOrderStateResponseDto? {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val url = "$baseUrl/api/weborders/$evosOrderUid"
@@ -276,7 +274,6 @@ class EvoSService(
         }
     }
 
-    // --- ЗАПРОС GPS ПОЛОЖЕНИЯ МАШИНЫ ---
     fun getDriverPosition(evosOrderUid: String): EvoSDriverCarPositionDto? {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val url = "$baseUrl/api/weborders/drivercarposition/$evosOrderUid"
@@ -290,7 +287,6 @@ class EvoSService(
         }
     }
 
-    // --- ЗАПРОС ОТМЕНЫ ЗАКАЗА ---
     fun cancelOrderInEvoS(evosOrderUid: String): Boolean {
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val url = "$baseUrl/api/weborders/cancel/$evosOrderUid"

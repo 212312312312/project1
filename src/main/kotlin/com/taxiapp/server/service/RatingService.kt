@@ -1,11 +1,15 @@
 package com.taxiapp.server.service
 
+import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.rating.OrderRating
 import com.taxiapp.server.model.rating.RatingSource
+import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.*
 import org.springframework.data.domain.PageRequest
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.server.ResponseStatusException
 
 @Service
 class RatingService(
@@ -18,25 +22,35 @@ class RatingService(
 
     // --- ОЦЕНКА ВОДИТЕЛЯ (Делает Клиент) ---
     @Transactional
-    fun rateDriver(orderIdStr: String, score: Int, comment: String?) {
-        val order = try {
-            val uuid = java.util.UUID.fromString(orderIdStr)
-            taxiOrderRepository.findByUuid(uuid).orElseThrow { RuntimeException("Замовлення не знайдено") }
-        } catch (e: IllegalArgumentException) {
-            val idLong = orderIdStr.toLongOrNull() ?: throw RuntimeException("Невірний формат ID")
-            taxiOrderRepository.findById(idLong).orElseThrow { RuntimeException("Замовлення не знайдено") }
+    fun rateDriver(clientUser: User, orderIdStr: String, score: Int, comment: String?) {
+        if (score !in 1..5) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оцінка повинна бути від 1 до 5")
         }
 
-        if (order.driver == null) throw RuntimeException("У замовлення немає водія")
-        if (order.isRatedByClient) throw RuntimeException("Ви вже оцінили цю поїздку")
+        val order = try {
+            val uuid = java.util.UUID.fromString(orderIdStr)
+            taxiOrderRepository.findByUuid(uuid).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+        } catch (e: IllegalArgumentException) {
+            val idLong = orderIdStr.toLongOrNull() ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невірний формат ID")
+            taxiOrderRepository.findById(idLong).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+        }
+
+        if (order.client.id != clientUser.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви не можете оцінити чуже замовлення")
+        }
+        if (order.status != OrderStatus.COMPLETED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оцінити можна тільки завершену поїздку")
+        }
+        if (order.driver == null) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "У замовлення немає водія")
+        if (order.isRatedByClient) throw ResponseStatusException(HttpStatus.CONFLICT, "Ви вже оцінили цю поїздку")
 
         // 1. Создаем рейтинг
         val rating = OrderRating(
             order = order,
-            source = RatingSource.CLIENT, // Оценил клиент
-            targetUser = order.driver!!,  // Оценили водителя
+            source = RatingSource.CLIENT,
+            targetUser = order.driver!!,
             score = score,
-            comment = comment
+            comment = comment?.take(1000)
         )
         orderRatingRepository.save(rating)
 
@@ -50,24 +64,34 @@ class RatingService(
 
     // --- ОЦЕНКА КЛИЕНТА (Делает Водитель) ---
     @Transactional
-    fun rateClient(orderIdStr: String, score: Int, comment: String?) {
-        val order = try {
-            val uuid = java.util.UUID.fromString(orderIdStr)
-            taxiOrderRepository.findByUuid(uuid).orElseThrow { RuntimeException("Замовлення не знайдено") }
-        } catch (e: IllegalArgumentException) {
-            val idLong = orderIdStr.toLongOrNull() ?: throw RuntimeException("Невірний формат ID")
-            taxiOrderRepository.findById(idLong).orElseThrow { RuntimeException("Замовлення не знайдено") }
+    fun rateClient(driverUser: User, orderIdStr: String, score: Int, comment: String?) {
+        if (score !in 1..5) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оцінка повинна бути від 1 до 5")
         }
 
-        if (order.isRatedByDriver) throw RuntimeException("Ви вже оцінили цього пасажира")
+        val order = try {
+            val uuid = java.util.UUID.fromString(orderIdStr)
+            taxiOrderRepository.findByUuid(uuid).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+        } catch (e: IllegalArgumentException) {
+            val idLong = orderIdStr.toLongOrNull() ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невірний формат ID")
+            taxiOrderRepository.findById(idLong).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+        }
+
+        if (order.driver?.id != driverUser.id) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви не були водієм цього замовлення")
+        }
+        if (order.status != OrderStatus.COMPLETED) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оцінити можна тільки завершену поїздку")
+        }
+        if (order.isRatedByDriver) throw ResponseStatusException(HttpStatus.CONFLICT, "Ви вже оцінили цього пасажира")
 
         // 1. Создаем рейтинг
         val rating = OrderRating(
             order = order,
-            source = RatingSource.DRIVER, // Оценил водитель
-            targetUser = order.client,    // Оценили клиента
+            source = RatingSource.DRIVER,
+            targetUser = order.client,
             score = score,
-            comment = comment
+            comment = comment?.take(1000)
         )
         orderRatingRepository.save(rating)
 
@@ -82,24 +106,22 @@ class RatingService(
     // --- ЛОГИКА ПЕРЕСЧЕТА ---
 
     private fun recalculateDriverRating(driverId: Long) {
-        // Берем последние 100 оценок (источник CLIENT -> значит оценили водителя)
         val lastRatings = orderRatingRepository.findByTargetUserIdAndSourceAndIsIgnoredFalseOrderByCreatedAtDesc(
             driverId, RatingSource.CLIENT, PageRequest.of(0, 100)
         )
-        
+
         if (lastRatings.isEmpty()) return
 
         val avg = lastRatings.map { it.score }.average()
-        val count = lastRatings.size // или countTotal, если нужно общее число за всё время
+        val count = lastRatings.size
 
         val driver = driverRepository.findById(driverId).orElseThrow()
-        driver.rating = String.format("%.2f", avg).replace(',', '.').toDouble()
+        driver.rating = String.format(java.util.Locale.US, "%.2f", avg).toDouble()
         driver.ratingCount = count
         driverRepository.save(driver)
     }
 
     private fun recalculateClientRating(clientId: Long) {
-        // Берем последние 40 оценок (источник DRIVER -> значит оценили клиента)
         val lastRatings = orderRatingRepository.findByTargetUserIdAndSourceAndIsIgnoredFalseOrderByCreatedAtDesc(
             clientId, RatingSource.DRIVER, PageRequest.of(0, 40)
         )
@@ -110,29 +132,28 @@ class RatingService(
         val count = lastRatings.size
 
         val client = clientRepository.findById(clientId).orElseThrow()
-        client.rating = String.format("%.2f", avg).replace(',', '.').toDouble()
+        client.rating = String.format(java.util.Locale.US, "%.2f", avg).toDouble()
         client.ratingCount = count
         clientRepository.save(client)
     }
 
     // --- ДЛЯ АДМИНКИ ---
-    
+
     @Transactional
     fun toggleIgnoreRating(ratingId: Long) {
         val rating = orderRatingRepository.findById(ratingId)
-            .orElseThrow { RuntimeException("Рейтинг не знайдено") }
-        
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Рейтинг не знайдено") }
+
         rating.isIgnored = !rating.isIgnored
         orderRatingRepository.save(rating)
 
-        // Пересчет
         if (rating.source == RatingSource.CLIENT) {
             recalculateDriverRating(rating.targetUser.id!!)
         } else {
             recalculateClientRating(rating.targetUser.id!!)
         }
     }
-    
+
     fun getAllRatings(): List<OrderRating> {
         return orderRatingRepository.findAllByOrderByCreatedAtDesc()
     }

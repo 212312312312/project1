@@ -4,31 +4,32 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.taxiapp.server.dto.auth.LoginResponse
 import com.taxiapp.server.dto.auth.MessageResponse
 import com.taxiapp.server.dto.auth.SmsRequestDto
+import com.taxiapp.server.dto.driver.CarDto
 import com.taxiapp.server.dto.driver.DriverDto
+import com.taxiapp.server.dto.driver.DriverNotificationDto
 import com.taxiapp.server.dto.driver.UpdateDriverRequest
 import com.taxiapp.server.dto.driver.UpdateDriverStatusRequest
 import com.taxiapp.server.dto.driver.UpdateLocationRequest
-import com.taxiapp.server.dto.driver.CarDto // ИСПРАВЛЕНО: Добавлен импорт для CarDto
 import com.taxiapp.server.model.enums.CarStatus
 import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.CarRepository
-import org.springframework.security.access.prepost.PreAuthorize
+import com.taxiapp.server.repository.DriverNotificationRepository
 import com.taxiapp.server.repository.DriverRepository
+import com.taxiapp.server.security.JwtUtils
 import com.taxiapp.server.service.DriverLocationService
 import com.taxiapp.server.service.DriverService
 import com.taxiapp.server.service.FileStorageService
-import com.taxiapp.server.service.SettingsService
-import com.taxiapp.server.security.JwtUtils
-import jakarta.servlet.http.HttpServletRequest
 import com.taxiapp.server.service.LiqPayService
+import com.taxiapp.server.service.SettingsService
 import jakarta.validation.Valid
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.messaging.simp.SimpMessagingTemplate
+import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.web.bind.annotation.*
@@ -36,10 +37,6 @@ import org.springframework.web.multipart.MultipartHttpServletRequest
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import com.taxiapp.server.repository.DriverNotificationRepository
-import com.taxiapp.server.dto.driver.DriverNotificationDto
-
-// --- DTO КЛАССЫ ---
 
 data class SosSignalDto(
     val driverId: Long,
@@ -67,11 +64,10 @@ data class WalletTransactionDto(
     val operationType: String,
     val description: String?,
     val createdAt: String,
-    val balanceAfter: Double, // ДОБАВЛЕНО: Остаток баланса после операции
-    val orderId: Long?        // ДОБАВЛЕНО: ID заказа для клика и перехода в детали
+    val balanceAfter: Double,
+    val orderId: Long?
 )
 
-// ДТО для карт выплат водителя
 data class DriverCardDto(
     val id: Long,
     val cardNumber: String,
@@ -152,33 +148,32 @@ class DriverAppController(
         if (!driver.isAccountNonLocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблокований")
         }
-        
+
         val updatedDriverDto = driverService.updateSelectedTariffs(driver.id!!, selectedIds)
         return ResponseEntity.ok(updatedDriverDto)
     }
 
     @PostMapping("/location")
-fun updateLocation(
-    @AuthenticationPrincipal user: User,
-    @RequestBody request: UpdateLocationRequest
-): ResponseEntity<Void> {
-    if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-    
-    try {
-        driverLocationService.updateLocation(user.uuid, request)
-    } catch (e: Exception) {
-        println(">>> ОШИБКА ОБНОВЛЕНИЯ ЛОКАЦИИ ВОДИТЕЛЯ ${user.id}: ${e.message}")
-    }
-    return ResponseEntity.ok().build()
-}
+    fun updateLocation(
+        @AuthenticationPrincipal user: User,
+        @RequestBody request: UpdateLocationRequest
+    ): ResponseEntity<Void> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
 
-    // ПОЛНОСТЬЮ ЗАМЕНИ ЭТИ ДВА МЕТОДА В DriverAppController.kt
+        try {
+            // Передаем объект Driver напрямую, чтобы избежать лишнего поиска в PostgreSQL на каждый GPS-пинг
+            driverLocationService.updateLocation(user, request)
+        } catch (e: Exception) {
+            println(">>> ОШИБКА ОБНОВЛЕНИЯ ЛОКАЦИИ ВОДИТЕЛЯ ${user.id}: ${e.message}")
+        }
+        return ResponseEntity.ok().build()
+    }
 
     @GetMapping("/transactions")
     fun getTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         val transactions = driverService.getDriverTransactions(user)
-        
+
         val dtos = transactions.map { tx ->
             WalletTransactionDto(
                 id = tx.id ?: 0L,
@@ -187,7 +182,7 @@ fun updateLocation(
                 description = tx.description,
                 createdAt = tx.createdAt.toString(),
                 balanceAfter = tx.balanceAfter,
-                orderId = tx.orderId // 👈 Напрямую читаем заполненное поле из БД
+                orderId = tx.orderId
             )
         }
         return ResponseEntity.ok(dtos)
@@ -197,7 +192,7 @@ fun updateLocation(
     fun getPendingTransactions(@AuthenticationPrincipal user: User): ResponseEntity<List<WalletTransactionDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         val transactions = driverService.getPendingDriverTransactions(user)
-        
+
         val dtos = transactions.map { tx ->
             WalletTransactionDto(
                 id = tx.id ?: 0L,
@@ -206,15 +201,12 @@ fun updateLocation(
                 description = tx.description,
                 createdAt = tx.createdAt.toString(),
                 balanceAfter = tx.balanceAfter,
-                orderId = tx.orderId // 👈 Напрямую читаем заполненное поле из БД
+                orderId = tx.orderId
             )
         }
         return ResponseEntity.ok(dtos)
     }
 
-   
-
-    // --- НОВЫЙ ЭНДПОИНТ: СОХРАНЕНИЕ АКТУАЛЬНОГО FCM ТОКЕНА ВОДИТЕЛЯ ---
     @PostMapping("/profile/fcm-token")
     fun updateFcmToken(
         @AuthenticationPrincipal userDetails: UserDetails,
@@ -222,7 +214,7 @@ fun updateLocation(
     ): ResponseEntity<MessageResponse> {
         val driver = getDriverFromUser(userDetails)
         val token = request["token"]
-        
+
         if (token.isNullOrBlank()) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Токен не може бути порожнім")
         }
@@ -233,7 +225,6 @@ fun updateLocation(
         return ResponseEntity.ok(MessageResponse("FCM токен водія успішно оновлено"))
     }
 
-    // --- ЭНДПОИНТЫ КАРТ ВЫПЛАТ ---
     @GetMapping("/cards")
     fun getCards(@AuthenticationPrincipal user: User): ResponseEntity<List<DriverCardDto>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
@@ -242,12 +233,10 @@ fun updateLocation(
         return ResponseEntity.ok(dtos)
     }
 
-    // Заменяем на эндпоинт инициализации привязки через LiqPay
     @PostMapping("/cards/init")
     fun initAddCard(@AuthenticationPrincipal user: User): ResponseEntity<Map<String, String>> {
         if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-        
-        // Генерируем безопасную веб-ссылку на форму LiqPay для нашего WebView
+
         val url = liqPayService.generateDriverBindCardUrl(user.id!!)
         return ResponseEntity.ok(mapOf("url" to url))
     }
@@ -275,28 +264,26 @@ fun updateLocation(
         ))
     }
 
-    // 3. Замени метод sendSosSignal на чистый:
-@PostMapping("/sos")
-fun sendSosSignal(
-    @RequestBody loc: UpdateLocationRequest, 
-    @AuthenticationPrincipal userDetails: UserDetails
-): ResponseEntity<String> {
-    val driver = getDriverFromUser(userDetails)
-    val verifiedLocation = driverLocationService.getDriverLocation(driver.id!!) ?: loc
-    
-    val sosDto = SosSignalDto(
-        driverId = driver.id!!, 
-        driverName = driver.fullName ?: "Водій",
-        phone = driver.userPhone ?: "Не вказано", 
-        carNumber = driver.car?.plateNumber ?: "Без авто",
-        lat = verifiedLocation.lat, 
-        lng = verifiedLocation.lng, 
-        timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
-    )
-    messagingTemplate.convertAndSend("/topic/admin/sos", sosDto)
-    return ResponseEntity.ok("SOS Sent")
-}
+    @PostMapping("/sos")
+    fun sendSosSignal(
+        @RequestBody loc: UpdateLocationRequest,
+        @AuthenticationPrincipal userDetails: UserDetails
+    ): ResponseEntity<String> {
+        val driver = getDriverFromUser(userDetails)
+        val verifiedLocation = driverLocationService.getDriverLocation(driver.id!!) ?: loc
 
+        val sosDto = SosSignalDto(
+            driverId = driver.id!!,
+            driverName = driver.fullName ?: "Водій",
+            phone = driver.userPhone ?: "Не вказано",
+            carNumber = driver.car?.plateNumber ?: "Без авто",
+            lat = verifiedLocation.lat,
+            lng = verifiedLocation.lng,
+            timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+        )
+        messagingTemplate.convertAndSend("/topic/admin/sos", sosDto)
+        return ResponseEntity.ok("SOS Sent")
+    }
 
     @GetMapping("/me")
     fun getDriverProfile(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<DriverDto> {
@@ -307,14 +294,14 @@ fun sendSosSignal(
     @PostMapping("/profile/change-phone/request-current")
     fun requestCodeForCurrentPhone(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<MessageResponse> {
         val driver = getDriverFromUser(userDetails)
-        driverService.sendVerificationCodeToCurrentPhone(driver) 
+        driverService.sendVerificationCodeToCurrentPhone(driver)
         return ResponseEntity.ok(MessageResponse("Код відправлено на поточний номер"))
     }
 
     @PostMapping("/profile/change-phone/verify-current")
     fun verifyCurrentPhoneCode(
         @AuthenticationPrincipal userDetails: UserDetails,
-        @RequestBody request: CodeVerifyRequest 
+        @RequestBody request: CodeVerifyRequest
     ): ResponseEntity<Map<String, String>> {
         val driver = getDriverFromUser(userDetails)
         val changeToken = driverService.verifyCurrentPhoneCode(driver, request.code)
@@ -342,8 +329,6 @@ fun sendSosSignal(
         return ResponseEntity.ok(restoredDriver)
     }
 
-
-    
     @PostMapping("/profile/change-phone/confirm-new")
     fun confirmNewPhone(
         @AuthenticationPrincipal userDetails: UserDetails,
@@ -353,7 +338,7 @@ fun sendSosSignal(
         val updatedUser = driverService.changePhone(driver, request.newPhone, request.code, request.changeToken)
         val newToken = jwtUtils.generateToken(updatedUser, updatedUser.uuid, updatedUser.role.name)
         val newRefreshToken = authService.createRefreshToken(updatedUser.id!!)
-        
+
         return ResponseEntity.ok(LoginResponse(
             token = newToken,
             refreshToken = newRefreshToken.token,
@@ -380,12 +365,12 @@ fun sendSosSignal(
     }
 
     @DeleteMapping("/location")
-fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
-    if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-    
-    driverLocationService.clearLocation(user.id!!)
-    return ResponseEntity.ok().build()
-}
+    fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
+        if (user !is Driver) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
+        driverLocationService.clearLocation(user.id!!)
+        return ResponseEntity.ok().build()
+    }
 
     @GetMapping("/forms/add-car")
     @PreAuthorize("permitAll()")
@@ -398,26 +383,25 @@ fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
 
     @PostMapping("/cars/add", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
     fun addCar(
-        @AuthenticationPrincipal userDetails: UserDetails, // <--- ИЗМЕНЕНО: Защита OWASP через контекст сессии Spring Security вместо токена в URL
+        @AuthenticationPrincipal userDetails: UserDetails,
         @RequestParam("data") carJson: String,
         request: MultipartHttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
-        val driver = getDriverFromUser(userDetails) // <--- ИЗМЕНЕНО: Извлекаем надежно привязанного водителя
-        
+        val driver = getDriverFromUser(userDetails)
         val savedPhotos = mutableMapOf<String, String>()
-        
-        // --- ЗАЩИТА: Список разрешенных безопасных расширений изображений (Anti-Webshell / Anti-XSS) ---
-        val allowedExtensions = listOf("jpg", "jpeg", "png", "svg")
+
+        // ЗАЩИТА: SVG строго запрещен (защита от Stored XSS), разрешены только растровые форматы
+        val allowedExtensions = listOf("jpg", "jpeg", "png", "webp")
 
         request.fileMap.forEach { (key, file) ->
             if (!file.isEmpty) {
                 val originalFilename = file.originalFilename ?: "file"
                 val extension = originalFilename.substringAfterLast('.', "").lowercase()
-                
+
                 if (extension !in allowedExtensions) {
-                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимий тип файлу: .$extension. Дозволені тільки зображення.")
+                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимий тип файлу: .$extension. Дозволені тільки JPG, PNG, WEBP.")
                 }
-                
+
                 savedPhotos[key] = fileStorageService.storeFile(file)
             }
         }
@@ -444,48 +428,35 @@ fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
             model = model,
             plateNumber = plate,
             color = color,
-            vin = vin, 
-            year = year, 
+            vin = vin,
+            year = year,
             techPassportFront = photo("tech_passport_front"),
-            techPassportBack  = photo("tech_passport_back"),
-            insurancePhoto    = photo("insurance_photo"),
+            techPassportBack = photo("tech_passport_back"),
+            insurancePhoto = photo("insurance_photo"),
             photoFront = photo("photo_front"),
-            photoBack  = photo("photo_back"),
-            photoLeft  = photo("photo_left"),
+            photoBack = photo("photo_back"),
+            photoLeft = photo("photo_left"),
             photoRight = photo("photo_right"),
-            photoSeatsFront = photo("photo_seats_front"), 
-            photoSeatsBack  = photo("photo_seats_back"),  
-            photoTrunk      = photo("photo_trunk"),
-            photoUrl = photo("photo_right"), 
-            status = CarStatus.PENDING 
+            photoSeatsFront = photo("photo_seats_front"),
+            photoSeatsBack = photo("photo_seats_back"),
+            photoTrunk = photo("photo_trunk"),
+            photoUrl = photo("photo_right"),
+            status = CarStatus.PENDING
         )
-        
+
         carRepository.save(newCar)
 
         return ResponseEntity.ok(mapOf(
             "success" to true,
-            "message" to "Заявка прийнята! Всі документи та фото отримано. ${make} ${model} відправлено на перевірку.",
+            "message" to "Заявка прийнята! Всі документи та фото отримано. $make $model відправлено на перевірку.",
             "carId" to newCar.id
         ))
     }
-
-    private fun validateTokenAndGetDriver(token: String): Driver {
-    try {
-        // Извлекаем UUID и ищем через репозиторий по UUID
-        val driverUuid = jwtUtils.extractUserUuid(token)
-        return driverRepository.findByUuid(driverUuid)
-            .orElseThrow { RuntimeException("Driver not found") }
-    } catch (e: Exception) {
-         throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid token")
-    }
-}
 
     @GetMapping("/cars")
     fun getMyCars(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<CarDto>> {
         val driver = getDriverFromUser(userDetails)
         val cars = carRepository.findAllByDriver(driver)
-        
-        // ИСПРАВЛЕНО: Преобразуем список Car в список CarDto, чтобы сгенерировались полные веб-ссылки на изображения
         val dtos = cars.map { CarDto(it) }
         return ResponseEntity.ok(dtos)
     }
@@ -509,7 +480,6 @@ fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
         driver.car = car
         driverRepository.save(driver)
 
-        // Авто-перерасчет доступных тарифов для выбранного автомобиля
         driverService.updateDriverAllowedTariffsForCar(driver, car)
 
         return ResponseEntity.ok(mapOf(
@@ -517,7 +487,7 @@ fun logoutFromMap(@AuthenticationPrincipal user: User): ResponseEntity<Void> {
             "allowedTariffs" to driver.allowedTariffs.map { it.name }
         ))
     }
-    
+
     private fun getDriverFromUser(userDetails: UserDetails): Driver {
         val username = userDetails.username
         return (driverRepository.findByUserLogin(username) ?: driverRepository.findByUserPhone(username))

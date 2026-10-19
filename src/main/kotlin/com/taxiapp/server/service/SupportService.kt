@@ -31,7 +31,7 @@ class SupportService(
         val message = update.message ?: return
         val chatId = message.chat.id
 
-        // 🛑 Миттєве відсікання заблокованого користувача
+        // Миттєве відсікання заблокованого користувача
         if (blockedUserRepository.existsByTelegramChatId(chatId)) {
             return
         }
@@ -43,9 +43,21 @@ class SupportService(
 
         // 1. Користувач надіслав свій контакт (номер телефону)
         if (message.contact != null) {
+            // ЗАЩИТА: Проверяем, что user_id контакта совпадает с ID отправителя сообщения в Telegram (защита от пересылки чужой визитки)
+            if (message.from?.id != null && message.contact.userId != null && message.contact.userId != message.from.id) {
+                telegramBotService.sendMessage(
+                    chatId,
+                    "❌ Будь ласка, надішліть власний номер телефону за допомогою кнопки нижче."
+                )
+                return
+            }
+
             val rawPhone = message.contact.phoneNumber
             val normalizedPhone = if (rawPhone.startsWith("+")) rawPhone else "+$rawPhone"
-            val user = userRepository.findByUserPhone(normalizedPhone).orElse(null)
+            val localPhone = if (normalizedPhone.startsWith("+380")) "0" + normalizedPhone.substring(4) else normalizedPhone
+
+            val user = userRepository.findByUserPhone(localPhone)
+                .orElseGet { userRepository.findByUserPhone(normalizedPhone).orElse(null) }
 
             val existingTicket = ticketRepository.findFirstByTelegramChatIdAndStatusNotOrderByUpdatedAtDesc(
                 chatId, TicketStatus.CLOSED
@@ -148,7 +160,6 @@ class SupportService(
             )
         )
 
-        // Відправляємо по WebSocket у диспетчерську
         messagingTemplate.convertAndSend("/topic/support/messages/${ticket.id}", mapToMessageDto(savedMsg))
         notifyTicketsChanged()
     }
@@ -282,9 +293,7 @@ class SupportService(
                 ticket.telegramChatId,
                 "🚫 Ваш доступ до чату підтримки заблоковано за порушення правил."
             )
-        } catch (e: Exception) {
-            // Ігноруємо помилки відправки Telegram при блокуванні
-        }
+        } catch (_: Exception) {}
 
         notifyTicketsChanged()
 

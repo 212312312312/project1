@@ -3,19 +3,26 @@ package com.taxiapp.server.service
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
+import org.springframework.http.client.SimpleClientHttpRequestFactory
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestClient
 
 @Service
 class SmsService(
     private val settingsService: SettingsService,
-    @Value("\${smsfly.api-key:wJNrJZBlStILNpAomo9yroCRZOK303C0}") private val apiKey: String,
+    @Value("\${smsfly.api-key:}") private val apiKey: String,
     @Value("\${smsfly.api-url:https://sms-fly.ua/api/v2/api.php}") private val apiUrl: String,
     @Value("\${smsfly.alpha-name:TAXI}") private val defaultAlphaName: String
 ) {
 
     private val logger = LoggerFactory.getLogger(SmsService::class.java)
-    private val restClient = RestClient.create()
+
+    private val restClient = RestClient.builder()
+        .requestFactory(SimpleClientHttpRequestFactory().apply {
+            setConnectTimeout(3000)
+            setReadTimeout(5000)
+        })
+        .build()
 
     /**
      * Отправка SMS с автоматическим выбором между TEST и PROD режимом
@@ -30,6 +37,11 @@ class SmsService(
             logger.info("НА НОМЕР: $phoneNumber")
             logger.info("ПОВІДОМЛЕННЯ: $message")
             logger.info("==================================================")
+            return
+        }
+
+        if (apiKey.isBlank()) {
+            logger.error("SMS-Fly API key не налаштовано (smsfly.api-key порожній)! SMS не відправлено.")
             return
         }
 
@@ -57,7 +69,7 @@ class SmsService(
 
             logger.info("Отправка реального SMS на номер (PROD): {}", maskPhoneNumber(formattedPhone))
 
-            val response = restClient.post()
+            restClient.post()
                 .uri(apiUrl)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(requestBody) // Заголовки авторизации НЕ НУЖНЫ, ключ внутри body!
@@ -80,14 +92,14 @@ class SmsService(
      * Приводит номер к формату SMS-Fly (380XXXXXXXXX без знака '+')
      */
     private fun formatPhoneForSmsFly(phone: String): String {
-    val cleaned = phone.replace(Regex("[^0-9]"), "")
-    return when {
-        cleaned.startsWith("0") -> "38$cleaned" // ✅ "0661821815" -> "380661821815"
-        cleaned.startsWith("380") -> cleaned
-        cleaned.length == 9 -> "380$cleaned" // "661821815" -> "380661821815"
-        else -> cleaned
+        val cleaned = phone.replace(Regex("[^0-9]"), "")
+        return when {
+            cleaned.startsWith("0") -> "38$cleaned" // "0661821815" -> "380661821815"
+            cleaned.startsWith("380") -> cleaned
+            cleaned.length == 9 -> "380$cleaned" // "661821815" -> "380661821815"
+            else -> cleaned
+        }
     }
-}
 
     /**
      * Маскирование номера для безопасного логирования в PROD

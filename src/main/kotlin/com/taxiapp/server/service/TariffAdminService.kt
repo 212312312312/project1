@@ -20,15 +20,14 @@ class TariffAdminService(
     private val objectMapper: ObjectMapper,
     private val redisTemplate: RedisTemplate<String, Any>,
     private val appSettingRepository: AppSettingRepository,
-    private val evoSService: EvoSService // 👈 ДОБАВИТЬ В КОНСТРУКТОР
+    private val evoSService: EvoSService
 ) {
     private val CACHE_KEY = "tariffs:all"
 
-    // 🔥 ИСПРАВЛЕНО: Теперь вызываем buildFullUrl из FileStorageService
     private fun buildImageUrl(filename: String?): String? {
         return fileStorageService.buildFullUrl(filename)
     }
-    
+
     // Конвертация в DTO
     private fun toDto(tariff: CarTariff): CarTariffDto {
         return CarTariffDto(
@@ -49,12 +48,12 @@ class TariffAdminService(
             imageUrl = buildImageUrl(tariff.imageUrl)
         )
     }
-    
+
     @Transactional
     fun reorderTariff(id: Long, direction: String): List<CarTariffDto> {
         val tariffs = tariffRepository.findAllByIsActiveTrueOrderBySortOrderAsc()
         val currentIndex = tariffs.indexOfFirst { it.id == id }
-        
+
         if (currentIndex == -1) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено")
         }
@@ -78,21 +77,15 @@ class TariffAdminService(
             tariffRepository.saveAll(tariffs)
             redisTemplate.delete(CACHE_KEY)
         }
-        
+
         return tariffRepository.findAllByIsActiveTrueOrderBySortOrderAsc().map { toDto(it) }
     }
 
     @Transactional(readOnly = true)
     fun getAllTariffs(): List<CarTariffDto> {
-        // Если в кэше старые данные без http/https — сбрасываем кэш
         val cached = redisTemplate.opsForValue().get(CACHE_KEY) as? List<*>
         if (cached != null) {
-            val list = cached.map { objectMapper.convertValue(it, CarTariffDto::class.java) }
-            val hasOldUrls = list.any { it.imageUrl != null && !it.imageUrl!!.startsWith("http") }
-            if (!hasOldUrls) {
-                return list
-            }
-            redisTemplate.delete(CACHE_KEY) // Сбрасываем устаревший кэш
+            return cached.map { objectMapper.convertValue(it, CarTariffDto::class.java) }
         }
 
         val tariffs = tariffRepository.findAllByIsActiveTrueOrderBySortOrderAsc().map { toDto(it) }
@@ -103,7 +96,7 @@ class TariffAdminService(
     @Transactional
     fun createTariff(requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
-        
+
         val filename: String? = file?.let {
             fileStorageService.storeIconAsWebp(it, 400, 400)
         }
@@ -122,10 +115,10 @@ class TariffAdminService(
             isUnavailable = request.isUnavailable,
             bodyType = request.bodyType,
             imageUrl = filename,
-            sortOrder = tariffRepository.findAll().size
+            sortOrder = tariffRepository.count().toInt()
         )
         val savedTariff = tariffRepository.save(newTariff)
-        
+
         redisTemplate.delete(CACHE_KEY)
         return toDto(savedTariff)
     }
@@ -133,7 +126,7 @@ class TariffAdminService(
     @Transactional
     fun updateTariff(tariffId: Long, requestJson: String, file: MultipartFile?): CarTariffDto {
         val request = objectMapper.readValue(requestJson, CreateTariffRequest::class.java)
-        
+
         val tariff = tariffRepository.findById(tariffId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф з ID $tariffId не знайдено") }
 
@@ -159,19 +152,19 @@ class TariffAdminService(
         tariff.imageUrl = newFilename
 
         val updatedTariff = tariffRepository.save(tariff)
-        
+
         redisTemplate.delete(CACHE_KEY)
         return toDto(updatedTariff)
     }
-    
+
     @Transactional
     fun deleteTariff(id: Long) {
         val tariff = tariffRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф з ID $id не знайдено") }
-        
+
         tariff.isActive = false
         tariffRepository.save(tariff)
-        
+
         redisTemplate.delete(CACHE_KEY)
     }
 
@@ -182,7 +175,7 @@ class TariffAdminService(
     fun getTariffById(id: Long): CarTariffDto {
         val tariff = tariffRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Тариф не знайдено") }
-        return toDto(tariff) 
+        return toDto(tariff)
     }
 
     @Transactional(readOnly = true)
@@ -197,7 +190,7 @@ class TariffAdminService(
             .orElse(com.taxiapp.server.model.setting.AppSetting(key = "min_order_distance", value = "3.0"))
         setting.value = distance.toString()
         appSettingRepository.save(setting)
-        
+
         redisTemplate.delete(CACHE_KEY)
     }
 }

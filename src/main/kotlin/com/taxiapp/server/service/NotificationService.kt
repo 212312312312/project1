@@ -1,18 +1,22 @@
 package com.taxiapp.server.service
 
+import com.google.api.core.ApiFutureCallback
+import com.google.api.core.ApiFutures
+import com.google.common.util.concurrent.MoreExecutors
+import com.google.firebase.messaging.AndroidConfig
 import com.google.firebase.messaging.FirebaseMessaging
-import org.springframework.transaction.support.TransactionSynchronization
-import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.Notification
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import com.taxiapp.server.model.notification.DriverNotification
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Driver
+import com.taxiapp.server.repository.DriverNotificationRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
-import com.taxiapp.server.repository.DriverNotificationRepository
-import com.taxiapp.server.model.notification.DriverNotification
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 @Service
 class NotificationService(
@@ -22,32 +26,53 @@ class NotificationService(
     private val logger = LoggerFactory.getLogger(NotificationService::class.java)
 
     /**
+     * Неблокирующая отправка в Firebase Cloud Messaging через sendAsync().
+     * Освобождает рабочие потоки Tomcat за доли миллисекунды!
+     */
+    private fun sendFirebaseAsync(message: Message, contextInfo: String) {
+        try {
+            val future = FirebaseMessaging.getInstance().sendAsync(message)
+            ApiFutures.addCallback(
+                future,
+                object : ApiFutureCallback<String> {
+                    override fun onSuccess(messageId: String?) {
+                        logger.info(">>> PUSH OK [{}]: {}", contextInfo, messageId)
+                    }
+
+                    override fun onFailure(t: Throwable) {
+                        logger.warn(">>> PUSH ERROR [{}]: {}", contextInfo, t.message)
+                    }
+                },
+                MoreExecutors.directExecutor()
+            )
+        } catch (e: Exception) {
+            logger.error(">>> Помилка ініціалізації FCM sendAsync [{}]: {}", contextInfo, e.message)
+        }
+    }
+
+    /**
      * МЕТОД 1: Для ВОДИТЕЛЕЙ (Data-only).
-     * Не создает уведомление в шторке сам. Будит приложение, чтобы открыть экран предложения.
      */
     fun sendOrderOffer(driver: Driver, order: TaxiOrder) {
         val token = driver.fcmToken
-
         if (token.isNullOrEmpty()) {
-            logger.error(">>> ПОМИЛКА: Немає FCM токена для водія ${driver.id}")
+            logger.warn(">>> Немає FCM токена для водія {}", driver.id)
             return
         }
 
-        // 1. Собираем сообщение ДО коммита (пока доступны все данные из базы)
         val message = try {
             Message.builder()
                 .setToken(token)
-                // ВАЖНО: Тут НЕТ .setNotification(), только data
                 .putData("type", "ORDER_OFFER")
-                .putData("orderId", order.uuid.toString()) // 🔥 ИСПРАВЛЕНО: Теперь передаем строковый UUID для контракта accept
-                .putData("idLong", order.id.toString())    // 🔥 ДОБАВЛЕНО: Числовой ID шлем отдельно для системных нотификаций
+                .putData("orderId", order.uuid.toString())
+                .putData("idLong", order.id.toString())
                 .putData("price", order.price.toString())
                 .putData("distance", ((order.distanceMeters ?: 0) / 1000.0).toString())
                 .putData("address", order.fromAddress ?: "Адреса не вказана")
                 .setAndroidConfig(
-                    com.google.firebase.messaging.AndroidConfig.builder()
-                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
-                        .setTtl(20000) // 20 секунд
+                    AndroidConfig.builder()
+                        .setPriority(AndroidConfig.Priority.HIGH)
+                        .setTtl(20000)
                         .build()
                 )
                 .build()
@@ -56,10 +81,8 @@ class NotificationService(
             return
         }
 
-        // 2. Откладываем саму сетевую отправку на момент ПОСЛЕ успешного коммита транзакции
         sendAfterCommit {
-            FirebaseMessaging.getInstance().send(message)
-            logger.info(">>> PUSH (Data Only) отправлен водителю ${driver.id} для заказа UUID: ${order.uuid}")
+            sendFirebaseAsync(message, "OrderOffer driver=${driver.id} order=${order.uuid}")
         }
     }
 
@@ -69,7 +92,7 @@ class NotificationService(
     fun sendConfirmationRequest(driver: Driver, order: TaxiOrder) {
         val token = driver.fcmToken
         if (token.isNullOrEmpty()) {
-            logger.error(">>> ПОМИЛКА: Немає FCM токена для предварительного заказа водія ${driver.id}")
+            logger.warn(">>> Немає FCM токена для попереднього замовлення водія {}", driver.id)
             return
         }
 
@@ -77,15 +100,15 @@ class NotificationService(
             Message.builder()
                 .setToken(token)
                 .putData("type", "ORDER_CONFIRMATION")
-                .putData("orderId", order.uuid.toString()) // 🔥 ИСПРАВЛЕНО: Передаем строковый UUID
-                .putData("idLong", order.id.toString())    // 🔥 ДОБАВЛЕНО: Числовой ID отдельно
+                .putData("orderId", order.uuid.toString())
+                .putData("idLong", order.id.toString())
                 .putData("price", order.price.toString())
                 .putData("address", order.fromAddress ?: "")
                 .putData("time", order.scheduledAt.toString())
                 .setAndroidConfig(
-                    com.google.firebase.messaging.AndroidConfig.builder()
-                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
-                        .setTtl(60000) // Живет 60 секунд (время на подтверждение)
+                    AndroidConfig.builder()
+                        .setPriority(AndroidConfig.Priority.HIGH)
+                        .setTtl(60000)
                         .build()
                 )
                 .build()
@@ -94,10 +117,8 @@ class NotificationService(
             return
         }
 
-        // 🔥 ИСПРАВЛЕНО: Завернуто в sendAfterCommit для транзакционной безопасности
         sendAfterCommit {
-            FirebaseMessaging.getInstance().send(message)
-            logger.info(">>> CONFIRMATION REQUEST sent to driver ${driver.id} для заказа UUID: ${order.uuid}")
+            sendFirebaseAsync(message, "OrderConfirmation driver=${driver.id} order=${order.uuid}")
         }
     }
 
@@ -105,7 +126,6 @@ class NotificationService(
      * МЕТОД 3: Сохранение системных уведомлений в историю БД и отправка в шторку.
      */
     fun saveAndSend(driver: Driver, title: String, body: String, type: String) {
-        // 1. Сохраняем в БД
         try {
             val entity = DriverNotification(
                 driver = driver,
@@ -118,7 +138,6 @@ class NotificationService(
             logger.error("Ошибка сохранения уведомления в БД: ${e.message}")
         }
 
-        // 2. Отправляем Push (если есть токен)
         if (!driver.fcmToken.isNullOrEmpty()) {
             sendNotificationToToken(driver.fcmToken!!, title, body)
         }
@@ -126,7 +145,6 @@ class NotificationService(
 
     /**
      * МЕТОД 4: Для НОВОСТЕЙ и КЛИЕНТОВ (Standard Notification).
-     * Создает уведомление в шторке (Tray). Используется в NewsService.
      */
     fun sendNotificationToToken(token: String, title: String, body: String) {
         if (token.isEmpty()) return
@@ -139,12 +157,11 @@ class NotificationService(
 
             val message = Message.builder()
                 .setToken(token)
-                .setNotification(notification) // Это заставляет Android показать уведомление автоматически
-                .putData("type", "NEWS") // Можно добавить тип, чтобы открывать NewsActivity по клику
+                .setNotification(notification)
+                .putData("type", "NEWS")
                 .build()
 
-            FirebaseMessaging.getInstance().send(message)
-            logger.info(">>> PUSH (News) отправлен на токен: ${token.take(10)}...")
+            sendFirebaseAsync(message, "News token=${token.take(10)}...")
         } catch (e: Exception) {
             logger.error(">>> Ошибка FCM (News): ${e.message}")
         }
@@ -165,8 +182,8 @@ class NotificationService(
                 .putData("title", title)
                 .putData("body", body)
                 .setAndroidConfig(
-                    com.google.firebase.messaging.AndroidConfig.builder()
-                        .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
+                    AndroidConfig.builder()
+                        .setPriority(AndroidConfig.Priority.HIGH)
                         .build()
                 )
                 .build()
@@ -175,41 +192,34 @@ class NotificationService(
             return
         }
 
-        // 🚀 Безпечна відправка строго після комміту транзакції в БД
         sendAfterCommit {
-            try {
-                FirebaseMessaging.getInstance().send(message)
-                logger.info(">>> PUSH (Data Status Update) відправлено клієнту на токен: ${token.take(10)}...")
-            } catch (e: Exception) {
-                logger.error(">>> Помилка FCM (Status Update): ${e.message}")
-                e.printStackTrace()
-            }
+            sendFirebaseAsync(message, "StatusUpdate order=$orderId status=$status")
         }
     }
+
     fun sendPhotoControlRequestNotification(driver: Driver, deadlineAt: LocalDateTime?) {
-    val token = driver.fcmToken ?: run {
-        logger.warn("У водителя ID ${driver.id} отсутствует fcmToken!")
-        return
+        val token = driver.fcmToken ?: run {
+            logger.warn("У водителя ID ${driver.id} отсутствует fcmToken!")
+            return
+        }
+
+        val timeStr = deadlineAt?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: ""
+
+        val message = Message.builder()
+            .setToken(token)
+            .putAllData(
+                mapOf(
+                    "type" to "PHOTO_CONTROL_REQUEST",
+                    "title" to "Потрібно пройти фотоконтроль",
+                    "body" to "Пройдіть фотоконтроль до $timeStr"
+                )
+            )
+            .build()
+
+        sendAfterCommit {
+            sendFirebaseAsync(message, "PhotoControlRequest driver=${driver.id}")
+        }
     }
-
-    val timeStr = deadlineAt?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: ""
-
-    val message = com.google.firebase.messaging.Message.builder()
-        .setToken(token)
-        .putAllData(mapOf(
-            "type" to "PHOTO_CONTROL_REQUEST",
-            "title" to "Потрібно пройти фотоконтроль",
-            "body" to "Пройдіть фотоконтроль до $timeStr"
-        ))
-        .build()
-
-    try {
-        FirebaseMessaging.getInstance().send(message)
-        logger.info(">>> PUSH (PhotoControl) успешно отправлен водителю ID ${driver.id} на токен: $token")
-    } catch (e: Exception) {
-        logger.error("Ошибка отправки FCM PUSH фотоконтроля: ${e.message}")
-    }
-}
 
     fun sendPhotoControlApprovedNotification(driver: Driver) {
         saveAndSend(
@@ -221,8 +231,8 @@ class NotificationService(
     }
 
     fun sendPhotoControlRejectedNotification(driver: Driver, reason: String?) {
-        val msg = if (!reason.isNullOrBlank()) "Причина: $reason. Пройдіть повторний фотоконтроль." 
-                  else "Вашу роботу обмежено до успішного проходження фотоконтролю."
+        val msg = if (!reason.isNullOrBlank()) "Причина: $reason. Пройдіть повторний фотоконтроль."
+        else "Вашу роботу обмежено до успішного проходження фотоконтролю."
         saveAndSend(
             driver,
             "Фотоконтроль відхилено",
@@ -239,6 +249,7 @@ class NotificationService(
             "PHOTO_CONTROL_EXPIRED"
         )
     }
+
     /**
      * МЕТОД 6: Уведомления о новых сообщениях чата.
      */
@@ -252,11 +263,11 @@ class NotificationService(
                 .putData("orderId", orderId.toString())
                 .build()
 
-            FirebaseMessaging.getInstance().send(message)
-            logger.info(">>> PUSH (Chat) відправлено на токен: ${token.take(10)}...")
+            sendAfterCommit {
+                sendFirebaseAsync(message, "Chat order=$orderId")
+            }
         } catch (e: Exception) {
             logger.error(">>> Помилка FCM (Chat): ${e.message}")
-            e.printStackTrace()
         }
     }
 
@@ -270,52 +281,46 @@ class NotificationService(
                     try {
                         task()
                     } catch (e: Exception) {
-                        // --- ИСПРАВЛЕНО: Логи исправлены на чистый вывод параметров ---
                         logger.error(">>> Критична помилка відправки FCM пуша після комміту: ${e.message}")
-                        e.printStackTrace() // Выведет точную системную причину в лог сервера
                     }
                 }
             })
         } else {
-            // Если активной транзакции в текущем потоке нет, выполняем отправку мгновенно
             try {
                 task()
             } catch (e: Exception) {
                 logger.error(">>> Критична помилка відправки FCM пуша (без транзакції): ${e.message}")
-                e.printStackTrace()
             }
         }
     }
 
-    // ДОБАВИТЬ ЭТОТ МЕТОД В КЛАСС NotificationService
+    fun sendOrderCancelToDriver(driver: Driver, order: TaxiOrder) {
+        val token = driver.fcmToken
+        if (token.isNullOrBlank()) return
 
-fun sendOrderCancelToDriver(driver: com.taxiapp.server.model.user.Driver, order: com.taxiapp.server.model.order.TaxiOrder) {
-    val token = driver.fcmToken // Достаем токен водителя
-    if (token.isNullOrBlank()) return
+        try {
+            val message = Message.builder()
+                .setToken(token)
+                .putData("type", "ORDER_CANCEL")
+                .putData("orderId", order.uuid.toString())
+                .putData("title", "Замовлення скасовано")
+                .putData("body", "Клієнт скасував замовлення")
+                .setAndroidConfig(
+                    AndroidConfig.builder()
+                        .setPriority(AndroidConfig.Priority.HIGH)
+                        .build()
+                )
+                .build()
 
-    try {
-        // ЗАМЕНИТЬ ТОЛЬКО ЭТОТ КУСОК СБОРКИ MESSAGE В NotificationService.kt:
-
-val message = com.google.firebase.messaging.Message.builder()
-    .setToken(token)
-    .putData("type", "ORDER_CANCEL") 
-    .putData("orderId", order.uuid.toString())
-    .putData("title", "Замовлення скасовано")
-    .putData("body", "Клієнт скасував замовлення") // Убрали хвост с номером заказа
-    .setAndroidConfig(
-        com.google.firebase.messaging.AndroidConfig.builder()
-            .setPriority(com.google.firebase.messaging.AndroidConfig.Priority.HIGH)
-            .build()
-    )
-    .build()
-
-        com.google.firebase.messaging.FirebaseMessaging.getInstance().sendAsync(message)
-    } catch (e: Exception) {
-        // Здесь можно прописать логгер, если он у тебя объявлен (например, логгер.error)
-        println("Не вдалося відправити пуш про скасування водію: ${e.message}")
+            sendAfterCommit {
+                sendFirebaseAsync(message, "OrderCancel driver=${driver.id} order=${order.uuid}")
+            }
+        } catch (e: Exception) {
+            logger.error("Не вдалося відправити пуш про скасування водію: ${e.message}")
+        }
     }
-}
-/**
+
+    /**
      * МЕТОД 7: Маркетингове нагадування про знижку, що згорає.
      */
     fun sendDiscountReminderNotification(token: String?, percent: Int, expiresAt: LocalDateTime) {
@@ -339,8 +344,7 @@ val message = com.google.firebase.messaging.Message.builder()
                 .putData("expiresAt", timeStr)
                 .build()
 
-            FirebaseMessaging.getInstance().send(message)
-            logger.info(">>> PUSH (Discount Reminder $percent%) успішно надіслано на токен: ${token.take(10)}...")
+            sendFirebaseAsync(message, "DiscountReminder $percent%")
         } catch (e: Exception) {
             logger.error(">>> Помилка FCM (Discount Reminder): ${e.message}")
         }

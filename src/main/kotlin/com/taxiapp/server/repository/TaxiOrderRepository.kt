@@ -4,7 +4,9 @@ import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
+import jakarta.persistence.LockModeType
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
@@ -20,18 +22,23 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     // --- МЕТОД ДЛЯ НАХОЖДЕНИЯ ЗАКАЗА ПО ПУБЛИЧНОМУ UUID ---
     fun findByUuid(uuid: UUID): Optional<TaxiOrder>
 
+    // --- ПЕССИМИСТИЧЕСКАЯ БЛОКИРОВКА СТРОКИ ЗАКАЗА (SELECT ... FOR UPDATE) ---
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o FROM TaxiOrder o WHERE o.id = :id")
+    fun findByIdWithLock(@Param("id") id: Long): Optional<TaxiOrder>
+
     fun findAllByClient(client: Client): List<TaxiOrder>
 
     @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.client.id = :clientId AND o.status IN :statuses")
     fun countActiveOrdersByClient(
-        @Param("clientId") clientId: Long, 
+        @Param("clientId") clientId: Long,
         @Param("statuses") statuses: List<OrderStatus>
     ): Int
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.createdAt DESC")
     fun findActiveOrders(statuses: List<OrderStatus> = listOf(
-        OrderStatus.REQUESTED, 
-        OrderStatus.ACCEPTED, 
+        OrderStatus.REQUESTED,
+        OrderStatus.ACCEPTED,
         OrderStatus.IN_PROGRESS,
         OrderStatus.SCHEDULED
     )): List<TaxiOrder>
@@ -46,26 +53,24 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.status IN (:statuses) ORDER BY o.completedAt DESC")
     fun findArchivedOrders(statuses: List<OrderStatus> = listOf(
-        OrderStatus.COMPLETED, 
+        OrderStatus.COMPLETED,
         OrderStatus.CANCELLED
     )): List<TaxiOrder>
 
     @Query("SELECT o FROM TaxiOrder o WHERE o.client.userPhone LIKE %:phone% OR o.driver.userPhone LIKE %:phone%")
     fun searchArchiveByPhone(@Param("phone") phone: String): List<TaxiOrder>
-    
+
     fun findAllByDriverAndStatusIn(driver: Driver, statuses: List<OrderStatus>): List<TaxiOrder>
 
     fun findAllByStatus(status: OrderStatus): List<TaxiOrder>
 
-    // ➕ ДОБАВИТЬ ЭТОТ МЕТОД:
     fun findAllByStatusInOrderByIdDesc(statuses: List<OrderStatus>): List<TaxiOrder>
 
     fun findAllByStatusIn(statuses: List<OrderStatus>): List<TaxiOrder>
 
     fun findAllByClientId(clientId: Long): List<TaxiOrder>
 
-    // ➕ Добавить в TaxiOrderRepository.kt:
-fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateTime): List<TaxiOrder>
+    fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateTime): List<TaxiOrder>
 
     fun findAllByDriverId(driverId: Long): List<TaxiOrder>
 
@@ -133,7 +138,7 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
     // --- МЕТОДЫ ДЛЯ ОПТИМИЗАЦИИ EVOS SCHEDULER ---
     @Query("SELECT o FROM TaxiOrder o WHERE o.isSentToEvos = false AND o.status = :status AND o.createdAt < :threshold")
     fun findAllByStatusAndIsSentToEvosFalseAndCreatedAtBefore(
-        @Param("status") status: OrderStatus, 
+        @Param("status") status: OrderStatus,
         @Param("threshold") threshold: LocalDateTime
     ): List<TaxiOrder>
 
@@ -150,8 +155,8 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
         AND o.completedAt BETWEEN :start AND :end
     """)
     fun findCompletedOrdersForStats(
-        @Param("driverId") driverId: Long, 
-        @Param("start") start: LocalDateTime, 
+        @Param("driverId") driverId: Long,
+        @Param("start") start: LocalDateTime,
         @Param("end") end: LocalDateTime
     ): List<TaxiOrder>
 
@@ -169,7 +174,7 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
     fun calculateTotalRevenue(): Double?
 
     fun countByStatus(status: OrderStatus): Long
-    
+
     @Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
     fun getTariffAnalytics(): List<Array<Any>>
 
@@ -187,64 +192,60 @@ fun findAllByStatusAndCreatedAtBefore(status: OrderStatus, threshold: LocalDateT
     """)
     fun getClientCancellationStats(): List<CancellationStatProjection>
 
+    // 1. Среднее время поиска водителя (в секундах)
+    @Query(value = """
+        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (o.accepted_at - o.created_at))), 0.0) 
+        FROM taxi_orders o 
+        WHERE o.accepted_at IS NOT NULL AND o.status = 'COMPLETED'
+    """, nativeQuery = true)
+    fun calculateAvgTimeToAcceptSeconds(): Double
 
+    // 2. Статистика эффективности кнопки Boost (+20/+40 грн)
+    @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0")
+    fun countOrdersWithBoost(): Long
 
-    // ➕ Аналитические агрегационные методы:
+    @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0 AND o.status = 'COMPLETED'")
+    fun countCompletedOrdersWithBoost(): Long
 
-// 1. Среднее время поиска водителя (в секундах)
-@Query(value = """
-    SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (o.accepted_at - o.created_at))), 0.0) 
-    FROM taxi_orders o 
-    WHERE o.accepted_at IS NOT NULL AND o.status = 'COMPLETED'
-""", nativeQuery = true)
-fun calculateAvgTimeToAcceptSeconds(): Double
+    // 3. Отмены клиентом до 60 секунд
+    @Query(value = """
+        SELECT COUNT(o.id) 
+        FROM taxi_orders o 
+        WHERE o.status = 'CANCELLED' 
+          AND o.cancelled_at IS NOT NULL 
+          AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) <= 60
+    """, nativeQuery = true)
+    fun countQuickClientCancellations(): Long
 
-// 2. Статистика эффективности кнопки Boost (+20/+40 грн)
-@Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0")
-fun countOrdersWithBoost(): Long
+    // 4. Отмены по таймауту поиска
+    @Query(value = """
+        SELECT COUNT(o.id) 
+        FROM taxi_orders o 
+        WHERE (o.accepted_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.accepted_at - o.created_at)) > 180)
+           OR (o.status = 'CANCELLED' AND o.cancelled_at IS NOT NULL AND o.accepted_at IS NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) > 180)
+           OR (o.status IN ('REQUESTED', 'OFFERING') AND EXTRACT(EPOCH FROM (NOW() - o.created_at)) > 180)
+    """, nativeQuery = true)
+    fun countTimeoutCancellations(): Long
 
-@Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0 AND o.status = 'COMPLETED'")
-fun countCompletedOrdersWithBoost(): Long
-
-// 3. Отмены клиентом до 60 секунд
-@Query(value = """
-    SELECT COUNT(o.id) 
-    FROM taxi_orders o 
-    WHERE o.status = 'CANCELLED' 
-      AND o.cancelled_at IS NOT NULL 
-      AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) <= 60
-""", nativeQuery = true)
-fun countQuickClientCancellations(): Long
-
-// 4. Отмены по таймауту поиска
-@Query(value = """
-    SELECT COUNT(o.id) 
-    FROM taxi_orders o 
-    WHERE (o.accepted_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.accepted_at - o.created_at)) > 180)
-       OR (o.status = 'CANCELLED' AND o.cancelled_at IS NOT NULL AND o.accepted_at IS NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) > 180)
-       OR (o.status IN ('REQUESTED', 'OFFERING') AND EXTRACT(EPOCH FROM (NOW() - o.created_at)) > 180)
-""", nativeQuery = true)
-fun countTimeoutCancellations(): Long
-
-// 5. Среднее число дней до совершения 8 поездки активным клиентом
-@Query(value = """
-    WITH client_8th_ride AS (
-        SELECT client_id, created_at,
-               ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY created_at ASC) as rn
-        FROM taxi_orders
-        WHERE status = 'COMPLETED'
-    ),
-    client_first_ride AS (
-        SELECT client_id, created_at as first_ride_at
-        FROM client_8th_ride
-        WHERE rn = 1
-    )
-    SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (r8.created_at - f.first_ride_at)) / 86400.0), 0.0)
-    FROM client_8th_ride r8
-    JOIN client_first_ride f ON r8.client_id = f.client_id
-    WHERE r8.rn = 8
-""", nativeQuery = true)
-fun calculateAvgDaysTo8thRide(): Double
+    // 5. Среднее число дней до совершения 8 поездки активным клиентом
+    @Query(value = """
+        WITH client_8th_ride AS (
+            SELECT client_id, created_at,
+                   ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY created_at ASC) as rn
+            FROM taxi_orders
+            WHERE status = 'COMPLETED'
+        ),
+        client_first_ride AS (
+            SELECT client_id, created_at as first_ride_at
+            FROM client_8th_ride
+            WHERE rn = 1
+        )
+        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (r8.created_at - f.first_ride_at)) / 86400.0), 0.0)
+        FROM client_8th_ride r8
+        JOIN client_first_ride f ON r8.client_id = f.client_id
+        WHERE r8.rn = 8
+    """, nativeQuery = true)
+    fun calculateAvgDaysTo8thRide(): Double
 }
 
 interface CancellationStatProjection {

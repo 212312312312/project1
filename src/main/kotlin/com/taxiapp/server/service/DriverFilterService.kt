@@ -30,13 +30,12 @@ class DriverFilterService(
         val activeFilters = filterRepository.findAllByDriverId(driverId)
             .filter { it.isActive }
             .filter { it.id != excludeFilterId }
-        
+
         if (activeFilters.size >= 3) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Максимум 3 активних фільтри")
         }
     }
 
-    // ВАЖНО: Валидация несовместимых режимов
     private fun validateModes(isAuto: Boolean, isCycle: Boolean) {
         if (isAuto && isCycle) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Неможливо включити Авто і Цикл одночасно")
@@ -49,22 +48,21 @@ class DriverFilterService(
     }
 
     @Transactional
-fun createFilter(req: CreateFilterRequest): DriverFilterDto {
-    val driverId = getCurrentDriverId()
-    val driver = driverRepository.findById(driverId)
-        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+    fun createFilter(req: CreateFilterRequest): DriverFilterDto {
+        val driverId = getCurrentDriverId()
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
 
-    // ДОБАВЛЕНО: Запрет на работу с фильтрами при ограничении
-    if (driver.photoControlRestricted) {
-        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
-    }
+        if (driver.photoControlRestricted) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+        }
 
-    if (!driver.isOnline) {
-        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-    }
-        // Визначаємо isActive: якщо хоч щось включено -> фільтр активний
+        if (!driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
+
         val isActive = req.isEther || req.isAuto || req.isCycle
-        
+
         if (isActive) {
             checkActiveFiltersLimit(driverId)
             validateModes(req.isAuto, req.isCycle)
@@ -75,9 +73,8 @@ fun createFilter(req: CreateFilterRequest): DriverFilterDto {
             name = req.name,
             isActive = isActive,
             isEther = req.isEther,
-            isAuto = req.isAuto,   
-            isCycle = req.isCycle, 
-            
+            isAuto = req.isAuto,
+            isCycle = req.isCycle,
             fromType = req.fromType,
             fromDistance = req.fromDistance,
             fromSectors = req.fromSectors.toMutableList(),
@@ -95,38 +92,32 @@ fun createFilter(req: CreateFilterRequest): DriverFilterDto {
     }
 
     @Transactional
-fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
-    val filter = filterRepository.findById(id)
-        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Фільтр не знайдено") }
+    fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
+        val filter = filterRepository.findById(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Фільтр не знайдено") }
 
-    if (filter.driver.id != getCurrentDriverId()) {
-        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваш фільтр")
-    }
+        if (filter.driver.id != getCurrentDriverId()) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваш фільтр")
+        }
 
-    // 1. ВАЛИДАЦИЯ: Нельзя Auto и Cycle одновременно
-    if (req.isAuto && req.isCycle) {
-         throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Авто і Цикл не можуть працювати разом")
-    }
+        if (req.isAuto && req.isCycle) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Авто і Цикл не можуть працювати разом")
+        }
 
-    // 2. ЛОГИКА: Вычисляем активность
-    val shouldBeActive = req.isEther || req.isAuto || req.isCycle
+        val shouldBeActive = req.isEther || req.isAuto || req.isCycle
 
-    // ДОБАВЛЕНО: Если пытаются включить режим при ограничении
-    if (shouldBeActive && filter.driver.photoControlRestricted) {
-        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
-    }
+        if (shouldBeActive && filter.driver.photoControlRestricted) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+        }
 
-    // 3. ПРОВЕРКА ОНЛАЙНА
-    if (shouldBeActive && !filter.driver.isOnline) {
-        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-    }
+        if (shouldBeActive && !filter.driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
 
-        // 4. ЛИМИТЫ: Если фильтр переходит из выключенного в активное состояние — проверяем лимит (макс 3)
         if (shouldBeActive && !filter.isActive) {
             checkActiveFiltersLimit(getCurrentDriverId(), excludeFilterId = id)
         }
 
-        // 5. СОХРАНЕНИЕ: Обновляем состояние сущности в БД
         filter.isActive = shouldBeActive
         filter.isEther = req.isEther
         filter.isAuto = req.isAuto
@@ -140,7 +131,16 @@ fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
         val filter = filterRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Фільтр не знайдено") }
 
-        if (filter.driver.id != getCurrentDriverId()) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+        val currentDriverId = getCurrentDriverId()
+        if (filter.driver.id != currentDriverId) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
+        val isActive = req.isEther || req.isAuto || req.isCycle
+        if (isActive) {
+            validateModes(req.isAuto, req.isCycle)
+            if (!filter.isActive) {
+                checkActiveFiltersLimit(currentDriverId, excludeFilterId = id)
+            }
+        }
 
         filter.name = req.name
         filter.fromType = req.fromType
@@ -157,11 +157,7 @@ fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
         filter.complexPriceKmCity = req.complexPriceKmCity
         filter.complexPriceKmSuburbs = req.complexPriceKmSuburbs
         filter.paymentType = req.paymentType
-        
-        // Режими
-        val isActive = req.isEther || req.isAuto || req.isCycle
-        if (isActive) validateModes(req.isAuto, req.isCycle)
-        
+
         filter.isActive = isActive
         filter.isEther = req.isEther
         filter.isAuto = req.isAuto
@@ -170,35 +166,38 @@ fun updateFilterMode(id: Long, req: UpdateFilterModeRequest): DriverFilterDto {
         return mapToDto(filterRepository.save(filter))
     }
 
-    // toggleFilter, disableAll, deleteFilter залишаються без змін...
     @Transactional
-fun toggleFilter(id: Long) {
-    val filter = filterRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
-    if (filter.driver.id != getCurrentDriverId()) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-    
-    // ДОБАВЛЕНО: Запрет включать фильтр при ограничении
-    if (!filter.isActive && filter.driver.photoControlRestricted) {
-        throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+    fun toggleFilter(id: Long) {
+        val filter = filterRepository.findById(id).orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
+        if (filter.driver.id != getCurrentDriverId()) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+
+        if (!filter.isActive && filter.driver.photoControlRestricted) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+        }
+
+        if (!filter.isActive && !filter.driver.isOnline) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+        }
+        if (!filter.isActive) checkActiveFiltersLimit(getCurrentDriverId(), id)
+
+        filter.isActive = !filter.isActive
     }
 
-    if (!filter.isActive && !filter.driver.isOnline) {
-        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-    }
-    if (!filter.isActive) checkActiveFiltersLimit(getCurrentDriverId(), id)
-    
-    filter.isActive = !filter.isActive
-}
-    
     @Transactional
     fun disableAll() {
         val filters = filterRepository.findAllByDriverId(getCurrentDriverId())
         filters.forEach { it.isActive = false }
     }
 
+    // ЗАЩИТА ОТ IDOR: Проверяем владельца фильтра перед удалением
     @Transactional
     fun deleteFilter(id: Long) {
-        if (!filterRepository.existsById(id)) throw ResponseStatusException(HttpStatus.NOT_FOUND)
-        filterRepository.deleteById(id)
+        val filter = filterRepository.findById(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Фільтр не знайдено") }
+        if (filter.driver.id != getCurrentDriverId()) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Це не ваш фільтр")
+        }
+        filterRepository.delete(filter)
     }
 
     private fun mapToDto(f: DriverFilter) = DriverFilterDto(
@@ -228,7 +227,7 @@ fun toggleFilter(id: Long) {
         if (f.isEther) modes.add("Ефір")
         if (f.isAuto) modes.add("Авто")
         if (f.isCycle) modes.add("Цикл")
-        
+
         val modeStr = if (modes.isEmpty()) "Налаштування" else modes.joinToString("+")
         val from = if (f.fromType == "DISTANCE") "R${f.fromDistance}" else "Сектори"
         return "$modeStr • $from"

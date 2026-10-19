@@ -1,31 +1,32 @@
 package com.taxiapp.server.service
 
+import net.coobird.thumbnailator.Thumbnails
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.io.Resource
 import org.springframework.core.io.UrlResource
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
-import java.io.IOException
-import net.coobird.thumbnailator.Thumbnails
+import org.springframework.web.server.ResponseStatusException
 import java.awt.image.BufferedImage
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
-import javax.imageio.ImageIO
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.UUID
+import javax.imageio.ImageIO
 
 @Service
 class FileStorageService {
 
-    // Считываем URL сервера из application.properties (по умолчанию http://localhost:8080)
     @Value("\${app.server.url:http://localhost:8080}")
     private lateinit var serverUrl: String
 
-    // Жестко привязываем путь к папке uploads в корне проекта
-    private val rootLocation: Path = Paths.get(System.getProperty("user.dir"), "uploads")
+    // Жестко привязываем путь к папке uploads в корне проекта (нормализованный абсолютный путь)
+    private val rootLocation: Path = Paths.get(System.getProperty("user.dir"), "uploads").toAbsolutePath().normalize()
+
+    // ЗАЩИТА: SVG, HTML, JS строго запрещены для защиты от Stored XSS!
+    private val allowedImageExtensions = setOf("jpg", "jpeg", "png", "webp")
 
     init {
         try {
@@ -37,31 +38,42 @@ class FileStorageService {
         }
     }
 
+    // Централизованная защита от Path Traversal (../)
+    private fun resolveSafePath(filename: String): Path {
+        val cleanName = Paths.get(filename).fileName.toString()
+        val resolved = rootLocation.resolve(cleanName).normalize().toAbsolutePath()
+        if (!resolved.startsWith(rootLocation)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустиме ім'я файлу")
+        }
+        return resolved
+    }
+
     fun storeIconAsWebp(file: MultipartFile, targetWidth: Int = 400, targetHeight: Int = 400): String {
-        if (file.isEmpty) throw RuntimeException("Файл порожній.")
+        if (file.isEmpty) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Файл порожній.")
 
         val originalImage = ImageIO.read(file.inputStream)
-            ?: throw RuntimeException("Неможливо декодувати зображення.")
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Неможливо декодувати зображення.")
 
-        // 1. Авто-обрезка прозрачных полей (Auto-trim)
+        // Защита от Pixel Flood / Decompression Bomb OOM
+        if (originalImage.width > 8000 || originalImage.height > 8000) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Зображення занадто велике")
+        }
+
         val trimmedImage = trimTransparentBorders(originalImage)
 
-        // 2. Пропорциональное масштабирование в bounding box (targetWidth x targetHeight)
         val scaledImage = Thumbnails.of(trimmedImage)
             .size(targetWidth, targetHeight)
             .keepAspectRatio(true)
             .asBufferedImage()
 
-        // 3. Сохранение в формате .webp
         val uuid = UUID.randomUUID().toString()
         val webpFilename = "$uuid.webp"
-        val destinationFile = rootLocation.resolve(webpFilename).normalize().toAbsolutePath()
+        val destinationFile = resolveSafePath(webpFilename)
 
         val webpWritten = ImageIO.write(scaledImage, "webp", destinationFile.toFile())
         if (!webpWritten) {
-            // Fallback на PNG, если плагин не зарегистрирован в runtime
             val pngFilename = "$uuid.png"
-            val fallbackFile = rootLocation.resolve(pngFilename).normalize().toAbsolutePath()
+            val fallbackFile = resolveSafePath(pngFilename)
             ImageIO.write(scaledImage, "png", fallbackFile.toFile())
             return pngFilename
         }
@@ -70,18 +82,11 @@ class FileStorageService {
     }
 
     fun storeBytes(bytes: ByteArray, fileName: String): String {
-        val uploadDir = java.nio.file.Paths.get("uploads")
-        if (!java.nio.file.Files.exists(uploadDir)) {
-            java.nio.file.Files.createDirectories(uploadDir)
-        }
-        val targetPath = uploadDir.resolve(fileName)
-        java.nio.file.Files.write(targetPath, bytes)
-        return "/uploads/$fileName"
+        val targetPath = resolveSafePath(fileName)
+        Files.write(targetPath, bytes)
+        return "/uploads/${targetPath.fileName}"
     }
 
-    /**
-     * Алгоритм сканирования альфа-канала и обрезки прозрачных полей
-     */
     private fun trimTransparentBorders(img: BufferedImage): BufferedImage {
         val width = img.width
         val height = img.height
@@ -95,7 +100,6 @@ class FileStorageService {
             for (x in 0 until width) {
                 val pixel = img.getRGB(x, y)
                 val alpha = (pixel shr 24) and 0xFF
-                // Порог альфы > 10 (не полностью прозрачный пиксель)
                 if (alpha > 10) {
                     if (x < minX) minX = x
                     if (x > maxX) maxX = x
@@ -105,7 +109,6 @@ class FileStorageService {
             }
         }
 
-        // Если картинка полностью прозрачная, возвращаем оригинал
         if (minX >= maxX || minY >= maxY) return img
 
         val trimmedWidth = (maxX - minX) + 1
@@ -114,58 +117,48 @@ class FileStorageService {
         return img.getSubimage(minX, minY, trimmedWidth, trimmedHeight)
     }
 
-    /**
-     * Сохраняет файл и возвращает его уникальное имя
-     * ВАЖНО: Метод называется storeFile, чтобы совпадать с DriverAppController
-     */
     fun storeFile(file: MultipartFile): String {
         if (file.isEmpty) {
-            throw RuntimeException("Не вдалося зберегти порожній файл.")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Не вдалося зберегти порожній файл.")
         }
-        
+
         val originalFilename = file.originalFilename ?: "unknown.jpg"
-        val extension = if (originalFilename.contains(".")) {
-            originalFilename.substringAfterLast('.')
-        } else {
-            "jpg"
+        val extension = originalFilename.substringAfterLast('.', "jpg").lowercase()
+
+        if (extension !in allowedImageExtensions) {
+            throw ResponseStatusException(
+                HttpStatus.BAD_REQUEST,
+                "Недопустимий формат файлу (.$extension). Дозволені лише: JPG, PNG, WEBP."
+            )
         }
 
         val uuid = UUID.randomUUID().toString()
         val uniqueFilename = "$uuid.$extension"
-        val thumbFilename = "thumb_$uuid.jpg" // Легкое превью
-        
-        val destinationFile = rootLocation.resolve(uniqueFilename).normalize().toAbsolutePath()
-        val thumbDestinationFile = rootLocation.resolve(thumbFilename).normalize().toAbsolutePath()
+        val thumbFilename = "thumb_$uuid.jpg"
+
+        val destinationFile = resolveSafePath(uniqueFilename)
+        val thumbDestinationFile = resolveSafePath(thumbFilename)
 
         try {
-            // 1. Сохраняем оригинал
             Files.copy(file.inputStream, destinationFile, StandardCopyOption.REPLACE_EXISTING)
-            
-            // 2. Генерируем сжатую миниатюру (макс 600px по ширине/высоте, качество 75%)
+
             Thumbnails.of(destinationFile.toFile())
                 .size(450, 450)
                 .outputQuality(0.65)
                 .toFile(thumbDestinationFile.toFile())
-
         } catch (e: Exception) {
-            // Если сжатие не удалось (например, не картинка), просто копируем оригинал как превью
             try {
                 Files.copy(destinationFile, thumbDestinationFile, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: Exception) {}
         }
-        
+
         return uniqueFilename
     }
 
-    // --- ALIAS ДЛЯ СОВМЕСТИМОСТИ С NewsService ---
     fun saveFile(file: MultipartFile): String {
         return storeFile(file)
     }
-    // ---------------------------------------------
 
-    /**
-     * Формирует полный абсолютный URL для отдачи внешним клиентам (React / Mobile Apps)
-     */
     fun buildFullUrl(filename: String?): String? {
         if (filename.isNullOrBlank()) return null
         if (filename.startsWith("http://") || filename.startsWith("https://") || filename.startsWith("data:")) {
@@ -181,71 +174,52 @@ class FileStorageService {
         return "/$path"
     }
 
-    /**
-     * Загружает файл как "Ресурс" для раздачи
-     */
     fun loadAsResource(filename: String): Resource {
-        try {
-            val file = rootLocation.resolve(filename)
-            val resource = UrlResource(file.toUri())
-            
-            if (resource.exists() || resource.isReadable) {
-                return resource
-            } else {
-                throw RuntimeException("Не удалось прочитать файл: $filename")
-            }
-        } catch (e: Exception) {
-            throw RuntimeException("Не удалось прочитать файл: $filename", e)
+        val file = resolveSafePath(filename)
+        val resource = UrlResource(file.toUri())
+
+        if (resource.exists() || resource.isReadable) {
+            return resource
+        } else {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Не вдалося прочитати файл: $filename")
         }
     }
+
     fun loadOrGenerateResource(filename: String): Resource {
-        try {
-            val cleanFilename = filename.trimStart('/')
-            val file = rootLocation.resolve(cleanFilename).normalize()
-            
-            // 1. Если файл превью или оригинал уже есть на диске — отдаем его
-            if (Files.exists(file) && Files.isReadable(file)) {
-                return UrlResource(file.toUri())
-            }
+        val file = resolveSafePath(filename)
+        val cleanFilename = file.fileName.toString()
 
-            // 2. Если запросили thumb_, а его нет на диске
-            if (cleanFilename.startsWith("thumb_")) {
-                val originalFilename = cleanFilename.substringAfter("thumb_")
-                val originalFile = rootLocation.resolve(originalFilename).normalize()
+        if (Files.exists(file) && Files.isReadable(file)) {
+            return UrlResource(file.toUri())
+        }
 
-                if (Files.exists(originalFile) && Files.isReadable(originalFile)) {
-                    return try {
-                        // Попытка сжатия
-                        Thumbnails.of(originalFile.toFile())
-                            .size(400, 400)
-                            .outputQuality(0.60)
-                            .toFile(file.toFile())
+        if (cleanFilename.startsWith("thumb_")) {
+            val originalFilename = cleanFilename.substringAfter("thumb_")
+            val originalFile = resolveSafePath(originalFilename)
 
-                        UrlResource(file.toUri())
-                    } catch (e: Throwable) {
-                        // Если памяти не хватило или сбой — БЕЗОПАСНО отдаем оригинал!
-                        println("Не вдалося згенерувати thumb для $originalFilename: ${e.message}")
-                        UrlResource(originalFile.toUri())
-                    }
+            if (Files.exists(originalFile) && Files.isReadable(originalFile)) {
+                return try {
+                    Thumbnails.of(originalFile.toFile())
+                        .size(400, 400)
+                        .outputQuality(0.60)
+                        .toFile(file.toFile())
+
+                    UrlResource(file.toUri())
+                } catch (e: Throwable) {
+                    UrlResource(originalFile.toUri())
                 }
             }
-
-            throw RuntimeException("Файл не знайдено: $filename")
-        } catch (e: Exception) {
-            throw RuntimeException("Помилка читання файлу: $filename", e)
         }
+
+        throw ResponseStatusException(HttpStatus.NOT_FOUND, "Файл не знайдено: $filename")
     }
-    /**
-     * Удаляет старый файл
-     */
+
     fun delete(filename: String?) {
         if (filename.isNullOrBlank()) return
-        
+
         try {
-            val file = rootLocation.resolve(filename)
+            val file = resolveSafePath(filename)
             Files.deleteIfExists(file)
-        } catch (e: Exception) {
-            println("Не удалось удалить старый файл: $filename. Причина: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 }

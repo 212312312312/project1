@@ -28,3 +28,14 @@ data class EvaluateCarResponse(
     val allowedTariffs: List<String>,
     val isAllowed: Boolean
 )
+
+data class CarColorDto(
+    val key: String,
+    val name: String,
+    val hexCode: String
+)
+
+data class CarBodyTypeDto(
+    val key: String,
+    val name: String
+)

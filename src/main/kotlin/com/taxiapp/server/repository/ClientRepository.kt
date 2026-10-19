@@ -28,6 +28,10 @@ interface ClientRepository : JpaRepository<Client, Long> {
     """)
     fun getTrafficSourceStats(): List<Array<Any>>
 
+    // HIGH-LOAD: Легковесная проекция для когортного анализа (вместо clientRepository.findAll() на 100k+ клиентов)
+    @Query("SELECT c.registrationDatetime, c.totalCompletedOrders FROM Client c")
+    fun findCohortRawData(): List<Array<Any>>
+
     @Query(
         value = """
             SELECT c.id FROM clients c
