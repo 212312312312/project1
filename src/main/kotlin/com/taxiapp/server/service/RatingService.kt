@@ -41,8 +41,16 @@ class RatingService(
         if (order.status != OrderStatus.COMPLETED) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Оцінити можна тільки завершену поїздку")
         }
-        if (order.driver == null) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "У замовлення немає водія")
-        if (order.isRatedByClient) throw ResponseStatusException(HttpStatus.CONFLICT, "Ви вже оцінили цю поїздку")
+        if (order.driver == null) {
+            // Если это партнерский заказ (EvoS) без системного водителя — просто помечаем оцененным без ошибки
+            order.isRatedByClient = true
+            taxiOrderRepository.save(order)
+            return
+        }
+        if (order.isRatedByClient) {
+            // Идемпотентный выход, чтобы не бросать 409 при повторной отправке
+            return
+        }
 
         // 1. Создаем рейтинг
         val rating = OrderRating(

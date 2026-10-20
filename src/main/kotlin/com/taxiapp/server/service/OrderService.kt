@@ -1265,20 +1265,27 @@ class OrderService(
         val lastFinishedKey = "client:last_completed_order:${client.id}"
         val lastFinishedIdStr = redisTemplate.opsForValue().get(lastFinishedKey)?.toString()
         if (!lastFinishedIdStr.isNullOrBlank()) {
-            redisTemplate.delete(lastFinishedKey)
-
             val finishedId = lastFinishedIdStr.toLongOrNull()
             if (finishedId != null) {
                 val finishedOrder = orderRepository.findById(finishedId).orElse(null)
                 if (finishedOrder != null) {
                     if (finishedOrder.isRatedByClient) {
+                        redisTemplate.delete(lastFinishedKey)
                         return null
                     }
-                    if (finishedOrder.status == OrderStatus.COMPLETED || finishedOrder.status == OrderStatus.CANCELLED) {
+                    if (finishedOrder.status == OrderStatus.CANCELLED) {
+                        // Отмененный водителем заказ показываем один раз и сразу убираем из Redis
+                        redisTemplate.delete(lastFinishedKey)
+                        return TaxiOrderDto(finishedOrder)
+                    }
+                    if (finishedOrder.status == OrderStatus.COMPLETED) {
+                        // НЕ удаляем ключ при GET-чтении! Он удалится при вызове /dismiss или после оценки,
+                        // чтобы повторный syncActiveOrder() в onResume не затер экран завершения через 204 No Content.
                         return TaxiOrderDto(finishedOrder)
                     }
                 }
             }
+            redisTemplate.delete(lastFinishedKey)
         }
 
         return null
@@ -1290,15 +1297,8 @@ class OrderService(
 
         redisTemplate.delete("client:last_completed_order:${client.id}")
         logger.info(">>> [OrderService] Завершене замовлення #$targetId очищено з Redis для клієнта #${client.id}")
-
-        if (targetId != 0L) {
-            orderRepository.findById(targetId).ifPresent { order ->
-                if (order.client.id == client.id && !order.isRatedByClient) {
-                    order.isRatedByClient = true
-                    orderRepository.save(order)
-                }
-            }
-        }
+        // ВАЖНО: Не ставим здесь order.isRatedByClient = true, так как после нажатия "Зрозуміло"
+        // у клиента открывается диалог оценки водителя (POST /api/v1/client/rate).
     }
 
     @Transactional
@@ -1839,8 +1839,40 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Неможливо змінити спосіб оплати закритого замовлення")
         }
         val normalizedMethod = method.uppercase().trim()
-        if (normalizedMethod !in listOf("CASH", "CARD")) {
+        if (normalizedMethod !in listOf("CASH", "CARD", "DRIVER_CARD")) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимий спосіб оплати")
+        }
+
+        val previousMethod = order.paymentMethod.uppercase().trim()
+        if (previousMethod == normalizedMethod) {
+            return
+        }
+
+        // 1. Если переключаемся НА оплату картой (CARD) — проверяем токен и холдируем средства
+        if (normalizedMethod == "CARD" && order.authorizedAmount <= 0.0) {
+            val token = order.client.cardToken
+            if (token.isNullOrEmpty()) {
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "У вас немає прив'язаної картки для оплати")
+            }
+            val clientPayAmount = max(1.0, order.price - order.appliedDiscount)
+            val paymentOrderId = "ride_${order.id}"
+            val isHoldSuccess = liqPayService.holdWithToken(
+                orderId = paymentOrderId,
+                amount = clientPayAmount,
+                cardToken = token,
+                description = "Резервування коштів за поїздку UNIT #${order.id}"
+            )
+            if (!isHoldSuccess) {
+                throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Недостатньо коштів на картці або помилка банку")
+            }
+            order.authorizedAmount = clientPayAmount
+        }
+        // 2. Если переключаемся С карты (CARD) на наличные (CASH) или на карту водителю (DRIVER_CARD) — снимаем холд
+        else if (previousMethod == "CARD" && normalizedMethod != "CARD" && order.authorizedAmount > 0.0) {
+            val paymentOrderId = "ride_${order.id}"
+            liqPayService.voidFunds(paymentOrderId)
+            order.authorizedAmount = 0.0
+            logger.info(">>> [PaymentSwitch] Холд картки розблоковано при зміні оплати на $normalizedMethod (Замовлення #${order.id})")
         }
 
         order.paymentMethod = normalizedMethod
@@ -1861,17 +1893,18 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ до чужого замовлення заборонено")
         }
         if (order.status != OrderStatus.REQUESTED && order.status != OrderStatus.SCHEDULED && order.status != OrderStatus.OFFERING) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ціну можна підвищувати тільки під час пошуку авто")
-        }
-        if (addedValue < order.addedValue) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Надбавку можна тільки збільшувати")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ціну можна змінювати тільки під час пошуку авто")
         }
 
+        // Разрешаем клиенту как увеличивать надбавку, так и возвращать ее обратно (вплоть до 0.0 — базовой цены маршрута),
+        // пока заказ находится в поиске и еще не принят водителем.
         val basePriceWithoutExtra = order.price - order.addedValue
         order.addedValue = addedValue
         order.price = max(order.tariff.basePrice, basePriceWithoutExtra + addedValue)
         order.boostAdded = addedValue
-        order.boostClickedAt = LocalDateTime.now()
+        if (addedValue > 0.0) {
+            order.boostClickedAt = LocalDateTime.now()
+        }
         order.finalPrice = order.price
 
         val savedOrder = orderRepository.save(order)

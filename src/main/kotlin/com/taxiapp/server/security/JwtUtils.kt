@@ -44,6 +44,7 @@ class JwtUtils(
     private fun extractAllClaims(token: String): Claims {
         return Jwts.parserBuilder()
             .setSigningKey(getSignInKey())
+            .setAllowedClockSkewSeconds(30)
             .build()
             .parseClaimsJws(token)
             .body
