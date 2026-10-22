@@ -195,6 +195,33 @@ class ClientAppController(
         return ResponseEntity.ok(com.taxiapp.server.dto.client.ClientDto(user))
     }
 
+    @PutMapping("/profile")
+    @Transactional
+    fun updateClientProfile(
+        principal: Principal,
+        @Valid @RequestBody request: com.taxiapp.server.dto.client.UpdateClientProfileRequest
+    ): ResponseEntity<com.taxiapp.server.dto.client.ClientDto> {
+        val cleanName = request.fullName.trim()
+        if (cleanName.length < 2 || cleanName.length > 50) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ім'я повинно містити від 2 до 50 символів")
+        }
+
+        val userLogin = principal.name
+        var user = userRepository.findByUserLogin(userLogin).orElse(null)
+        if (user == null) {
+            user = userRepository.findByUserPhone(userLogin)
+                .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено") }
+        }
+
+        if (user !is Client) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Користувач не є клієнтом")
+        }
+
+        user.fullName = cleanName
+        val savedClient = clientRepository.save(user)
+        return ResponseEntity.ok(com.taxiapp.server.dto.client.ClientDto(savedClient))
+    }
+
     // ОДЕРЖАННЯ АКТИВНОГО АБО ЩОЙНО ЗАВЕРШЕНОГО ЗАМОВЛЕННЯ
     @GetMapping("/orders/active")
     fun getActiveOrder(principal: Principal): ResponseEntity<TaxiOrderDto> {

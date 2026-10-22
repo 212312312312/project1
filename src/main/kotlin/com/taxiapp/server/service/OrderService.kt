@@ -4,6 +4,9 @@ import com.taxiapp.server.dto.driver.HeatmapZoneDto
 import com.taxiapp.server.dto.order.CalculatedTariffDto
 import com.taxiapp.server.dto.order.CreateOrderRequestDto
 import com.taxiapp.server.dto.order.OrderSocketMessage
+import com.taxiapp.server.dto.order.RoutePointDto
+import com.taxiapp.server.dto.order.RouteRequestDto
+import com.taxiapp.server.dto.order.RouteResponseDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.dto.tariff.CarTariffDto
 import com.taxiapp.server.model.enums.OrderStatus
@@ -1374,23 +1377,88 @@ class OrderService(
         return TaxiOrderDto(savedOrder)
     }
 
-    fun fetchDirectionsPolyline(startLat: Double, startLng: Double, endLat: Double, endLng: Double): String? {
+    /**
+     * Построение полного маршрута через OSRM (с поддержкой промежуточных остановок waypoints,
+     * точных координат без смещения точек и кэшированием результата в Redis на 10 минут).
+     */
+    fun fetchRouteFromOsrm(request: RouteRequestDto): RouteResponseDto? {
+        val allPoints = mutableListOf<RoutePointDto>()
+        allPoints.add(RoutePointDto(request.originLat, request.originLng))
+        request.waypoints?.forEach { wp ->
+            if (wp.lat != 0.0 || wp.lng != 0.0) {
+                allPoints.add(wp)
+            }
+        }
+        allPoints.add(RoutePointDto(request.destLat, request.destLng))
+
+        val isValid = allPoints.all {
+            it.lat in -90.0..90.0 && it.lng in -180.0..180.0 && (it.lat != 0.0 || it.lng != 0.0)
+        }
+        if (!isValid) return null
+
+        // Ключ кэша Redis с точностью 5 знаков после запятой (~1.1 метра)
+        val cacheKey = "osrm:route:v1:" + allPoints.joinToString(";") {
+            String.format(java.util.Locale.US, "%.5f,%.5f", it.lat, it.lng)
+        }
+
+        try {
+            val cachedStr = redisTemplate.opsForValue().get(cacheKey)?.toString()
+            if (!cachedStr.isNullOrBlank()) {
+                val parts = cachedStr.split("|||", limit = 3)
+                if (parts.size == 3) {
+                    val dist = parts[0].toIntOrNull()
+                    val dur = parts[1].toIntOrNull()
+                    val poly = parts[2]
+                    if (dist != null && dur != null && poly.isNotBlank()) {
+                        logger.debug(">>> [OSRM Cache HIT] Маршрут взят из Redis: $cacheKey")
+                        return RouteResponseDto(
+                            polyline = poly,
+                            distanceMeters = dist,
+                            durationSeconds = dur
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn(">>> [OSRM Cache] Помилка читання Redis: ${e.message}")
+        }
+
         return try {
-            val osrmUrl = "https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=polyline"
+            // В сам OSRM передаем 100% точные координаты без округления (формат OSRM: lng,lat;lng,lat)
+            val coordsQuery = allPoints.joinToString(";") { "${it.lng},${it.lat}" }
+            val osrmUrl = "https://router.project-osrm.org/route/v1/driving/$coordsQuery?overview=full&geometries=polyline"
+
             val connection = java.net.URL(osrmUrl).openConnection() as java.net.HttpURLConnection
             connection.requestMethod = "GET"
-            connection.connectTimeout = 4000
-            connection.readTimeout = 4000
-            connection.setRequestProperty("User-Agent", "TaxiServer/1.0")
+            connection.connectTimeout = 4500
+            connection.readTimeout = 4500
+            connection.setRequestProperty("User-Agent", "UnitTaxiServer/1.0")
 
             if (connection.responseCode == 200) {
                 val responseText = connection.inputStream.bufferedReader().use { it.readText() }
                 val json = com.google.gson.JsonParser.parseString(responseText).asJsonObject
                 val routes = json.getAsJsonArray("routes")
                 if (routes != null && routes.size() > 0) {
-                    val polyline = routes[0].asJsonObject.get("geometry")?.asString
-                    logger.info(">>> [OSRM Router] Маршрут подачі успішно згенеровано (довжина рядка: ${polyline?.length})")
-                    polyline
+                    val routeObj = routes[0].asJsonObject
+                    val polyline = routeObj.get("geometry")?.takeIf { !it.isJsonNull }?.asString
+                    val distanceMeters = routeObj.get("distance")?.takeIf { !it.isJsonNull }?.asDouble?.let { kotlin.math.round(it).toInt() } ?: 0
+                    val durationSeconds = routeObj.get("duration")?.takeIf { !it.isJsonNull }?.asDouble?.let { kotlin.math.round(it).toInt() } ?: 0
+
+                    if (!polyline.isNullOrBlank()) {
+                        val result = RouteResponseDto(
+                            polyline = polyline,
+                            distanceMeters = max(1, distanceMeters),
+                            durationSeconds = max(1, durationSeconds)
+                        )
+                        try {
+                            val valueToCache = "${result.distanceMeters}|||${result.durationSeconds}|||${result.polyline}"
+                            redisTemplate.opsForValue().set(cacheKey, valueToCache, 10, java.util.concurrent.TimeUnit.MINUTES)
+                        } catch (e: Exception) {
+                            logger.warn(">>> [OSRM Cache] Помилка запису в Redis: ${e.message}")
+                        }
+                        logger.info(">>> [OSRM Router] Маршрут згенеровано: dist=${result.distanceMeters}m, dur=${result.durationSeconds}s, points=${allPoints.size}")
+                        result
+                    } else null
                 } else null
             } else {
                 logger.warn(">>> [OSRM Router] Помилка відповіді OSRM: код ${connection.responseCode}")
@@ -1400,6 +1468,17 @@ class OrderService(
             logger.error(">>> [OSRM Router] Помилка запиту до OSRM: ${e.message}")
             null
         }
+    }
+
+    fun fetchDirectionsPolyline(startLat: Double, startLng: Double, endLat: Double, endLng: Double): String? {
+        return fetchRouteFromOsrm(
+            RouteRequestDto(
+                originLat = startLat,
+                originLng = startLng,
+                destLat = endLat,
+                destLng = endLng
+            )
+        )?.polyline
     }
 
     @Transactional
