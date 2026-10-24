@@ -1,6 +1,7 @@
 package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.order.CalculatePriceRequest
+import com.taxiapp.server.dto.order.NearbyPlaceSuggestionDto
 import com.taxiapp.server.dto.order.ReverseGeocodeResponseDto
 import com.taxiapp.server.dto.order.RouteRequestDto
 import com.taxiapp.server.dto.order.RouteResponseDto
@@ -67,6 +68,21 @@ class PublicController(
         @RequestParam(value = "lang", defaultValue = "uk") lang: String
     ): ResponseEntity<ReverseGeocodeResponseDto> {
         val result = geocodingService.reverseGeocode(lat, lng, lang)
+        return ResponseEntity.ok(result)
+    }
+
+    /**
+     * Быстрая выдача 5–6 популярных адресов, важных точек и главных улиц поблизости
+     * для пустого экрана ввода адреса (L1 In-Memory + L2 Redis гео-сетка).
+     */
+    @GetMapping("/nearby-suggestions")
+    fun getNearbySuggestions(
+        @RequestParam("lat") lat: Double,
+        @RequestParam("lng") lng: Double,
+        @RequestParam(value = "lang", defaultValue = "uk") lang: String,
+        @RequestParam(value = "limit", defaultValue = "6") limit: Int
+    ): ResponseEntity<List<NearbyPlaceSuggestionDto>> {
+        val result = geocodingService.getNearbySuggestions(lat, lng, lang, limit)
         return ResponseEntity.ok(result)
     }
 

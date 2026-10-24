@@ -30,3 +30,13 @@ data class ReverseGeocodeResponseDto(
     val rawDisplayName: String? = null,
     val source: String = "nominatim"
 )
+
+data class NearbyPlaceSuggestionDto(
+    val placeId: String,
+    val title: String,
+    val subtitle: String,
+    val lat: Double,
+    val lng: Double,
+    val distanceMeters: Int,
+    val category: String = "street"
+)

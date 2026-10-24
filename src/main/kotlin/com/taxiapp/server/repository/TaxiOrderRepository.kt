@@ -246,9 +246,41 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         WHERE r8.rn = 8
     """, nativeQuery = true)
     fun calculateAvgDaysTo8thRide(): Double
+
+    // 6. Популярные адреса поездок в широком радиусе (bounding box) для отбора адресов от 2.0 км и дальше
+    @Query(value = """
+        SELECT o.to_address AS address,
+               AVG(o.dest_lat) AS lat,
+               AVG(o.dest_lng) AS lng,
+               COUNT(o.id) AS ridesCount
+        FROM taxi_orders o
+        WHERE o.dest_lat BETWEEN :minLat AND :maxLat
+          AND o.dest_lng BETWEEN :minLng AND :maxLng
+          AND o.to_address IS NOT NULL
+          AND LENGTH(TRIM(o.to_address)) > 3
+          AND LOWER(o.to_address) NOT LIKE '%точка на карті%'
+          AND LOWER(o.to_address) NOT LIKE '%point on map%'
+          AND LOWER(o.to_address) NOT LIKE '%невідома адреса%'
+        GROUP BY o.to_address
+        ORDER BY ridesCount DESC
+        LIMIT 30
+    """, nativeQuery = true)
+    fun findPopularDestinationsNearby(
+        @Param("minLat") minLat: Double,
+        @Param("maxLat") maxLat: Double,
+        @Param("minLng") minLng: Double,
+        @Param("maxLng") maxLng: Double
+    ): List<PopularPlaceProjection>
 }
 
 interface CancellationStatProjection {
     val reason: String
     val count: Long
+}
+
+interface PopularPlaceProjection {
+    val address: String
+    val lat: Double
+    val lng: Double
+    val ridesCount: Long
 }

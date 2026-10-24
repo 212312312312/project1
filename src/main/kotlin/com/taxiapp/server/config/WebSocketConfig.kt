@@ -34,6 +34,13 @@ class WebSocketConfig(
 
     private val wsLogger = LoggerFactory.getLogger(WebSocketConfig::class.java)
 
+    /**
+     * Легковесное исключение без генерации 35-строчного стектрейса в логах при истечении JWT в STOMP.
+     */
+    private class QuietStompAuthException(msg: String) : MessageDeliveryException(msg) {
+        override fun fillInStackTrace(): Throwable = this
+    }
+
     override fun configureMessageBroker(config: MessageBrokerRegistry) {
         config.enableSimpleBroker("/topic")
         config.setApplicationDestinationPrefixes("/app")
@@ -151,19 +158,19 @@ class WebSocketConfig(
                                 }
                             } catch (e: Exception) {
                                 wsLogger.warn(">>> [WS Auth] Недійсний токен: ${e.message}")
-                                throw MessageDeliveryException("Invalid Token")
+                                throw QuietStompAuthException("Invalid Token")
                             }
                         }
 
                         wsLogger.warn(">>> [WS Auth] Вхід відхилено: токен не знайдено!")
-                        throw MessageDeliveryException("Unauthorized: Access Denied")
+                        throw QuietStompAuthException("Unauthorized: Access Denied")
                     }
 
                     StompCommand.SUBSCRIBE -> {
                         val auth = accessor.user as? Authentication
-                            ?: throw MessageDeliveryException("Unauthorized subscribe")
+                            ?: throw QuietStompAuthException("Unauthorized subscribe")
                         val principalUser = auth.principal as? User
-                            ?: throw MessageDeliveryException("Invalid principal")
+                            ?: throw QuietStompAuthException("Invalid principal")
                         val roles = auth.authorities.map { it.authority }.toSet()
                         val isAdminOrDispatcher = "ROLE_ADMINISTRATOR" in roles || "ROLE_DISPATCHER" in roles
                         val isDriver = "ROLE_DRIVER" in roles
@@ -171,12 +178,12 @@ class WebSocketConfig(
 
                         // 1. Защита админских и саппорт-топиков
                         if ((dest.startsWith("/topic/admin") || dest.startsWith("/app/admin") || dest.startsWith("/topic/support")) && !isAdminOrDispatcher) {
-                            throw MessageDeliveryException("Forbidden: Admin/Dispatcher topic")
+                            throw QuietStompAuthException("Forbidden: Admin/Dispatcher topic")
                         }
 
                         // 2. Защита общего эфира водителей
                         if ((dest.startsWith("/topic/drivers/ether") || dest.startsWith("/app/drivers/ether")) && !isDriver && !isAdminOrDispatcher) {
-                            throw MessageDeliveryException("Forbidden: Driver ether topic")
+                            throw QuietStompAuthException("Forbidden: Driver ether topic")
                         }
 
                         // 3. Защита персональных топиков водителя (/topic/drivers/{id}/... или /topic/driver/{id})
@@ -184,7 +191,7 @@ class WebSocketConfig(
                         if (driverMatch != null && !isAdminOrDispatcher) {
                             val targetDriverId = driverMatch.groupValues[1].toLongOrNull()
                             if (!isDriver || principalUser.id != targetDriverId) {
-                                throw MessageDeliveryException("Forbidden: Another driver's topic")
+                                throw QuietStompAuthException("Forbidden: Another driver's topic")
                             }
                         }
 
@@ -193,7 +200,7 @@ class WebSocketConfig(
                         if (clientMatch != null && !isAdminOrDispatcher) {
                             val targetClientId = clientMatch.groupValues[1].toLongOrNull()
                             if (principalUser.id != targetClientId) {
-                                throw MessageDeliveryException("Forbidden: Another client's topic")
+                                throw QuietStompAuthException("Forbidden: Another client's topic")
                             }
                         }
                     }
@@ -202,7 +209,7 @@ class WebSocketConfig(
                         val dest = accessor.destination ?: ""
                         // Клиентам разрешено отправлять сообщения только в /app/**, но НЕ напрямую в /topic/**!
                         if (dest.startsWith("/topic/")) {
-                            throw MessageDeliveryException("Forbidden: Direct publishing to /topic is prohibited")
+                            throw QuietStompAuthException("Forbidden: Direct publishing to /topic is prohibited")
                         }
                     }
 

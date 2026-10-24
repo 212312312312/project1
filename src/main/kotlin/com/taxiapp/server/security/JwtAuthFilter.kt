@@ -29,6 +29,18 @@ class JwtAuthFilter(
             return false
         }
 
+        // Публичные гео-эндпоинты и справочники не требуют загрузки UserDetails из БД при каждом запросе
+        // (исключение: /api/v1/public/calculate-price, где Principal используется для персональной скидки клиента)
+        if (path == "/api/v1/public/nearby-suggestions" ||
+            path == "/api/v1/public/reverse-geocode" ||
+            path == "/api/v1/public/route" ||
+            path == "/api/v1/public/sectors" ||
+            path == "/api/v1/public/tariffs" ||
+            path.startsWith("/api/v1/public/settings/")
+        ) {
+            return true
+        }
+
         return path.startsWith("/api/v1/auth/") ||
                path.startsWith("/assets/") ||
                path.startsWith("/ws") ||

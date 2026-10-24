@@ -3,6 +3,7 @@ package com.taxiapp.server.dto.order
 import com.taxiapp.server.dto.service.TaxiServiceDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrder
+import java.time.Duration
 import java.time.LocalDateTime
 
 data class TaxiOrderDto(
@@ -37,7 +38,9 @@ data class TaxiOrderDto(
     val driverToPickupPolyline: String? = null,
 
     val arrivedAt: LocalDateTime? = null,
-    val waitingStartTime: LocalDateTime? = null, 
+    val waitingStartTime: LocalDateTime? = null,
+    val waitingElapsedSeconds: Long? = null,
+    val serverTime: LocalDateTime = LocalDateTime.now(),
     val scheduledAt: LocalDateTime?,
     val carModel: String? = null,
     val carPlate: String? = null,
@@ -167,11 +170,11 @@ data class TaxiOrderDto(
         arrivedAt = order.arrivedAt,
         
         // Автоматическое переключение таймера ожидания на промежуточную точку
-        waitingStartTime = if (order.status == OrderStatus.ARRIVED_AT_WAYPOINT) {
-            order.waypointArrivedAt
-        } else if (order.arrivedAt != null) {
-            if (order.scheduledAt != null && order.arrivedAt!!.isBefore(order.scheduledAt)) order.scheduledAt else order.arrivedAt
-        } else null,
+        waitingStartTime = resolveWaitingStartTime(order),
+        waitingElapsedSeconds = resolveWaitingStartTime(order)?.let { start ->
+            Duration.between(start, LocalDateTime.now()).seconds.coerceAtLeast(0L)
+        },
+        serverTime = LocalDateTime.now(),
         
         scheduledAt = order.scheduledAt,
         carModel = order.driver?.car?.let { "${it.make} ${it.model}" },
@@ -255,6 +258,14 @@ data class TaxiOrderDto(
     )
 
     companion object {
+        private fun resolveWaitingStartTime(order: TaxiOrder): LocalDateTime? {
+            return if (order.status == OrderStatus.ARRIVED_AT_WAYPOINT) {
+                order.waypointArrivedAt
+            } else if (order.arrivedAt != null) {
+                if (order.scheduledAt != null && order.arrivedAt!!.isBefore(order.scheduledAt)) order.scheduledAt else order.arrivedAt
+            } else null
+        }
+
         private fun calculateAdaptiveActivity(order: TaxiOrder): Int {
             var totalScore = when (order.assignmentType) {
                 "CHAIN" -> 6
