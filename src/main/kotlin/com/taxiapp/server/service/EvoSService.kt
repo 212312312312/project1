@@ -10,6 +10,7 @@ import org.springframework.web.client.RestTemplate
 import java.security.MessageDigest
 import java.time.format.DateTimeFormatter
 import java.util.Base64
+import java.util.Locale
 
 @Service
 class EvoSService(
@@ -183,12 +184,14 @@ class EvoSService(
         }
     }
 
-    fun getNearbyDrivers(lat: Double, lng: Double, radiusKm: Double = 5.0): List<EvoSDriverPositionItemDto> {
+    fun getNearbyDrivers(lat: Double, lng: Double, radiusKm: Double = 3.0): List<EvoSDriverPositionItemDto> {
         if (!settingsService.isEvosEnabled()) return emptyList()
 
         val baseUrl = settingsService.getEvosUrl().trimEnd('/')
         val intRadius = radiusKm.toInt().coerceAtLeast(1)
-        val url = "$baseUrl/api/drivers/position?lat=$lat&lng=$lng&radius=$intRadius"
+        val formattedLat = String.format(Locale.US, "%.6f", lat)
+        val formattedLng = String.format(Locale.US, "%.6f", lng)
+        val url = "$baseUrl/api/drivers/position?lat=$formattedLat&lng=$formattedLng&radius=$intRadius"
 
         return try {
             val requestEntity = HttpEntity<Void>(createHeaders())
@@ -199,10 +202,18 @@ class EvoSService(
                 Array<EvoSDriverPositionItemDto>::class.java
             )
             val items = response.body?.toList() ?: emptyList()
-            logger.debug(">>> [EvoS Raw Positions] Отримано від EvoS машин: ${items.size} (radius=${radiusKm}km)")
+            if (items.isNotEmpty()) {
+                val sample = items.first()
+                logger.info(
+                    ">>> [EvoS Raw Positions] Отримано від EvoS машин: ${items.size} (radius=${intRadius}km, lat=$formattedLat, lng=$formattedLng). " +
+                    "Приклад [0]: state=${sample.state}, posStatus=${sample.drivercarPosition?.status}, lat=${sample.drivercarPosition?.lat}, lng=${sample.drivercarPosition?.lng}"
+                )
+            } else {
+                logger.info(">>> [EvoS Raw Positions] Отримано від EvoS машин: 0 (radius=${intRadius}km, lat=$formattedLat, lng=$formattedLng)")
+            }
             items
         } catch (e: Exception) {
-            logger.error(">>> [EvoS] Помилка отримання координат водіїв з EvoS: ${e.message}")
+            logger.error(">>> [EvoS] Помилка отримання координат водіїв з EvoS ($url): ${e.message}")
             emptyList()
         }
     }

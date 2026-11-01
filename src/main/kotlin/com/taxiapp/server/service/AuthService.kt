@@ -200,6 +200,7 @@ class AuthService(
 
         checkDriverSmsCode(normalizedPhone, request.code)
         smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+        redisTemplate.delete("sms:cooldown:$normalizedPhone")
 
         val user = userRepository.findByUserPhone(normalizedPhone).orElseThrow {
             ResponseStatusException(HttpStatus.NOT_FOUND, "Користувача не знайдено")
@@ -249,6 +250,7 @@ class AuthService(
 
         checkDriverSmsCode(normalizedPhone, request.code)
         smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+        redisTemplate.delete("sms:cooldown:$normalizedPhone")
 
         var user = userRepository.findByUserPhone(normalizedPhone).orElse(null)
         var isNew = false
@@ -308,6 +310,7 @@ class AuthService(
         if (attempts >= 3) {
             smsCodeRepository.findByUserPhone(phone).ifPresent { smsCodeRepository.delete(it) }
             redisTemplate.delete(attemptsKey)
+            redisTemplate.delete("sms:cooldown:$phone")
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Перевищено кількість спроб введення. Код анульовано.")
         }
 
@@ -317,15 +320,17 @@ class AuthService(
         if (smsEntity.expiresAt.isBefore(LocalDateTime.now())) {
             smsCodeRepository.delete(smsEntity)
             redisTemplate.delete(attemptsKey)
+            redisTemplate.delete("sms:cooldown:$phone")
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Код застарів")
         }
 
         if (smsEntity.code != code) {
             val newAttempts = attempts + 1
             if (newAttempts >= 3) {
-                // На 3-ю ошибку полностью стираем СМС-код из базы данных
+                // На 3-ю ошибку полностью стираем СМС-код из базы данных и сбрасываем кулдаун, чтобы можно было запросить новый
                 smsCodeRepository.delete(smsEntity)
                 redisTemplate.delete(attemptsKey)
+                redisTemplate.delete("sms:cooldown:$phone")
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Перевищено кількість спроб введення. Код анульовано.")
             } else {
                 // Записываем новую попытку в Redis на 10 минут (время жизни кода)
@@ -350,7 +355,17 @@ class AuthService(
         val acquiredCooldown = redisTemplate.opsForValue()
             .setIfAbsent(cooldownKey, "true", 60, TimeUnit.SECONDS)
         if (acquiredCooldown == false) {
-            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Зачекайте 60 секунд перед повторним запитом СМС")
+            // Если клиент перезапустил приложение или вернулся назад в течение 60 секунд,
+            // когда у него уже есть активный (непросроченный) SMS-код в базе —
+            // возвращаем успешный ответ без повторной платной отправки SMS и без 429 ошибки,
+            // чтобы приложение переключило его на экран ввода уже отправленного кода!
+            val existingActiveSms = smsCodeRepository.findByUserPhone(phone).orElse(null)
+            if (existingActiveSms != null && existingActiveSms.expiresAt.isAfter(LocalDateTime.now())) {
+                logger.info(">>> [SMS Cooldown Bypass] Активний код для $phone вже існує. Пускаємо клієнта на екран вводу коду без повторної відправки СМС.")
+                return
+            }
+            val ttlSeconds = redisTemplate.getExpire(cooldownKey, TimeUnit.SECONDS).coerceAtLeast(1L)
+            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Зачекайте $ttlSeconds секунд перед повторним запитом СМС")
         }
 
         val newCount = redisTemplate.opsForValue().increment(limitKey) ?: 1L
@@ -358,6 +373,7 @@ class AuthService(
             redisTemplate.expire(limitKey, 5, TimeUnit.MINUTES)
         }
         if (newCount > 5L) {
+            redisTemplate.delete(cooldownKey)
             throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Перевищено ліміт СМС. Зачекайте 5 хвилин перед наступною спробою.")
         }
 
@@ -407,6 +423,7 @@ class AuthService(
 
         checkDriverSmsCode(normalizedPhone, request.smsCode)
         smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+        redisTemplate.delete("sms:cooldown:$normalizedPhone")
 
         val avatarUrl = files["avatar"]?.let { fileStorageService.storeFile(it) }
         val licenseFrontUrl = files["driverLicenseFront"]?.let { fileStorageService.storeFile(it) }
@@ -475,6 +492,7 @@ class AuthService(
         // 1. Перевіряємо СМС код
         checkDriverSmsCode(normalizedPhone, request.code)
         smsCodeRepository.findByUserPhone(normalizedPhone).ifPresent { smsCodeRepository.delete(it) }
+        redisTemplate.delete("sms:cooldown:$normalizedPhone")
 
         // 2. Знаходимо поточного користувача (тимчасовий Google-акаунт)
         val currentUser = userRepository.findByUserLogin(principalName).orElseGet {
