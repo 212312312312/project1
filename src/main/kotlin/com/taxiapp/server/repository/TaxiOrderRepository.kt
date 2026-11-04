@@ -146,7 +146,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     fun findAllByIsSentToEvosTrueAndStatusNotIn(
         @Param("statuses") statuses: List<OrderStatus>
     ): List<TaxiOrder>
-    // ----------------------------------------------
 
     @Query("""
         SELECT o FROM TaxiOrder o 
@@ -167,6 +166,10 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         pageable: org.springframework.data.domain.Pageable
     ): List<TaxiOrder>
 
+    // =========================================================================
+    // БАЗОВЫЕ МЕТОДЫ АНАЛИТИКИ (С ИСПРАВЛЕННЫМИ ФОРМУЛАМИ)
+    // =========================================================================
+
     @Query("SELECT AVG(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED'")
     fun calculateAverageOrderValue(): Double?
 
@@ -178,7 +181,8 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
     fun getTariffAnalytics(): List<Array<Any>>
 
-    @Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o")
+    // ИСПРАВЛЕНО: учитываем клиентов с реально выполненными поездками (исключая системный аккаунт удаленных 999999)
+    @Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o WHERE o.status = 'COMPLETED' AND o.client.id <> 999999")
     fun countUniqueClientsWithOrders(): Long
 
     @Query("""
@@ -192,11 +196,14 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """)
     fun getClientCancellationStats(): List<CancellationStatProjection>
 
-    // 1. Среднее время поиска водителя (в секундах)
+    // 1. Среднее время поиска водителя (в секундах) — ИСПРАВЛЕНО: исключаем предзаказы (scheduled_at IS NULL)
     @Query(value = """
         SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (o.accepted_at - o.created_at))), 0.0) 
         FROM taxi_orders o 
-        WHERE o.accepted_at IS NOT NULL AND o.status = 'COMPLETED'
+        WHERE o.accepted_at IS NOT NULL 
+          AND o.status = 'COMPLETED'
+          AND o.scheduled_at IS NULL
+          AND o.accepted_at >= o.created_at
     """, nativeQuery = true)
     fun calculateAvgTimeToAcceptSeconds(): Double
 
@@ -207,45 +214,280 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0 AND o.status = 'COMPLETED'")
     fun countCompletedOrdersWithBoost(): Long
 
-    // 3. Отмены клиентом до 60 секунд
+    // 3. Отмены клиентом до 60 секунд (без предзаказов)
     @Query(value = """
         SELECT COUNT(o.id) 
         FROM taxi_orders o 
         WHERE o.status = 'CANCELLED' 
+          AND o.scheduled_at IS NULL
           AND o.cancelled_at IS NOT NULL 
-          AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) <= 60
+          AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) BETWEEN 0 AND 60
     """, nativeQuery = true)
     fun countQuickClientCancellations(): Long
 
-    // 4. Отмены по таймауту поиска
+    // 4. Отмены по таймауту поиска (> 180 сек без назначенного водителя) — ИСПРАВЛЕНО: не включаем COMPLETED и SCHEDULED
     @Query(value = """
         SELECT COUNT(o.id) 
         FROM taxi_orders o 
-        WHERE (o.accepted_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.accepted_at - o.created_at)) > 180)
-           OR (o.status = 'CANCELLED' AND o.cancelled_at IS NOT NULL AND o.accepted_at IS NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) > 180)
-           OR (o.status IN ('REQUESTED', 'OFFERING') AND EXTRACT(EPOCH FROM (NOW() - o.created_at)) > 180)
+        WHERE o.scheduled_at IS NULL
+          AND o.accepted_at IS NULL
+          AND (
+              (o.status = 'CANCELLED' AND o.cancelled_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) > 180)
+              OR (o.status IN ('REQUESTED', 'OFFERING') AND EXTRACT(EPOCH FROM (NOW() - o.created_at)) > 180)
+          )
     """, nativeQuery = true)
     fun countTimeoutCancellations(): Long
 
-    // 5. Среднее число дней до совершения 8 поездки активным клиентом
+    // 5. Среднее число дней до совершения N-й поездки активным клиентом
     @Query(value = """
-        WITH client_8th_ride AS (
+        WITH client_nth_ride AS (
             SELECT client_id, created_at,
                    ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY created_at ASC) as rn
             FROM taxi_orders
-            WHERE status = 'COMPLETED'
+            WHERE status = 'COMPLETED' AND client_id <> 999999
         ),
         client_first_ride AS (
             SELECT client_id, created_at as first_ride_at
-            FROM client_8th_ride
+            FROM client_nth_ride
             WHERE rn = 1
         )
-        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (r8.created_at - f.first_ride_at)) / 86400.0), 0.0)
-        FROM client_8th_ride r8
-        JOIN client_first_ride f ON r8.client_id = f.client_id
-        WHERE r8.rn = 8
+        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (rn_table.created_at - f.first_ride_at)) / 86400.0), 0.0)
+        FROM client_nth_ride rn_table
+        JOIN client_first_ride f ON rn_table.client_id = f.client_id
+        WHERE rn_table.rn = 8
     """, nativeQuery = true)
     fun calculateAvgDaysTo8thRide(): Double
+
+    @Query(value = """
+        WITH client_nth_ride AS (
+            SELECT client_id, created_at,
+                   ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY created_at ASC) as rn
+            FROM taxi_orders
+            WHERE status = 'COMPLETED' AND client_id <> 999999
+        ),
+        client_first_ride AS (
+            SELECT client_id, created_at as first_ride_at
+            FROM client_nth_ride
+            WHERE rn = 1
+        )
+        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (rn_table.created_at - f.first_ride_at)) / 86400.0), 0.0)
+        FROM client_nth_ride rn_table
+        JOIN client_first_ride f ON rn_table.client_id = f.client_id
+        WHERE rn_table.rn = :targetRides
+    """, nativeQuery = true)
+    fun calculateAvgDaysToTargetRide(@Param("targetRides") targetRides: Int): Double
+
+    // =========================================================================
+    // НОВЫЕ МЕТОДЫ С ФИЛЬТРАЦИЕЙ ПО ПЕРИОДУ (:startDate .. :endDate) И ГЛУБОКОЙ АНАЛИТИКОЙ
+    // =========================================================================
+
+    @Query(value = """
+        SELECT 
+            COUNT(o.id) AS totalOrders,
+            COUNT(CASE WHEN o.status = 'COMPLETED' THEN 1 END) AS completedOrders,
+            COUNT(CASE WHEN o.status = 'CANCELLED' THEN 1 END) AS cancelledOrders,
+            COUNT(DISTINCT CASE WHEN o.status = 'COMPLETED' AND o.client_id <> 999999 THEN o.client_id END) AS uniquePayingClients,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.price ELSE 0.0 END), 0.0) AS gmv,
+            COALESCE(AVG(CASE WHEN o.status = 'COMPLETED' THEN o.price END), 0.0) AS avgGrossCheck,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.commission_amount ELSE 0.0 END), 0.0) AS totalCommission,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.applied_discount ELSE 0.0 END), 0.0) AS totalDiscounts,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.waiting_price ELSE 0.0 END), 0.0) AS totalWaiting,
+            COUNT(CASE WHEN o.status = 'COMPLETED' AND o.applied_discount > 0 THEN 1 END) AS discountedCompletedCount
+        FROM taxi_orders o
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+    """, nativeQuery = true)
+    fun getPeriodSummaryMetrics(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    @Query(value = """
+        SELECT 
+            COALESCE(o.tariff_name, 'Невідомий тариф') AS tariffName,
+            COUNT(CASE WHEN o.status = 'COMPLETED' THEN 1 END) AS completedCount,
+            COUNT(CASE WHEN o.status = 'CANCELLED' THEN 1 END) AS cancelledCount,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.price ELSE 0.0 END), 0.0) AS totalRevenue,
+            COALESCE(AVG(CASE WHEN o.status = 'COMPLETED' THEN o.price END), 0.0) AS avgCheck,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.commission_amount ELSE 0.0 END), 0.0) AS totalCommission,
+            COALESCE(SUM(CASE WHEN o.status = 'COMPLETED' THEN o.applied_discount ELSE 0.0 END), 0.0) AS totalDiscounts
+        FROM taxi_orders o
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+        GROUP BY COALESCE(o.tariff_name, 'Невідомий тариф')
+        ORDER BY totalRevenue DESC
+    """, nativeQuery = true)
+    fun getTariffAnalyticsByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    @Query(value = """
+        SELECT o.cancellation_reason AS reason, COUNT(o.id) AS count
+        FROM taxi_orders o
+        WHERE o.status = 'CANCELLED'
+          AND o.created_at BETWEEN :startDate AND :endDate
+          AND o.cancellation_reason IS NOT NULL
+          AND o.cancellation_reason <> ''
+        GROUP BY o.cancellation_reason
+        ORDER BY count DESC
+    """, nativeQuery = true)
+    fun getCancellationStatsByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<CancellationStatProjection>
+
+    @Query(value = """
+        SELECT 
+            COALESCE(AVG(CASE 
+                WHEN o.scheduled_at IS NULL AND o.accepted_at IS NOT NULL AND o.accepted_at >= o.created_at 
+                AND EXTRACT(EPOCH FROM (o.accepted_at - o.created_at)) <= 3600
+                THEN EXTRACT(EPOCH FROM (o.accepted_at - o.created_at)) 
+            END), 0.0) AS avgAcceptSec,
+            COALESCE(AVG(CASE 
+                WHEN o.accepted_at IS NOT NULL AND o.arrived_at IS NOT NULL AND o.arrived_at >= o.accepted_at 
+                AND EXTRACT(EPOCH FROM (o.arrived_at - o.accepted_at)) <= 3600
+                THEN EXTRACT(EPOCH FROM (o.arrived_at - o.accepted_at)) 
+            END), 0.0) AS avgArriveSec,
+            COALESCE(AVG(CASE 
+                WHEN o.status = 'COMPLETED' AND o.duration_seconds IS NOT NULL AND o.duration_seconds > 0 
+                THEN o.duration_seconds
+                WHEN o.status = 'COMPLETED' AND o.started_at IS NOT NULL AND o.completed_at IS NOT NULL AND o.completed_at > o.started_at
+                THEN EXTRACT(EPOCH FROM (o.completed_at - o.started_at))
+            END), 0.0) AS avgTripDurationSec,
+            COALESCE(AVG(CASE 
+                WHEN o.status = 'COMPLETED' AND o.distance_meters IS NOT NULL AND o.distance_meters > 0 
+                THEN o.distance_meters / 1000.0 
+            END), 0.0) AS avgDistanceKm,
+            COUNT(CASE WHEN o.boost_added > 0 OR o.added_value > 0 THEN 1 END) AS boostOrdersCount,
+            COUNT(CASE WHEN (o.boost_added > 0 OR o.added_value > 0) AND o.status = 'COMPLETED' THEN 1 END) AS boostCompletedCount,
+            COUNT(CASE WHEN o.scheduled_at IS NOT NULL THEN 1 END) AS scheduledOrdersCount,
+            COUNT(CASE WHEN o.scheduled_at IS NOT NULL AND o.status = 'COMPLETED' THEN 1 END) AS scheduledCompletedCount
+        FROM taxi_orders o
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+    """, nativeQuery = true)
+    fun getSlaAndBoostMetricsByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    // Подневная динамика оборота, комиссии, скидок и количества выполненных поездок для реального графика доходов
+    @Query(value = """
+        SELECT 
+            CAST(COALESCE(o.completed_at, o.created_at) AS DATE) AS orderDate,
+            COUNT(o.id) AS completedOrders,
+            COALESCE(SUM(GREATEST(o.price, o.final_price, o.base_price)), 0.0) AS gmv,
+            COALESCE(SUM(
+                CASE 
+                    WHEN o.commission_amount > 0 THEN o.commission_amount
+                    ELSE GREATEST(o.price, o.final_price, o.base_price, 100.0) * 0.10
+                END
+            ), 0.0) AS commission,
+            COALESCE(SUM(o.applied_discount), 0.0) AS discounts
+        FROM taxi_orders o
+        WHERE o.status = 'COMPLETED'
+          AND COALESCE(o.completed_at, o.created_at) BETWEEN :startDate AND :endDate
+        GROUP BY CAST(COALESCE(o.completed_at, o.created_at) AS DATE)
+        ORDER BY orderDate ASC
+    """, nativeQuery = true)
+    fun getDailyRevenueTimelineByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    @Query(value = """
+        SELECT 
+            COUNT(CASE WHEN o.status = 'CANCELLED' THEN 1 END) AS totalCancelled,
+            COUNT(CASE WHEN o.status = 'CANCELLED' AND o.accepted_at IS NULL THEN 1 END) AS cancelledBeforeAccept,
+            COUNT(CASE WHEN o.status = 'CANCELLED' AND o.accepted_at IS NOT NULL THEN 1 END) AS cancelledAfterAccept,
+            COUNT(CASE WHEN o.status = 'CANCELLED' AND (o.is_sent_to_evos = true AND LOWER(COALESCE(o.cancellation_reason, '')) LIKE '%партнер%') THEN 1 END) AS cancelledByEvos,
+            COUNT(CASE WHEN o.status = 'CANCELLED' AND LOWER(COALESCE(o.cancellation_reason, '')) LIKE '%диспетчер%' THEN 1 END) AS cancelledByDispatcher,
+            COUNT(CASE WHEN o.status = 'CANCELLED' AND o.scheduled_at IS NULL AND o.cancelled_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) BETWEEN 0 AND 60 THEN 1 END) AS quickCancelUnder60s,
+            COUNT(CASE WHEN o.scheduled_at IS NULL AND o.accepted_at IS NULL AND (
+                (o.status = 'CANCELLED' AND o.cancelled_at IS NOT NULL AND EXTRACT(EPOCH FROM (o.cancelled_at - o.created_at)) > 180)
+                OR (o.status IN ('REQUESTED', 'OFFERING') AND EXTRACT(EPOCH FROM (NOW() - o.created_at)) > 180)
+            ) THEN 1 END) AS timeoutCancelOver180s
+        FROM taxi_orders o
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+    """, nativeQuery = true)
+    fun getCancellationBreakdownByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    @Query(value = """
+        SELECT 
+            COUNT(CASE WHEN o.status = 'COMPLETED' AND (o.is_evos_driver_assigned = false AND o.driver_id IS NOT NULL) THEN 1 END) AS ownFleetCompleted,
+            COUNT(CASE WHEN o.status = 'COMPLETED' AND (o.is_evos_driver_assigned = true OR (o.is_sent_to_evos = true AND o.driver_id IS NULL)) THEN 1 END) AS evosCompleted,
+            COUNT(CASE WHEN o.status = 'COMPLETED' AND o.assignment_type = 'CHAIN' THEN 1 END) AS chainCount,
+            COUNT(CASE WHEN o.status = 'COMPLETED' AND o.assignment_type IN ('AUTO', 'CYCLE', 'HOME') THEN 1 END) AS autoFilterCount,
+            COUNT(CASE WHEN o.status = 'COMPLETED' AND (o.assignment_type = 'ETHER' OR o.assignment_type IS NULL) AND o.is_evos_driver_assigned = false THEN 1 END) AS etherCount
+        FROM taxi_orders o
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+    """, nativeQuery = true)
+    fun getFleetSplitByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    @Query(value = """
+        SELECT 
+            CAST(EXTRACT(HOUR FROM o.created_at) AS INTEGER) AS hourOfDay,
+            COUNT(o.id) AS totalOrders,
+            COUNT(CASE WHEN o.status = 'COMPLETED' THEN 1 END) AS completedOrders,
+            COUNT(CASE WHEN o.status = 'CANCELLED' THEN 1 END) AS cancelledOrders,
+            COUNT(CASE WHEN o.boost_added > 0 THEN 1 END) AS boostOrders
+        FROM taxi_orders o
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+        GROUP BY CAST(EXTRACT(HOUR FROM o.created_at) AS INTEGER)
+        ORDER BY hourOfDay ASC
+    """, nativeQuery = true)
+    fun getHourlyDemandByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    @Query(value = """
+        SELECT 
+            s.name AS sectorName,
+            COUNT(o.id) AS totalOrders,
+            COUNT(CASE WHEN o.status = 'COMPLETED' THEN 1 END) AS completedOrders,
+            COUNT(CASE WHEN o.status = 'CANCELLED' THEN 1 END) AS cancelledOrders,
+            COALESCE(AVG(o.price), 0.0) AS avgPrice
+        FROM taxi_orders o
+        INNER JOIN sectors s ON o.origin_sector_id = s.id
+        WHERE o.created_at BETWEEN :startDate AND :endDate
+        GROUP BY s.id, s.name
+        ORDER BY totalOrders DESC
+        LIMIT 12
+    """, nativeQuery = true)
+    fun getSectorDemandByPeriod(
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): List<Array<Any>>
+
+    // Когортный анализ по реальным завершенным поездкам (включая EvoS и свой парк)
+    @Query(value = """
+        SELECT 
+            o.client_id AS clientId,
+            MIN(o.created_at) AS firstRideAt,
+            COUNT(o.id) AS completedRidesCount
+        FROM taxi_orders o
+        WHERE o.status = 'COMPLETED'
+          AND o.client_id <> 999999
+        GROUP BY o.client_id
+    """, nativeQuery = true)
+    fun findClientCompletedOrderCohorts(): List<Array<Any>>
+
+    // Последний известный device_id клиента из заказов (для антифрода промокодов)
+    @Query(value = """
+        SELECT o.client_device_id 
+        FROM taxi_orders o 
+        WHERE o.client_id = :clientId 
+          AND o.client_device_id IS NOT NULL 
+          AND TRIM(o.client_device_id) <> ''
+        ORDER BY o.id DESC 
+        LIMIT 1
+    """, nativeQuery = true)
+    fun findLatestDeviceIdByClientId(@Param("clientId") clientId: Long): String?
 
     // 6. Популярные адреса поездок в широком радиусе (bounding box) для отбора адресов от 2.0 км и дальше
     @Query(value = """

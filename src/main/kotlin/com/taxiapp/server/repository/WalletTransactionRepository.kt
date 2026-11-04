@@ -6,15 +6,15 @@ import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
+import java.time.LocalDateTime
 
 @Repository
 interface WalletTransactionRepository : JpaRepository<WalletTransaction, Long> {
 
-    // Старый метод (оставляем, чтобы не сломать совместимость, если где-то используется)
     fun findAllByDriverId(driverId: Long): List<WalletTransaction>
 
-    // Явно объявляем метод с пагинацией, чтобы DriverService мог его вызвать
     fun findAllByDriverIdOrderByCreatedAtDesc(driverId: Long, pageable: Pageable): Page<WalletTransaction>
 
     fun findAllByDriverIdAndStatusOrderByCreatedAtDesc(
@@ -23,10 +23,22 @@ interface WalletTransactionRepository : JpaRepository<WalletTransaction, Long> {
         pageable: Pageable
     ): Page<WalletTransaction>
 
-    // Проверка идемпотентности платежа без выгрузки всей таблицы через findAll()
     fun existsByDescriptionContaining(orderId: String): Boolean
 
-    // Подсчет общей суммы для Админки (Финансы)
+    // Подсчет общей суммы для Админки (Финансы и Аналитика)
     @Query("SELECT SUM(ABS(w.amount)) FROM WalletTransaction w WHERE w.operationType = :type")
-    fun sumTotalByOperationType(type: TransactionType): Double?
+    fun sumTotalByOperationType(@Param("type") type: TransactionType): Double?
+
+    // Подсчет суммы комиссий / бонусов за выбранный период
+    @Query("""
+        SELECT COALESCE(SUM(ABS(w.amount)), 0.0)
+        FROM WalletTransaction w
+        WHERE w.operationType = :type
+          AND w.createdAt BETWEEN :startDate AND :endDate
+    """)
+    fun sumTotalByOperationTypeAndPeriod(
+        @Param("type") type: TransactionType,
+        @Param("startDate") startDate: LocalDateTime,
+        @Param("endDate") endDate: LocalDateTime
+    ): Double?
 }

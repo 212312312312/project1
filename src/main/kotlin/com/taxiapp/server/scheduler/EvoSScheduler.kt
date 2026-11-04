@@ -3,6 +3,7 @@ package com.taxiapp.server.scheduler
 import com.taxiapp.server.dto.order.TrackingLocationDto
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.order.TaxiOrderTrack
+import com.taxiapp.server.repository.ClientRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.repository.TaxiOrderTrackRepository
 import com.taxiapp.server.service.ChatService
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit
 @Component
 class EvoSScheduler(
     private val orderRepository: TaxiOrderRepository,
+    private val clientRepository: ClientRepository,
     private val evoSService: EvoSService,
     private val settingsService: SettingsService,
     private val orderService: OrderService,
@@ -116,8 +118,10 @@ class EvoSScheduler(
 
             if (execStatus.equals("Executed", ignoreCase = true) || execStatus.equals("Completed", ignoreCase = true) || closeReason == 0) {
                 if (order.status != OrderStatus.COMPLETED) {
+                    val now = LocalDateTime.now()
                     order.status = OrderStatus.COMPLETED
-                    order.completedAt = LocalDateTime.now()
+                    order.completedAt = now
+                    order.finalPrice = order.price
                     isChanged = true
                     statusChanged = true
                     pushTitle = "Поїздку завершено"
@@ -126,7 +130,10 @@ class EvoSScheduler(
                     redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
                     lastSavedEvosTrackMap.remove(order.id)
 
+                    // ИСПРАВЛЕНО: синхронно увеличиваем и tripsCount, и totalCompletedOrders (для когортной аналитики)
                     order.client.tripsCount += 1
+                    order.client.totalCompletedOrders += 1
+                    clientRepository.save(order.client)
 
                     if (order.appliedDiscount > 0.0) {
                         if (order.promoPlanId != null) {
@@ -154,9 +161,11 @@ class EvoSScheduler(
                 }
             } else if (execStatus.equals("Canceled", ignoreCase = true) || closeReason > 0) {
                 if (order.status != OrderStatus.CANCELLED) {
+                    val now = LocalDateTime.now()
                     order.status = OrderStatus.CANCELLED
                     order.cancellationReason = evosState.cancelReasonComment ?: "Скасовано партнерською службою (код: $closeReason)"
-                    order.completedAt = LocalDateTime.now()
+                    order.completedAt = now
+                    order.cancelledAt = now // ИСПРАВЛЕНО: фиксируем cancelledAt для корректного расчета аналитики отмен
                     isChanged = true
                     statusChanged = true
                     pushTitle = "Замовлення скасовано"
