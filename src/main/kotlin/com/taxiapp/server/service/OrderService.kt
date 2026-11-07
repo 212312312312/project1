@@ -494,14 +494,8 @@ class OrderService(
             newOrder.stops.addAll(stopsList)
         }
 
-        if (initialStatus == OrderStatus.SCHEDULED) {
-            logger.info("Order scheduled for ${newOrder.scheduledAt}")
-            val savedScheduled = orderRepository.save(newOrder)
-            redisTemplate.opsForSet().add(clientActiveOrdersKey, savedScheduled.id.toString())
-            broadcastOrderChange(savedScheduled, "ADD")
-            return TaxiOrderDto(savedScheduled)
-        }
-
+        // ✅ ИСПРАВЛЕНО: Сначала сохраняем заказ и при оплате CARD выполняем холд средств,
+        // и только после успешного холда завершаем создание запланированного заказа (SCHEDULED).
         var savedOrder = orderRepository.save(newOrder)
         redisTemplate.opsForSet().add(clientActiveOrdersKey, savedOrder.id.toString())
 
@@ -590,20 +584,34 @@ class OrderService(
         }
 
         // 3. ETHER / SMART CANDIDATE
+        logger.info(">>> [OrderMatching] Найдено водителей поблизости (nearbyDrivers): ${nearbyDrivers.size}")
         val candidates = nearbyDrivers.filter { drv ->
-            if (rejectedIds.contains(drv.id)) return@filter false
-            if (drv.activityScore <= -1) return@filter false
+            if (rejectedIds.contains(drv.id)) {
+                logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: уже отклонял этот заказ")
+                return@filter false
+            }
+            if (drv.activityScore <= -1) {
+                logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: низкая активность (${drv.activityScore})")
+                return@filter false
+            }
 
             val dist = GeometryUtils.calculateDistance(drv.latitude ?: 0.0, drv.longitude ?: 0.0, pickupLat, pickupLng)
-            if (dist > drv.searchRadius) return@filter false
+            if (dist > drv.searchRadius) {
+                logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: дистанция ${String.format("%.2f", dist)} км > радиуса поиска водителя (${drv.searchRadius} км)")
+                return@filter false
+            }
 
-            when (drv.searchMode) {
+            val modeMatch = when (drv.searchMode) {
                 com.taxiapp.server.model.enums.DriverSearchMode.CHAIN -> true
                 com.taxiapp.server.model.enums.DriverSearchMode.HOME -> {
                     drv.homeRidesLeft > 0 && drv.homeSectors.any { it.id == destSector?.id }
                 }
                 else -> false
             }
+            if (!modeMatch) {
+                logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: режим поиска = ${drv.searchMode} (нужен CHAIN или HOME)")
+            }
+            modeMatch
         }
 
         if (candidates.isNotEmpty()) {
@@ -753,7 +761,10 @@ class OrderService(
         sendSocketAfterCommit("/topic/admin/orders", message)
         sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", message)
 
-        if (order.status == OrderStatus.REQUESTED) {
+        val isAvailableInEther = order.status == OrderStatus.REQUESTED ||
+            (order.status == OrderStatus.SCHEDULED && order.driver == null && order.offeredDriver == null)
+
+        if (isAvailableInEther && action != "REMOVE") {
             sendSocketAfterCommit("/topic/drivers/ether", message)
         } else {
             sendSocketAfterCommit("/topic/drivers/ether", OrderSocketMessage("REMOVE", orderUuidStr, null))
@@ -847,7 +858,7 @@ class OrderService(
         }
 
         val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
-            .filter { it.isActive }
+            .filter { it.isActive && it.isEther }
 
         if (activeFilters.isEmpty()) {
             return availableOrdersByTariff.map { TaxiOrderDto(it) }
@@ -905,11 +916,15 @@ class OrderService(
             val minPrice = filter.complexMinPrice ?: 0.0
             val kmInMin = filter.complexKmInMin ?: 0.0
             val priceCity = filter.complexPriceKmCity ?: 0.0
+            val priceSuburbs = filter.complexPriceKmSuburbs ?: priceCity
+
+            val isOutOfCity = order.destinationSector?.isCity == false || order.originSector?.isCity == false
+            val ratePerKm = if (isOutOfCity && priceSuburbs > 0.0) priceSuburbs else priceCity
 
             val requiredPrice = if (totalKm <= kmInMin) {
                 minPrice
             } else {
-                minPrice + (totalKm - kmInMin) * priceCity
+                minPrice + (totalKm - kmInMin) * ratePerKm
             }
             if (order.price < requiredPrice) return false
         }
@@ -1049,8 +1064,10 @@ class OrderService(
             order.authorizedAmount = 0.0
         }
 
-        val assignedDriver = order.driver
-        if (assignedDriver != null && (
+        // ✅ ИСПРАВЛЕНО: Во время OFFERING водитель находится в order.offeredDriver (а order.driver == null)!
+        // Теперь пуш ORDER_CANCEL гарантированно уходит водителю и во время 20-секундного оффера, и во время поездки.
+        val targetDriver = order.driver ?: order.offeredDriver
+        if (targetDriver != null && (
                 order.status == OrderStatus.OFFERING ||
                 order.status == OrderStatus.ACCEPTED ||
                 order.status == OrderStatus.DRIVER_ARRIVED ||
@@ -1058,7 +1075,8 @@ class OrderService(
                 order.status == OrderStatus.ARRIVED_AT_WAYPOINT
             )
         ) {
-            notificationService.sendOrderCancelToDriver(assignedDriver, order)
+            logger.info(">>> [CancelOrder] Отправляем сигнал отмены заказа #${order.id} водителю #${targetDriver.id} (статус был: ${order.status})")
+            notificationService.sendOrderCancelToDriver(targetDriver, order)
         }
 
         if (reasonText != null) {
@@ -1835,8 +1853,9 @@ class OrderService(
                     val epochSecond = expiresAt.toEpochSecond(java.time.ZoneOffset.UTC)
                     redisTemplate.opsForZSet().add("orders:expired_offers", order.id.toString(), epochSecond.toDouble())
 
-                    notificationService.sendOrderOffer(bestDriver, order)
-                    orderRepository.save(order)
+                    val savedOffer = orderRepository.save(order)
+                    notificationService.sendOrderOffer(bestDriver, savedOffer)
+                    broadcastOrderChange(savedOffer, "UPDATE")
                 } else {
                     if (order.status != OrderStatus.REQUESTED) {
                         order.status = OrderStatus.REQUESTED
@@ -1861,47 +1880,106 @@ class OrderService(
         val args = org.springframework.data.redis.connection.RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
             .includeCoordinates().sortAscending()
 
-        val geoResults = redisTemplate.opsForGeo().radius("drivers:geo", circle, args) ?: return emptyList()
-
-        val driverIds = geoResults.content.mapNotNull { "${it.content.name}".toLongOrNull() }
-        if (driverIds.isEmpty()) return emptyList()
+        val geoResults = try {
+            redisTemplate.opsForGeo().radius("drivers:geo", circle, args)
+        } catch (e: Exception) {
+            logger.warn(">>> [OrderMatching] Помилка читання drivers:geo з Redis: ${e.message}")
+            null
+        }
 
         val driversWithActiveOffers = orderRepository.findAllByStatus(OrderStatus.OFFERING)
             .mapNotNull { it.offeredDriver?.id }
             .toSet()
 
+        val activeOrderDriverIds = orderRepository.findAllByStatusIn(
+            listOf(OrderStatus.ACCEPTED, OrderStatus.DRIVER_ARRIVED, OrderStatus.IN_PROGRESS, OrderStatus.ARRIVED_AT_WAYPOINT)
+        ).mapNotNull { it.driver?.id }.toSet()
+
+        val geoContent = geoResults?.content ?: emptyList()
+        val driverIds = geoContent.mapNotNull { "${it.content.name}".toLongOrNull() }
+
+        // ✅ ИСПРАВЛЕНО: Если в Redis GEO пусто (например, телефон стоял на месте и запись истекла),
+        // делаем страховочную выборку онлайн-водителей из БД и восстанавливаем их в Redis!
+        if (driverIds.isEmpty()) {
+            val dbOnlineDrivers = driverRepository.findAll().filter { drv ->
+                drv.isOnline &&
+                !drv.isBlocked &&
+                drv.latitude != null && drv.longitude != null &&
+                drv.latitude != 0.0 && drv.longitude != 0.0 &&
+                !driversWithActiveOffers.contains(drv.id) &&
+                !activeOrderDriverIds.contains(drv.id) &&
+                GeometryUtils.calculateDistance(drv.latitude!!, drv.longitude!!, pickupLat, pickupLng) <= maxRadiusKm
+            }
+
+            if (dbOnlineDrivers.isNotEmpty()) {
+                logger.info(">>> [OrderMatching] Redis GEO був порожній, відновлено ${dbOnlineDrivers.size} онлайн-водіїв з БД")
+                for (drv in dbOnlineDrivers) {
+                    val drvIdStr = drv.id.toString()
+                    redisTemplate.opsForGeo().add("drivers:geo", org.springframework.data.geo.Point(drv.longitude!!, drv.latitude!!), drvIdStr)
+                    val restoredMeta = mapOf(
+                        "fullName" to (drv.fullName ?: "Водій"),
+                        "carModel" to (drv.car?.model ?: "Не вказано"),
+                        "carColor" to (drv.car?.color ?: ""),
+                        "status" to drv.searchMode.name,
+                        "isOnline" to "true",
+                        "lat" to drv.latitude.toString(),
+                        "lng" to drv.longitude.toString(),
+                        "bearing" to (drv.bearing ?: 0f).toString(),
+                        "updatedAt" to System.currentTimeMillis().toString()
+                    )
+                    redisTemplate.opsForHash<String, Any>().put("drivers:meta", drvIdStr, restoredMeta)
+                }
+                return dbOnlineDrivers.filter { drv -> isDriverTariffMatching(drv, tariff) }
+            }
+            return emptyList()
+        }
+
         val driversFromDb = driverRepository.findAllById(driverIds).associateBy { it.id }
 
-        return geoResults.content.mapNotNull { result ->
+        return geoContent.mapNotNull { result ->
             val id = "${result.content.name}".toLongOrNull() ?: return@mapNotNull null
 
-            if (driversWithActiveOffers.contains(id)) return@mapNotNull null
+            if (driversWithActiveOffers.contains(id) || activeOrderDriverIds.contains(id)) {
+                return@mapNotNull null
+            }
 
             val driver = driversFromDb[id] ?: return@mapNotNull null
             if (driver.isBlocked) return@mapNotNull null
 
-            val isTariffActive = if (driver.selectedTariffs.isEmpty()) {
-                driver.allowedTariffs.contains(tariff)
-            } else {
-                driver.selectedTariffs.contains(tariff)
+            if (!isDriverTariffMatching(driver, tariff)) {
+                logger.info(">>> [OrderMatching] Водій #$id пропущений через фільтр тарифу (${tariff?.name})")
+                return@mapNotNull null
             }
-            if (tariff != null && !isTariffActive) return@mapNotNull null
 
             val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", id.toString()) as? Map<*, *>
             if (meta != null) {
-                val isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false
-                if (!isOnline) return@mapNotNull null
+                val isOnlineRedis = (meta["isOnline"] as? String)?.toBoolean() ?: driver.isOnline
+                if (!isOnlineRedis && !driver.isOnline) return@mapNotNull null
 
                 driver.isOnline = true
                 driver.latitude = result.content.point.y
                 driver.longitude = result.content.point.x
-                driver.bearing = (meta["bearing"] as? String)?.toFloat() ?: 0f
-                driver.searchMode = com.taxiapp.server.model.enums.DriverSearchMode.valueOf(meta["status"] as? String ?: "MANUAL")
-            } else {
+                driver.bearing = (meta["bearing"] as? String)?.toFloatOrNull() ?: 0f
+                // ✅ ИСПРАВЛЕНО: Берем searchMode из БД (driver.searchMode), так как POST /api/v1/driver/search-settings
+                // сохраняет актуальный режим в БД!
+            } else if (!driver.isOnline) {
                 return@mapNotNull null
             }
             driver
         }
+    }
+
+    private fun isDriverTariffMatching(driver: Driver, tariff: com.taxiapp.server.model.order.CarTariff?): Boolean {
+        if (tariff == null) return true
+        val driverTariffIds = if (driver.selectedTariffs.isNotEmpty()) {
+            driver.selectedTariffs.mapNotNull { it.id }.toSet()
+        } else {
+            driver.allowedTariffs.mapNotNull { it.id }.toSet()
+        }
+        return driverTariffIds.isEmpty() ||
+               driverTariffIds.contains(tariff.id) ||
+               tariff.name.equals("Стандарт", ignoreCase = true) ||
+               tariff.name.equals("Cтандарт", ignoreCase = true)
     }
 
     private fun blockCoordinateRounding(v: Double): Double = v

@@ -53,17 +53,17 @@ class DriverFilterService(
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
 
-        if (driver.photoControlRestricted) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
-        }
-
-        if (!driver.isOnline) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
-        }
-
         val isActive = req.isEther || req.isAuto || req.isCycle
 
+        // ✅ ИСПРАВЛЕНО: Разрешаем создавать шаблон фильтра даже в Офлайне!
+        // Проверяем онлайн и фотоконтроль только если фильтр сразу активируется.
         if (isActive) {
+            if (driver.photoControlRestricted) {
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
+            }
+            if (!driver.isOnline) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Переключіть режим на Онлайн")
+            }
             checkActiveFiltersLimit(driverId)
             validateModes(req.isAuto, req.isCycle)
         }
@@ -181,15 +181,28 @@ class DriverFilterService(
         if (!filter.isActive) checkActiveFiltersLimit(getCurrentDriverId(), id)
 
         filter.isActive = !filter.isActive
+        if (!filter.isActive) {
+            filter.isEther = false
+            filter.isAuto = false
+            filter.isCycle = false
+        } else if (!filter.isEther && !filter.isAuto && !filter.isCycle) {
+            filter.isEther = true
+        }
+        filterRepository.save(filter)
     }
 
     @Transactional
     fun disableAll() {
         val filters = filterRepository.findAllByDriverId(getCurrentDriverId())
-        filters.forEach { it.isActive = false }
+        filters.forEach {
+            it.isActive = false
+            it.isEther = false
+            it.isAuto = false
+            it.isCycle = false
+        }
+        filterRepository.saveAll(filters)
     }
 
-    // ЗАЩИТА ОТ IDOR: Проверяем владельца фильтра перед удалением
     @Transactional
     fun deleteFilter(id: Long) {
         val filter = filterRepository.findById(id)

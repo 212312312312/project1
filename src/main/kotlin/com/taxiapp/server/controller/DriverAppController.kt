@@ -453,6 +453,49 @@ class DriverAppController(
         ))
     }
 
+    @PostMapping("/cars/documents", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
+    fun uploadCarDocument(
+        @AuthenticationPrincipal userDetails: UserDetails,
+        @RequestParam("field") field: String,
+        @RequestParam("file") file: org.springframework.web.multipart.MultipartFile
+    ): ResponseEntity<CarDto> {
+        val driver = getDriverFromUser(userDetails)
+        val car = driver.car ?: carRepository.findAllByDriver(driver).firstOrNull()
+            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "У вас ще немає доданого авто")
+
+        if (file.isEmpty) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Файл порожній")
+        }
+
+        val allowedExtensions = listOf("jpg", "jpeg", "png", "webp")
+        val originalFilename = file.originalFilename ?: "photo.jpg"
+        val extension = originalFilename.substringAfterLast('.', "jpg").lowercase()
+        if (extension !in allowedExtensions) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимий формат файлу: .$extension")
+        }
+
+        val savedUrl = fileStorageService.storeFile(file)
+
+        when (field) {
+            "tech_passport_front" -> car.techPassportFront = savedUrl
+            "tech_passport_back" -> car.techPassportBack = savedUrl
+            "insurance_photo" -> car.insurancePhoto = savedUrl
+            "photo_front" -> car.photoFront = savedUrl
+            "photo_back" -> car.photoBack = savedUrl
+            "photo_left" -> car.photoLeft = savedUrl
+            "photo_right" -> {
+                car.photoRight = savedUrl
+                if (car.photoUrl.isNullOrEmpty()) car.photoUrl = savedUrl
+            }
+            "photo_seats_front" -> car.photoSeatsFront = savedUrl
+            "photo_seats_back" -> car.photoSeatsBack = savedUrl
+            else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Невідоме поле документа: $field")
+        }
+
+        val savedCar = carRepository.save(car)
+        return ResponseEntity.ok(CarDto(savedCar))
+    }
+
     @GetMapping("/cars")
     fun getMyCars(@AuthenticationPrincipal userDetails: UserDetails): ResponseEntity<List<CarDto>> {
         val driver = getDriverFromUser(userDetails)

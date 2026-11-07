@@ -130,11 +130,22 @@ class DriverLocationService(
         val existingMeta = redisTemplate.opsForHash<String, Any>().get(META_KEY, driverIdStr) as? Map<*, *>
 
         val fullName = driver.fullName ?: (existingMeta?.get("fullName") as? String) ?: "Водій"
-        // Берем модель и цвет авто из Redis-меты (куда они пишутся при выходе на линию), чтобы не будить Lazy-запрос к таблице cars
         val carModel = (existingMeta?.get("carModel") as? String) ?: try { driver.car?.model } catch (_: Exception) { null } ?: "Не вказано"
         val carColor = (existingMeta?.get("carColor") as? String) ?: try { driver.car?.color } catch (_: Exception) { null } ?: ""
         val searchMode = driver.searchMode.name
-        val isOnline = driver.isOnline
+        val isOnline = driver.isOnline || ((existingMeta?.get("isOnline") as? String)?.toBoolean() == true)
+
+        // Сохраняем свежие координаты в БД, если они еще не были записаны или устарели
+        if (driver.latitude == null || driver.longitude == null || driver.latitude == 0.0 || driver.longitude == 0.0 ||
+            calculateDistanceMeters(driver.latitude ?: 0.0, driver.longitude ?: 0.0, request.lat, request.lng) > 50.0) {
+            try {
+                driver.latitude = request.lat
+                driver.longitude = request.lng
+                driver.bearing = request.bearing ?: 0f
+                driver.lastUpdate = java.time.LocalDateTime.now()
+                driverRepository.save(driver)
+            } catch (_: Exception) {}
+        }
 
         processLocationUpdate(
             driverId = driverId,
@@ -344,7 +355,7 @@ class DriverLocationService(
 
             val isOnline = (meta["isOnline"] as? String)?.toBoolean() ?: false
             val lastUpdate = (meta["updatedAt"] as? String)?.toLongOrNull() ?: 0L
-            val isStale = lastUpdate > 0L && (now - lastUpdate > 60_000L)
+            val isStale = lastUpdate > 0L && (now - lastUpdate > 180_000L)
 
             if (!isOnline || isStale) {
                 // Удаляем неактивного/зависшего водителя из гео-индекса, чтобы он не блокировал выдачу
@@ -405,7 +416,7 @@ class DriverLocationService(
 
             val lastUpdateStr = meta["updatedAt"] as? String
             val lastUpdate = lastUpdateStr?.toLongOrNull() ?: 0L
-            if (lastUpdate > 0 && (now - lastUpdate > 60_000)) {
+            if (lastUpdate > 0 && (now - lastUpdate > 180_000)) {
                 redisTemplate.opsForGeo().remove(GEO_KEY, driverIdStr)
                 redisTemplate.opsForHash<String, Any>().delete(META_KEY, driverIdStr)
                 return@mapIndexedNotNull null

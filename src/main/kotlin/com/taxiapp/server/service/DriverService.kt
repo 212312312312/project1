@@ -441,9 +441,46 @@ class DriverService(
 
         driver.searchMode = settings.mode
         driver.searchRadius = settings.radius.coerceIn(0.5, 30.0)
-        driverRepository.save(driver)
 
-        return getSearchState(driver)
+        // ✅ ИСПРАВЛЕНО: Если водитель включает активный поиск (CHAIN или HOME),
+        // гарантированно переводим его в статус онлайн в БД и синхронизируем Redis (drivers:meta и drivers:geo)!
+        if (settings.mode == DriverSearchMode.CHAIN || settings.mode == DriverSearchMode.HOME) {
+            driver.isOnline = true
+            driver.lastUpdate = LocalDateTime.now()
+        }
+
+        val savedDriver = driverRepository.save(driver)
+
+        val driverIdStr = savedDriver.id.toString()
+        val metaKey = "drivers:meta"
+        val geoKey = "drivers:geo"
+        val existingMeta = redisTemplateAny.opsForHash<String, Any>().get(metaKey, driverIdStr) as? Map<*, *>
+
+        val lat = savedDriver.latitude?.takeIf { it != 0.0 }
+            ?: (existingMeta?.get("lat") as? String)?.toDoubleOrNull()?.takeIf { it != 0.0 }
+        val lng = savedDriver.longitude?.takeIf { it != 0.0 }
+            ?: (existingMeta?.get("lng") as? String)?.toDoubleOrNull()?.takeIf { it != 0.0 }
+
+        if (savedDriver.isOnline) {
+            val updatedMeta = mapOf(
+                "fullName" to (savedDriver.fullName ?: "Водій"),
+                "carModel" to (savedDriver.car?.model ?: (existingMeta?.get("carModel") as? String) ?: "Не вказано"),
+                "carColor" to (savedDriver.car?.color ?: (existingMeta?.get("carColor") as? String) ?: ""),
+                "status" to savedDriver.searchMode.name,
+                "isOnline" to "true",
+                "lat" to (lat?.toString() ?: "0.0"),
+                "lng" to (lng?.toString() ?: "0.0"),
+                "bearing" to ((existingMeta?.get("bearing") as? String) ?: "0.0"),
+                "updatedAt" to System.currentTimeMillis().toString()
+            )
+            redisTemplateAny.opsForHash<String, Any>().put(metaKey, driverIdStr, updatedMeta)
+
+            if (lat != null && lng != null) {
+                redisTemplateAny.opsForGeo().add(geoKey, Point(lng, lat), driverIdStr)
+            }
+        }
+
+        return getSearchState(savedDriver)
     }
 
     private fun checkAndResetHomeLimit(driver: Driver) {
