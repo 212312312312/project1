@@ -54,6 +54,8 @@ class OrderAdminService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Заказ уже завершен или отменен")
         }
 
+        val targetDriver = order.driver ?: order.offeredDriver
+
         // 1. Отмена заказа у партнеров (EvoS), если он туда транслировался
         val evosUid = order.evosOrderUid
         if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
@@ -76,7 +78,7 @@ class OrderAdminService(
         // 3. Очищаем активные ключи в Redis
         redisTemplate.opsForSet().remove("client:active_orders:${order.client.id}", order.id.toString())
         redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
-        order.driver?.id?.let { drvId ->
+        targetDriver?.id?.let { drvId ->
             redisTemplate.opsForHash<String, Any>().delete("orders:active_drivers", drvId.toString())
         }
 
@@ -100,11 +102,11 @@ class OrderAdminService(
                 orderId = updatedOrder.id!!,
                 status = OrderStatus.CANCELLED.name,
                 title = "Замовлення скасовано",
-                body = "Диспетчер скасував замовлення."
+                body = "Ваше замовлення було скасовано диспетчером."
             )
         }
 
-        updatedOrder.driver?.let { drv ->
+        targetDriver?.let { drv ->
             notificationService.sendOrderCancelToDriver(drv, updatedOrder)
         }
 

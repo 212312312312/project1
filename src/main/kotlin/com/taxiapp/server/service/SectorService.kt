@@ -54,11 +54,9 @@ class SectorService(
             return current
         }
 
-        val sectors = sectorRepository.findAll().map { sector ->
-            // Гарантируем, что точки инициализированы и отсортированы в памяти
-            val sortedPoints = sector.points.sortedBy { it.pointOrder }.toMutableList()
-            sector.points = sortedPoints
-            sector
+        val sectors = sectorRepository.findAll().onEach { sector ->
+            // Гарантируем, что точки инициализированы и отсортированы in-place без замены ссылки PersistentBag
+            sector.points.sortBy { it.pointOrder }
         }
         val dtos = sectors.map { mapToDto(it) }
 

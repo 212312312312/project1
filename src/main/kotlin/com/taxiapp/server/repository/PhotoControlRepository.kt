@@ -9,9 +9,11 @@ import java.time.LocalDateTime
 
 @Repository
 interface PhotoControlRepository : JpaRepository<PhotoControl, Long> {
-    
+
+    fun findAllByDriverId(driverId: Long): List<PhotoControl>
+
     fun findByDriverIdAndStatusIn(
-        driverId: Long, 
+        driverId: Long,
         statuses: List<PhotoControlStatus>
     ): List<PhotoControl>
 

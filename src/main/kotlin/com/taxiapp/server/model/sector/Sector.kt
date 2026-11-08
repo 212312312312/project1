@@ -21,6 +21,7 @@ class Sector(
     // ------------------
 
     @OneToMany(mappedBy = "sector", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
+    @OrderBy("pointOrder ASC")
     var points: MutableList<SectorPoint> = mutableListOf(),
 
     @CreationTimestamp

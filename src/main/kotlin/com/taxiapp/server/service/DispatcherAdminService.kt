@@ -4,6 +4,7 @@ import com.taxiapp.server.dto.dispatcher.CreateDispatcherRequest
 import com.taxiapp.server.dto.dispatcher.DispatcherDto
 import com.taxiapp.server.model.enums.Role
 import com.taxiapp.server.model.user.User
+import com.taxiapp.server.repository.RefreshTokenRepository
 import com.taxiapp.server.repository.UserRepository
 import org.springframework.http.HttpStatus
 import org.springframework.security.crypto.password.PasswordEncoder
@@ -14,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException
 @Service
 class DispatcherAdminService(
     private val userRepository: UserRepository,
+    private val refreshTokenRepository: RefreshTokenRepository,
     private val passwordEncoder: PasswordEncoder
 ) {
 
@@ -49,9 +51,9 @@ class DispatcherAdminService(
     fun updateDispatcher(id: Long, request: CreateDispatcherRequest): DispatcherDto {
         val dispatcher = userRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Диспетчер $id не знайдений") }
-        
+
         if (dispatcher.role != Role.DISPATCHER) {
-             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Можна редагувати тільки диспетчерів")
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Можна редагувати тільки диспетчерів")
         }
 
         // Перевірка на унікальність логіну (якщо він змінюється)
@@ -61,9 +63,9 @@ class DispatcherAdminService(
             }
             dispatcher.userLogin = request.userLogin
         }
-        
+
         dispatcher.fullName = request.fullName
-        
+
         // Оновлюємо пароль, ТІЛЬКИ якщо він був наданий
         if (request.password != null) {
             dispatcher.passwordHash = passwordEncoder.encode(request.password)
@@ -78,10 +80,13 @@ class DispatcherAdminService(
     fun deleteDispatcher(id: Long) {
         val dispatcher = userRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Диспетчер $id не знайдений") }
-            
+
         if (dispatcher.role != Role.DISPATCHER) {
-             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Можна видаляти тільки диспетчерів")
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Можна видаляти тільки диспетчерів")
         }
-        userRepository.deleteById(id)
+
+        // Видаляємо refresh-токени користувача перед видаленням запису в users
+        refreshTokenRepository.deleteByUser(dispatcher)
+        userRepository.delete(dispatcher)
     }
 }

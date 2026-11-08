@@ -14,13 +14,19 @@ import com.taxiapp.server.model.user.Car
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.CarBrandRepository
 import com.taxiapp.server.repository.CarModelRepository
-import com.taxiapp.server.service.CarClassifierService
 import com.taxiapp.server.repository.CarRepository
 import com.taxiapp.server.repository.CarTariffRepository
+import com.taxiapp.server.repository.DriverFilterRepository
+import com.taxiapp.server.repository.DriverNotificationRepository
 import com.taxiapp.server.repository.DriverRepository
+import com.taxiapp.server.repository.OrderRatingRepository
+import com.taxiapp.server.repository.PhotoControlRepository
+import com.taxiapp.server.repository.RefreshTokenRepository
+import com.taxiapp.server.repository.SmsVerificationCodeRepository
 import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.repository.UserRepository
 import com.taxiapp.server.repository.WalletTransactionRepository
+import jakarta.persistence.EntityManager
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.http.HttpStatus
@@ -44,10 +50,17 @@ class DriverAdminService(
     private val carRepository: CarRepository,
     private val messagingTemplate: SimpMessagingTemplate,
     private val carClassifierService: CarClassifierService,
-private val carBrandRepository: CarBrandRepository,
-private val carModelRepository: CarModelRepository,
+    private val carBrandRepository: CarBrandRepository,
+    private val carModelRepository: CarModelRepository,
     private val walletTransactionRepository: WalletTransactionRepository,
-    private val emailService: EmailService // <--- ДОДАНО
+    private val emailService: EmailService,
+    private val photoControlRepository: PhotoControlRepository,
+    private val refreshTokenRepository: RefreshTokenRepository,
+    private val driverFilterRepository: DriverFilterRepository,
+    private val driverNotificationRepository: DriverNotificationRepository,
+    private val orderRatingRepository: OrderRatingRepository,
+    private val smsCodeRepository: SmsVerificationCodeRepository,
+    private val entityManager: EntityManager
 ) {
 
     @Transactional(readOnly = true)
@@ -59,13 +72,13 @@ private val carModelRepository: CarModelRepository,
 
     @Transactional
     fun createDriver(
-        request: RegisterDriverRequest, 
-        file: MultipartFile?, 
+        request: RegisterDriverRequest,
+        file: MultipartFile?,
         carFiles: Map<String, MultipartFile>
     ): MessageResponse {
-        
+
         if (userRepository.existsByUserPhone(request.phoneNumber)) {
-             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Цей номер телефону вже зайнятий")
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Цей номер телефону вже зайнятий")
         }
 
         // 1. Создаем водителя
@@ -87,7 +100,7 @@ private val carModelRepository: CarModelRepository,
             this.activityScore = 1000
             this.balance = 0.0 // Явно ініціалізуємо баланс
         }
-        
+
         driver = driverRepository.save(driver)
 
         // 2. Создаем авто
@@ -97,14 +110,14 @@ private val carModelRepository: CarModelRepository,
             model = request.model,
             color = com.taxiapp.server.model.enums.CarColor.fromRawString(request.color).labelUk,
             plateNumber = request.plateNumber.trim().uppercase(),
-            vin = "", 
+            vin = "",
             year = request.year,
             carType = request.carType,
             status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
         )
-        
+
         saveCarPhotos(car, carFiles)
-        
+
         val savedCar = carRepository.save(car)
 
         // 3. Делаем авто активным
@@ -116,9 +129,9 @@ private val carModelRepository: CarModelRepository,
 
     @Transactional
     fun updateDriver(
-        driverId: Long, 
-        request: UpdateDriverRequest, 
-        file: MultipartFile?, 
+        driverId: Long,
+        request: UpdateDriverRequest,
+        file: MultipartFile?,
         carFiles: Map<String, MultipartFile>
     ): DriverDto {
         val driver = driverRepository.findById(driverId)
@@ -128,17 +141,17 @@ private val carModelRepository: CarModelRepository,
             fileStorageService.delete(driver.photoUrl)
             driver.photoUrl = fileStorageService.storeFile(file)
         }
-        
+
         val driverCar = driver.car
         if (driverCar != null) {
             saveCarPhotos(driverCar, carFiles)
-            
+
             request.make?.let { driverCar.make = it }
             request.model?.let { driverCar.model = it }
             request.color?.let { driverCar.color = com.taxiapp.server.model.enums.CarColor.fromRawString(it).labelUk }
             request.plateNumber?.let { driverCar.plateNumber = it }
             request.year?.let { driverCar.year = it }
-            
+
             if (request.carType != null) {
                 driverCar.carType = request.carType
             }
@@ -153,141 +166,160 @@ private val carModelRepository: CarModelRepository,
         request.email?.let { driver.email = it }
         request.rnokpp?.let { driver.rnokpp = it }
         request.driverLicense?.let { driver.driverLicense = it }
-        
+
         val updatedDriver = driverRepository.save(driver)
         return DriverDto(updatedDriver)
     }
 
     @Transactional(readOnly = true)
-fun getPendingCars(): List<PendingCarDto> {
-    return carRepository.findAll()
-        .filter { it.status == com.taxiapp.server.model.enums.CarStatus.PENDING }
-        .map { PendingCarDto(it) }
-}
+    fun getPendingCars(): List<PendingCarDto> {
+        return carRepository.findAll()
+            .filter { it.status == com.taxiapp.server.model.enums.CarStatus.PENDING }
+            .map { PendingCarDto(it) }
+    }
 
     @Transactional
-fun approveCar(carId: Long): MessageResponse {
-    val car = carRepository.findById(carId)
-        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Авто не знайдено") }
-    
-    car.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
-    car.rejectionReason = null 
-    
-    val driver = car.driver!!
-    
-    if (driver.car == null) {
-        driver.car = car
-    }
-    carRepository.save(car)
+    fun approveCar(carId: Long): MessageResponse {
+        val car = carRepository.findById(carId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Авто не знайдено") }
 
-    // Если одобренное авто является текущим активным — пересчитываем тарифы
-    if (driver.car?.id == car.id) {
-        // Пересчет разрешенных тарифов по классификатору
-        approveDriverRegistration(driver.id!!, null)
-    }
+        car.status = com.taxiapp.server.model.enums.CarStatus.ACTIVE
+        car.rejectionReason = null
 
-    val notification = mapOf(
-        "type" to "CAR_APPROVED",
-        "message" to "Ваше авто ${car.make} ${car.model} схвалено! Тепер воно доступне у списку.",
-        "carId" to car.id
-    )
-    messagingTemplate.convertAndSend("/topic/driver/${driver.id}", notification)
-    
-    return MessageResponse("Авто успішно схвалено!")
-}
+        val driver = car.driver!!
+
+        if (driver.car == null) {
+            driver.car = car
+        }
+        carRepository.save(car)
+
+        // Если одобренное авто является текущим активным — пересчитываем тарифы
+        if (driver.car?.id == car.id) {
+            approveDriverRegistration(driver.id!!, null)
+        }
+
+        val notification = mapOf(
+            "type" to "CAR_APPROVED",
+            "message" to "Ваше авто ${car.make} ${car.model} схвалено! Тепер воно доступне у списку.",
+            "carId" to car.id
+        )
+        messagingTemplate.convertAndSend("/topic/driver/${driver.id}", notification)
+
+        return MessageResponse("Авто успішно схвалено!")
+    }
 
     @Transactional
     fun rejectCar(carId: Long, reason: String): MessageResponse {
         val car = carRepository.findById(carId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Авто не знайдено") }
-        
+
         car.status = com.taxiapp.server.model.enums.CarStatus.REJECTED
         car.rejectionReason = reason
         carRepository.save(car)
-        
+
         return MessageResponse("Авто відхилено. Причина записана.")
     }
 
     private fun saveCarPhotos(car: Car, files: Map<String, MultipartFile>) {
         val mainPhoto = files["carPhoto"] ?: files["carFile"]
-        
+
         if (mainPhoto != null && !mainPhoto.isEmpty) {
             fileStorageService.delete(car.photoUrl)
             car.photoUrl = fileStorageService.storeFile(mainPhoto)
         }
 
-        files["techPassportFront"]?.let { 
+        files["techPassportFront"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.techPassportFront)
                 car.techPassportFront = fileStorageService.storeFile(it)
             }
         }
-        files["techPassportBack"]?.let { 
+        files["techPassportBack"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.techPassportBack)
                 car.techPassportBack = fileStorageService.storeFile(it)
             }
         }
-        files["insurancePhoto"]?.let { 
+        files["insurancePhoto"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.insurancePhoto)
                 car.insurancePhoto = fileStorageService.storeFile(it)
             }
         }
-        files["photoFront"]?.let { 
+        files["photoFront"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.photoFront)
                 car.photoFront = fileStorageService.storeFile(it)
             }
         }
-        files["photoBack"]?.let { 
+        files["photoBack"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.photoBack)
                 car.photoBack = fileStorageService.storeFile(it)
             }
         }
-        files["photoLeft"]?.let { 
+        files["photoLeft"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.photoLeft)
                 car.photoLeft = fileStorageService.storeFile(it)
             }
         }
-        files["photoRight"]?.let { 
+        files["photoRight"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.photoRight)
                 car.photoRight = fileStorageService.storeFile(it)
             }
         }
-        files["photoSeatsFront"]?.let { 
+        files["photoSeatsFront"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.photoSeatsFront)
                 car.photoSeatsFront = fileStorageService.storeFile(it)
             }
         }
-        files["photoSeatsBack"]?.let { 
+        files["photoSeatsBack"]?.let {
             if (!it.isEmpty) {
                 fileStorageService.delete(car.photoSeatsBack)
                 car.photoSeatsBack = fileStorageService.storeFile(it)
             }
         }
     }
+
     @Transactional
-fun rejectDriverRegistration(driverId: Long, reason: String) {
-    val driver = driverRepository.findById(driverId)
-        .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
-    
-    driver.registrationStatus = RegistrationStatus.REJECTED
-    driverRepository.save(driver)
-}
+    fun rejectDriverRegistration(driverId: Long, reason: String) {
+        val driver = driverRepository.findById(driverId)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
+
+        driver.registrationStatus = RegistrationStatus.REJECTED
+        driverRepository.save(driver)
+    }
+
     @Transactional
     fun deleteDriver(driverId: Long): MessageResponse {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
 
+        // 1. Удаляем фото профиля и удостоверения водителя
         fileStorageService.delete(driver.photoUrl)
-        
+        fileStorageService.delete(driver.driverLicenseFront)
+        fileStorageService.delete(driver.driverLicenseBack)
+
+        // 2. Удаляем все записи и фото фотоконтроля (photo_controls)
+        val photoControls = photoControlRepository.findAllByDriverId(driverId)
+        photoControls.forEach { pc ->
+            fileStorageService.delete(pc.frontUrl)
+            fileStorageService.delete(pc.backUrl)
+            fileStorageService.delete(pc.leftUrl)
+            fileStorageService.delete(pc.rightUrl)
+            fileStorageService.delete(pc.interiorFrontUrl)
+            fileStorageService.delete(pc.interiorBackUrl)
+        }
+        photoControlRepository.deleteAll(photoControls)
+
+        // 3. Отвязываем активное авто и удаляем все машины водителя
+        driver.car = null
+        driverRepository.saveAndFlush(driver)
+
         val allDriverCars = carRepository.findAllByDriver(driver)
-        
         allDriverCars.forEach { car ->
             fileStorageService.delete(car.photoUrl)
             fileStorageService.delete(car.techPassportFront)
@@ -299,29 +331,56 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
             fileStorageService.delete(car.photoRight)
             fileStorageService.delete(car.photoSeatsFront)
             fileStorageService.delete(car.photoSeatsBack)
-            
-            if (driver.car?.id == car.id) {
-                driver.car = null
-            }
-            
+            fileStorageService.delete(car.photoTrunk)
             carRepository.delete(car)
         }
-        
-        driverRepository.save(driver)
 
-        val activeStatuses = listOf(OrderStatus.ACCEPTED, OrderStatus.IN_PROGRESS)
-        val activeOrders = taxiOrderRepository.findAllByDriverAndStatusIn(driver, activeStatuses)
-
-        activeOrders.forEach { order ->
-            order.driver = null 
-            order.status = OrderStatus.REQUESTED 
+        // 4. Отвязываем водителя от всех заказов (активные возвращаем в REQUESTED)
+        val activeStatuses = listOf(
+            OrderStatus.ACCEPTED,
+            OrderStatus.DRIVER_ARRIVED,
+            OrderStatus.IN_PROGRESS,
+            OrderStatus.ARRIVED_AT_WAYPOINT
+        )
+        val allDriverOrders = taxiOrderRepository.findAllByDriverId(driverId)
+        allDriverOrders.forEach { order ->
+            if (order.status in activeStatuses) {
+                order.status = OrderStatus.REQUESTED
+            }
+            order.driver = null
             taxiOrderRepository.save(order)
         }
-        
+        entityManager.createQuery("UPDATE TaxiOrder o SET o.offeredDriver = null WHERE o.offeredDriver.id = :driverId")
+            .setParameter("driverId", driverId)
+            .executeUpdate()
+
+        // 5. Очищаем связанные таблицы (refresh_tokens, фильтры, уведомления, транзакции, выплаты, оценки, тикеты)
+        refreshTokenRepository.deleteByUser(driver)
+        driver.userPhone?.let { phone ->
+            smsCodeRepository.findByUserPhone(phone).ifPresent { smsCodeRepository.delete(it) }
+        }
+        driverFilterRepository.deleteAll(driverFilterRepository.findAllByDriverId(driverId))
+        driverNotificationRepository.deleteAll(driverNotificationRepository.findAllByDriverIdOrderByCreatedAtDesc(driverId))
+        walletTransactionRepository.deleteAll(walletTransactionRepository.findAllByDriverId(driverId))
+        orderRatingRepository.deleteAll(orderRatingRepository.findAllByTargetUserId(driverId))
+
+        entityManager.createQuery("DELETE FROM PaymentTransaction pt WHERE pt.driver.id = :driverId")
+            .setParameter("driverId", driverId)
+            .executeUpdate()
+        entityManager.createQuery("UPDATE DriverPayout dp SET dp.driver = null WHERE dp.driver.id = :driverId")
+            .setParameter("driverId", driverId)
+            .executeUpdate()
+        entityManager.createQuery("UPDATE SupportTicket st SET st.user = null WHERE st.user.id = :driverId")
+            .setParameter("driverId", driverId)
+            .executeUpdate()
+
+        // 6. Очищаем коллекции ManyToMany и удаляем водителя
         driver.allowedTariffs.clear()
-        driverRepository.save(driver)
+        driver.selectedTariffs.clear()
+        driver.homeSectors.clear()
+        driverRepository.saveAndFlush(driver)
         driverRepository.delete(driver)
-        
+
         return MessageResponse("Водій (ID $driverId) та всі його авто видалені.")
     }
 
@@ -335,19 +394,19 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
         car.plateNumber = request.plateNumber.trim().uppercase()
         car.color = com.taxiapp.server.model.enums.CarColor.fromRawString(request.color).labelUk
         car.year = request.year
-        
-        car.vin = request.vin ?: "" 
+
+        car.vin = request.vin ?: ""
         car.carType = request.carType ?: "Standard"
 
         return carRepository.save(car)
     }
-    
+
     @Transactional
     fun blockDriverTemporarily(driverId: Long, request: TempBlockRequest): DriverDto {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
         driver.tempBlockExpiresAt = LocalDateTime.now().plusHours(request.durationHours)
-        driver.isBlocked = false 
+        driver.isBlocked = false
         val updatedDriver = driverRepository.save(driver)
         return DriverDto(updatedDriver)
     }
@@ -361,7 +420,7 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
         val updatedDriver = driverRepository.save(driver)
         return DriverDto(updatedDriver)
     }
-    
+
     @Transactional
     fun unblockDriver(driverId: Long): DriverDto {
         val driver = driverRepository.findById(driverId)
@@ -376,13 +435,13 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
     fun updateDriverActivity(driverId: Long, points: Int, reason: String): DriverDto {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водій з ID $driverId не знайдено") }
-        
+
         driverActivityService.updateScore(driver, points, reason)
 
         return DriverDto(driver)
     }
 
-   @Transactional
+    @Transactional
     fun approveDriverRegistration(driverId: Long, tariffIds: List<Long>? = null) {
         val driver = driverRepository.findById(driverId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Водія не знайдено") }
@@ -486,7 +545,7 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
             description = "$description (Адмін)"
         )
         walletTransactionRepository.save(transaction)
-        
+
         // 4. Зберігаємо
         val savedDriver = driverRepository.save(driver)
         return DriverDto(savedDriver)
@@ -494,75 +553,75 @@ fun rejectDriverRegistration(driverId: Long, reason: String) {
 
     // --- DTO ДЛЯ ЗАЯВОК НА АВТО В АДМИНКЕ ---
 
-data class DriverSummaryDto(
-    val id: Long?,
-    val fullName: String?,
-    val phoneNumber: String?
-)
-
-data class PendingCarDto(
-    val id: Long,
-    val make: String,
-    val model: String,
-    val color: String,
-    val plateNumber: String,
-    val vin: String?,
-    val year: Int,
-    val carType: String?,
-    val status: String,
-    val rejectionReason: String?,
-    val driver: DriverSummaryDto?,
-    val photoUrl: String?,
-    val techPassportFront: String?,
-    val techPassportBack: String?,
-    val insurancePhoto: String?,
-    val photoFront: String?,
-    val photoBack: String?,
-    val photoLeft: String?,
-    val photoRight: String?,
-    val photoSeatsFront: String?,
-    val photoSeatsBack: String?,
-    val photoTrunk: String?
-) {
-    constructor(car: Car) : this(
-        id = car.id,
-        make = car.make,
-        model = car.model,
-        color = car.color,
-        plateNumber = car.plateNumber,
-        vin = car.vin,
-        year = car.year,
-        carType = car.carType,
-        status = car.status.name,
-        rejectionReason = car.rejectionReason,
-        driver = car.driver?.let { 
-            DriverSummaryDto(
-                id = it.id, 
-                fullName = it.fullName ?: "Водій", 
-                phoneNumber = it.userPhone ?: "Не вказано"
-            ) 
-        },
-        photoUrl = generateUrl(car.photoUrl),
-        techPassportFront = generateUrl(car.techPassportFront),
-        techPassportBack = generateUrl(car.techPassportBack),
-        insurancePhoto = generateUrl(car.insurancePhoto),
-        photoFront = generateUrl(car.photoFront),
-        photoBack = generateUrl(car.photoBack),
-        photoLeft = generateUrl(car.photoLeft),
-        photoRight = generateUrl(car.photoRight),
-        photoSeatsFront = generateUrl(car.photoSeatsFront),
-        photoSeatsBack = generateUrl(car.photoSeatsBack),
-        photoTrunk = generateUrl(car.photoTrunk)
+    data class DriverSummaryDto(
+        val id: Long?,
+        val fullName: String?,
+        val phoneNumber: String?
     )
 
-    companion object {
-        private fun generateUrl(filename: String?): String? {
-            if (filename.isNullOrBlank()) return null
-            return org.springframework.web.servlet.support.ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/images/")
-                .path(filename)
-                .toUriString()
+    data class PendingCarDto(
+        val id: Long,
+        val make: String,
+        val model: String,
+        val color: String,
+        val plateNumber: String,
+        val vin: String?,
+        val year: Int,
+        val carType: String?,
+        val status: String,
+        val rejectionReason: String?,
+        val driver: DriverSummaryDto?,
+        val photoUrl: String?,
+        val techPassportFront: String?,
+        val techPassportBack: String?,
+        val insurancePhoto: String?,
+        val photoFront: String?,
+        val photoBack: String?,
+        val photoLeft: String?,
+        val photoRight: String?,
+        val photoSeatsFront: String?,
+        val photoSeatsBack: String?,
+        val photoTrunk: String?
+    ) {
+        constructor(car: Car) : this(
+            id = car.id,
+            make = car.make,
+            model = car.model,
+            color = car.color,
+            plateNumber = car.plateNumber,
+            vin = car.vin,
+            year = car.year,
+            carType = car.carType,
+            status = car.status.name,
+            rejectionReason = car.rejectionReason,
+            driver = car.driver?.let {
+                DriverSummaryDto(
+                    id = it.id,
+                    fullName = it.fullName ?: "Водій",
+                    phoneNumber = it.userPhone ?: "Не вказано"
+                )
+            },
+            photoUrl = generateUrl(car.photoUrl),
+            techPassportFront = generateUrl(car.techPassportFront),
+            techPassportBack = generateUrl(car.techPassportBack),
+            insurancePhoto = generateUrl(car.insurancePhoto),
+            photoFront = generateUrl(car.photoFront),
+            photoBack = generateUrl(car.photoBack),
+            photoLeft = generateUrl(car.photoLeft),
+            photoRight = generateUrl(car.photoRight),
+            photoSeatsFront = generateUrl(car.photoSeatsFront),
+            photoSeatsBack = generateUrl(car.photoSeatsBack),
+            photoTrunk = generateUrl(car.photoTrunk)
+        )
+
+        companion object {
+            private fun generateUrl(filename: String?): String? {
+                if (filename.isNullOrBlank()) return null
+                return org.springframework.web.servlet.support.ServletUriComponentsBuilder.fromCurrentContextPath()
+                    .path("/images/")
+                    .path(filename)
+                    .toUriString()
+            }
         }
     }
-}
 }
