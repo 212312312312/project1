@@ -5,6 +5,7 @@ import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.user.Client
 import com.taxiapp.server.model.user.Driver
 import jakarta.persistence.LockModeType
+import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.Modifying
@@ -20,7 +21,18 @@ import java.util.UUID
 interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     // --- МЕТОД ДЛЯ НАХОЖДЕНИЯ ЗАКАЗА ПО ПУБЛИЧНОМУ UUID ---
-    fun findByUuid(uuid: UUID): Optional<TaxiOrder>
+    @Query("""
+        SELECT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
+        LEFT JOIN FETCH o.offeredDriver
+        WHERE o.uuid = :uuid
+    """)
+    fun findByUuid(@Param("uuid") uuid: UUID): Optional<TaxiOrder>
 
     // --- ПЕССИМИСТИЧЕСКАЯ БЛОКИРОВКА СТРОКИ ЗАКАЗА (SELECT ... FOR UPDATE) ---
     @Lock(LockModeType.PESSIMISTIC_WRITE)
@@ -46,7 +58,16 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'SCHEDULED' AND o.driver IS NULL ORDER BY o.scheduledAt ASC")
     fun findAllScheduledOrders(): List<TaxiOrder>
 
-    @Query("SELECT o FROM TaxiOrder o WHERE o.status = 'REQUESTED' OR (o.status = 'SCHEDULED' AND o.driver IS NULL)")
+    // HIGH-LOAD FIX: Загружаем заказы для Эфира за 1 SQL-запрос вместе со связанными LAZY-сущностями (устраняет N+1)
+    @Query("""
+        SELECT DISTINCT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        WHERE o.status = 'REQUESTED' OR (o.status = 'SCHEDULED' AND o.driver IS NULL AND o.offeredDriver IS NULL)
+        ORDER BY o.id DESC
+    """)
     fun findAllAvailableForEther(): List<TaxiOrder>
 
     fun findByDriverAndStatusIn(driver: Driver, statuses: List<OrderStatus>): TaxiOrder?
@@ -66,7 +87,17 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
 
     fun findAllByStatusInOrderByIdDesc(statuses: List<OrderStatus>): List<TaxiOrder>
 
-    fun findAllByStatusIn(statuses: List<OrderStatus>): List<TaxiOrder>
+    @Query("""
+        SELECT DISTINCT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
+        WHERE o.status IN :statuses
+    """)
+    fun findAllByStatusIn(@Param("statuses") statuses: List<OrderStatus>): List<TaxiOrder>
 
     fun findAllByClientId(clientId: Long): List<TaxiOrder>
 
@@ -93,7 +124,7 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     fun findAllOrdersForClientHistory(
         @Param("clientId") clientId: Long,
         @Param("phone") phone: String?,
-        pageable: org.springframework.data.domain.Pageable
+        pageable: Pageable
     ): List<TaxiOrder>
 
     fun findAllByStatusInAndIsSentToEvosFalseAndCreatedAtBefore(
@@ -132,8 +163,110 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """)
     fun getCancellationStats(): List<CancellationStatProjection>
 
-    @Query("SELECT o FROM TaxiOrder o WHERE o.driver.id = :driverId AND o.status IN ('ACCEPTED', 'DRIVER_ARRIVED', 'ARRIVED_AT_WAYPOINT', 'IN_PROGRESS')")
+    @Query("""
+        SELECT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
+        WHERE o.driver.id = :driverId
+          AND o.status IN ('ACCEPTED', 'DRIVER_ARRIVED', 'ARRIVED_AT_WAYPOINT', 'IN_PROGRESS')
+        ORDER BY o.id DESC
+    """)
     fun findActiveOrderByDriverId(@Param("driverId") driverId: Long): Optional<TaxiOrder>
+
+    // --- HIGH-LOAD ОПТИМИЗАЦИИ ДЛЯ ВОДИТЕЛЯ И ДИСПЕТЧЕРИЗАЦИИ ---
+
+    @Query("""
+        SELECT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
+        WHERE o.driver.id = :driverId
+          AND o.status IN ('ACCEPTED', 'DRIVER_ARRIVED', 'ARRIVED_AT_WAYPOINT', 'IN_PROGRESS', 'SCHEDULED')
+        ORDER BY CASE WHEN o.status = 'SCHEDULED' THEN 1 ELSE 0 END ASC, o.id DESC
+    """)
+    fun findActiveOrScheduledOrdersByDriverId(@Param("driverId") driverId: Long): List<TaxiOrder>
+
+    @Query("""
+        SELECT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        WHERE o.offeredDriver.id = :driverId
+          AND o.status = 'OFFERING'
+        ORDER BY o.id DESC
+    """)
+    fun findOfferingOrdersByDriverId(@Param("driverId") driverId: Long): List<TaxiOrder>
+
+    @Query("""
+        SELECT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        WHERE o.driver.id = :driverId
+          AND o.status IN ('COMPLETED', 'CANCELLED')
+        ORDER BY o.id DESC
+    """)
+    fun findDriverHistoryOrders(
+        @Param("driverId") driverId: Long,
+        pageable: Pageable
+    ): List<TaxiOrder>
+
+    @Query("""
+        SELECT DISTINCT o FROM TaxiOrder o
+        JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
+        LEFT JOIN FETCH d.selectedTariffs
+        LEFT JOIN FETCH d.allowedTariffs
+        WHERE o.status = 'IN_PROGRESS'
+          AND o.destLat BETWEEN :minLat AND :maxLat
+          AND o.destLng BETWEEN :minLng AND :maxLng
+    """)
+    fun findChainCandidateOrdersInBounds(
+        @Param("minLat") minLat: Double,
+        @Param("maxLat") maxLat: Double,
+        @Param("minLng") minLng: Double,
+        @Param("maxLng") maxLng: Double
+    ): List<TaxiOrder>
+
+    @Query("""
+        SELECT DISTINCT o.offeredDriver.id FROM TaxiOrder o
+        WHERE o.status = 'OFFERING' AND o.offeredDriver IS NOT NULL
+    """)
+    fun findDriverIdsWithActiveOffers(): Set<Long>
+
+    @Query("""
+        SELECT DISTINCT o.driver.id FROM TaxiOrder o
+        WHERE o.status IN ('ACCEPTED', 'DRIVER_ARRIVED', 'IN_PROGRESS', 'ARRIVED_AT_WAYPOINT')
+          AND o.driver IS NOT NULL
+    """)
+    fun findDriverIdsWithActiveOrders(): Set<Long>
+
+    @Query("""
+        SELECT DISTINCT d FROM Driver d
+        LEFT JOIN FETCH d.car
+        LEFT JOIN FETCH d.selectedTariffs
+        LEFT JOIN FETCH d.allowedTariffs
+        LEFT JOIN FETCH d.homeSectors
+        WHERE d.isOnline = true
+          AND d.isBlocked = false
+          AND d.latitude BETWEEN :minLat AND :maxLat
+          AND d.longitude BETWEEN :minLng AND :maxLng
+    """)
+    fun findOnlineDriversInBounds(
+        @Param("minLat") minLat: Double,
+        @Param("maxLat") maxLat: Double,
+        @Param("minLng") minLng: Double,
+        @Param("maxLng") maxLng: Double
+    ): List<Driver>
 
     // --- МЕТОДЫ ДЛЯ ОПТИМИЗАЦИИ EVOS SCHEDULER ---
     @Query("SELECT o FROM TaxiOrder o WHERE o.isSentToEvos = false AND o.status = :status AND o.createdAt < :threshold")
@@ -163,7 +296,7 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     fun findArchivedOrdersByClientId(
         @Param("clientId") clientId: Long,
         @Param("statuses") statuses: List<OrderStatus>,
-        pageable: org.springframework.data.domain.Pageable
+        pageable: Pageable
     ): List<TaxiOrder>
 
     // =========================================================================
@@ -181,7 +314,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     @Query("SELECT o.tariffName, COUNT(o), SUM(o.price) FROM TaxiOrder o WHERE o.status = 'COMPLETED' GROUP BY o.tariffName")
     fun getTariffAnalytics(): List<Array<Any>>
 
-    // ИСПРАВЛЕНО: учитываем клиентов с реально выполненными поездками (исключая системный аккаунт удаленных 999999)
     @Query("SELECT COUNT(DISTINCT o.client.id) FROM TaxiOrder o WHERE o.status = 'COMPLETED' AND o.client.id <> 999999")
     fun countUniqueClientsWithOrders(): Long
 
@@ -196,7 +328,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """)
     fun getClientCancellationStats(): List<CancellationStatProjection>
 
-    // 1. Среднее время поиска водителя (в секундах) — ИСПРАВЛЕНО: исключаем предзаказы (scheduled_at IS NULL)
     @Query(value = """
         SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (o.accepted_at - o.created_at))), 0.0) 
         FROM taxi_orders o 
@@ -207,14 +338,12 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """, nativeQuery = true)
     fun calculateAvgTimeToAcceptSeconds(): Double
 
-    // 2. Статистика эффективности кнопки Boost (+20/+40 грн)
     @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0")
     fun countOrdersWithBoost(): Long
 
     @Query("SELECT COUNT(o) FROM TaxiOrder o WHERE o.boostAdded > 0 AND o.status = 'COMPLETED'")
     fun countCompletedOrdersWithBoost(): Long
 
-    // 3. Отмены клиентом до 60 секунд (без предзаказов)
     @Query(value = """
         SELECT COUNT(o.id) 
         FROM taxi_orders o 
@@ -225,7 +354,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """, nativeQuery = true)
     fun countQuickClientCancellations(): Long
 
-    // 4. Отмены по таймауту поиска (> 180 сек без назначенного водителя) — ИСПРАВЛЕНО: не включаем COMPLETED и SCHEDULED
     @Query(value = """
         SELECT COUNT(o.id) 
         FROM taxi_orders o 
@@ -238,7 +366,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """, nativeQuery = true)
     fun countTimeoutCancellations(): Long
 
-    // 5. Среднее число дней до совершения N-й поездки активным клиентом
     @Query(value = """
         WITH client_nth_ride AS (
             SELECT client_id, created_at,
@@ -276,10 +403,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         WHERE rn_table.rn = :targetRides
     """, nativeQuery = true)
     fun calculateAvgDaysToTargetRide(@Param("targetRides") targetRides: Int): Double
-
-    // =========================================================================
-    // НОВЫЕ МЕТОДЫ С ФИЛЬТРАЦИЕЙ ПО ПЕРИОДУ (:startDate .. :endDate) И ГЛУБОКОЙ АНАЛИТИКОЙ
-    // =========================================================================
 
     @Query(value = """
         SELECT 
@@ -369,7 +492,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         @Param("endDate") endDate: LocalDateTime
     ): List<Array<Any>>
 
-    // Подневная динамика оборота, комиссии, скидок и количества выполненных поездок для реального графика доходов
     @Query(value = """
         SELECT 
             CAST(COALESCE(o.completed_at, o.created_at) AS DATE) AS orderDate,
@@ -464,7 +586,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         @Param("endDate") endDate: LocalDateTime
     ): List<Array<Any>>
 
-    // Когортный анализ по реальным завершенным поездкам (включая EvoS и свой парк)
     @Query(value = """
         SELECT 
             o.client_id AS clientId,
@@ -477,7 +598,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """, nativeQuery = true)
     fun findClientCompletedOrderCohorts(): List<Array<Any>>
 
-    // Последний известный device_id клиента из заказов (для антифрода промокодов)
     @Query(value = """
         SELECT o.client_device_id 
         FROM taxi_orders o 
@@ -489,7 +609,6 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     """, nativeQuery = true)
     fun findLatestDeviceIdByClientId(@Param("clientId") clientId: Long): String?
 
-    // 6. Популярные адреса поездок в широком радиусе (bounding box) для отбора адресов от 2.0 км и дальше
     @Query(value = """
         SELECT o.to_address AS address,
                AVG(o.dest_lat) AS lat,

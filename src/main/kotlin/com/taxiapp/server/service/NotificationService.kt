@@ -25,10 +25,6 @@ class NotificationService(
 
     private val logger = LoggerFactory.getLogger(NotificationService::class.java)
 
-    /**
-     * Неблокирующая отправка в Firebase Cloud Messaging через sendAsync().
-     * Освобождает рабочие потоки Tomcat за доли миллисекунды!
-     */
     private fun sendFirebaseAsync(message: Message, contextInfo: String) {
         try {
             val future = FirebaseMessaging.getInstance().sendAsync(message)
@@ -51,7 +47,8 @@ class NotificationService(
     }
 
     /**
-     * МЕТОД 1: Для ВОДИТЕЛЕЙ (Data-only).
+     * МЕТОД 1: Для ВОДИТЕЛЕЙ (Data-only) — передаем полный набор полей заказа,
+     * чтобы OrderOfferActivity при старте из FCM сразу отображала маршрут, сектора, тариф и способ оплаты!
      */
     fun sendOrderOffer(driver: Driver, order: TaxiOrder) {
         val token = driver.fcmToken
@@ -65,10 +62,22 @@ class NotificationService(
                 .setToken(token)
                 .putData("type", "ORDER_OFFER")
                 .putData("orderId", order.uuid.toString())
-                .putData("idLong", order.id.toString())
+                .putData("idLong", (order.id ?: 0L).toString())
                 .putData("price", order.price.toString())
                 .putData("distance", ((order.distanceMeters ?: 0) / 1000.0).toString())
-                .putData("address", order.fromAddress ?: "Адреса не вказана")
+                .putData("distanceMeters", (order.distanceMeters ?: 0).toString())
+                .putData("address", order.fromAddress)
+                .putData("toAddress", order.toAddress)
+                .putData("originLat", (order.originLat ?: 0.0).toString())
+                .putData("originLng", (order.originLng ?: 0.0).toString())
+                .putData("destLat", (order.destLat ?: 0.0).toString())
+                .putData("destLng", (order.destLng ?: 0.0).toString())
+                .putData("tariffName", order.tariffName ?: order.tariff.name)
+                .putData("paymentMethod", order.paymentMethod)
+                .putData("fromSector", order.originSector?.name ?: "")
+                .putData("toSector", order.destinationSector?.name ?: "")
+                .putData("comment", order.comment ?: "")
+                .putData("polyline", order.googleRoutePolyline ?: "")
                 .setAndroidConfig(
                     AndroidConfig.builder()
                         .setPriority(AndroidConfig.Priority.HIGH)
@@ -101,9 +110,10 @@ class NotificationService(
                 .setToken(token)
                 .putData("type", "ORDER_CONFIRMATION")
                 .putData("orderId", order.uuid.toString())
-                .putData("idLong", order.id.toString())
+                .putData("idLong", (order.id ?: 0L).toString())
                 .putData("price", order.price.toString())
-                .putData("address", order.fromAddress ?: "")
+                .putData("address", order.fromAddress)
+                .putData("toAddress", order.toAddress)
                 .putData("time", order.scheduledAt.toString())
                 .setAndroidConfig(
                     AndroidConfig.builder()
@@ -122,9 +132,6 @@ class NotificationService(
         }
     }
 
-    /**
-     * МЕТОД 3: Сохранение системных уведомлений в историю БД и отправка в шторку.
-     */
     fun saveAndSend(driver: Driver, title: String, body: String, type: String) {
         try {
             val entity = DriverNotification(
@@ -143,9 +150,6 @@ class NotificationService(
         }
     }
 
-    /**
-     * МЕТОД 4: Для НОВОСТЕЙ и КЛИЕНТОВ (Standard Notification).
-     */
     fun sendNotificationToToken(token: String, title: String, body: String) {
         if (token.isEmpty()) return
 
@@ -167,9 +171,6 @@ class NotificationService(
         }
     }
 
-    /**
-     * МЕТОД 5: Отправка Data Push клиенту об изменении статуса заказа.
-     */
     fun sendOrderStatusToClient(token: String?, orderId: Long, status: String, title: String, body: String) {
         if (token.isNullOrEmpty()) return
 
@@ -250,9 +251,6 @@ class NotificationService(
         )
     }
 
-    /**
-     * МЕТОД 6: Уведомления о новых сообщениях чата.
-     */
     fun sendChatNotification(token: String?, title: String, body: String, orderId: Long) {
         if (token.isNullOrEmpty()) return
         try {
@@ -271,9 +269,6 @@ class NotificationService(
         }
     }
 
-    /**
-     * Вспомогательный метод для безопасной отправки сетевых запросов строго ПОСЛЕ коммита транзакции БД.
-     */
     private fun sendAfterCommit(task: () -> Unit) {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
@@ -320,9 +315,6 @@ class NotificationService(
         }
     }
 
-    /**
-     * МЕТОД 7: Маркетингове нагадування про знижку, що згорає.
-     */
     fun sendDiscountReminderNotification(token: String?, percent: Int, expiresAt: LocalDateTime) {
         if (token.isNullOrBlank()) return
 

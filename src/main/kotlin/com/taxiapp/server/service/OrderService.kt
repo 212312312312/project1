@@ -1,7 +1,6 @@
 package com.taxiapp.server.service
 
 import com.taxiapp.server.dto.driver.HeatmapZoneDto
-import com.taxiapp.server.dto.order.CalculatedTariffDto
 import com.taxiapp.server.dto.order.CreateOrderRequestDto
 import com.taxiapp.server.dto.order.OrderSocketMessage
 import com.taxiapp.server.dto.order.RoutePointDto
@@ -9,6 +8,7 @@ import com.taxiapp.server.dto.order.RouteRequestDto
 import com.taxiapp.server.dto.order.RouteResponseDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
 import com.taxiapp.server.dto.tariff.CarTariffDto
+import com.taxiapp.server.model.enums.DriverSearchMode
 import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.filter.DriverFilter
 import com.taxiapp.server.model.order.OrderStop
@@ -19,6 +19,7 @@ import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.*
 import com.taxiapp.server.utils.GeometryUtils
 import org.slf4j.LoggerFactory
+import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.scheduling.annotation.Scheduled
@@ -30,6 +31,7 @@ import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.max
 
 @Service
@@ -62,6 +64,29 @@ class OrderService(
 
     private val logger = LoggerFactory.getLogger(OrderService::class.java)
 
+    // L1 In-Memory микро-кэш доступных заказов Эфира (защита от Thundering Herd при 10 000+ водителей онлайн)
+    @Volatile
+    private var cachedEtherOrders: List<TaxiOrder> = emptyList()
+
+    @Volatile
+    private var etherCacheExpiresAtMs: Long = 0L
+
+    private fun invalidateEtherCache() {
+        etherCacheExpiresAtMs = 0L
+    }
+
+    private fun getCachedAvailableEtherOrders(): List<TaxiOrder> {
+        val now = System.currentTimeMillis()
+        val current = cachedEtherOrders
+        if (now < etherCacheExpiresAtMs) {
+            return current
+        }
+        val fresh = orderRepository.findAllAvailableForEther()
+        cachedEtherOrders = fresh
+        etherCacheExpiresAtMs = now + 1_500L
+        return fresh
+    }
+
     private fun calculateExactTripPrice(
         tariffId: Long,
         polyline: String?,
@@ -78,33 +103,18 @@ class OrderService(
 
         val safeAddedValue = max(0.0, addedValue)
 
-        logger.info("[PRICE_CALC] === НАЧАЛО РАСЧЕТА ЦЕНЫ ЗАКАЗА ===")
-        logger.info("[PRICE_CALC] ШАГ 1: Тариф ID=${tariff.id} (${tariff.name}) | BasePrice=${tariff.basePrice} | WaypointPrice=${tariff.extraWaypointPrice} | AddedValue=$safeAddedValue")
-
-        // 1. Считаем стоимость услуг
         var servicesCost = 0.0
         if (!serviceIds.isNullOrEmpty()) {
             val services = taxiServiceRepository.findAllById(serviceIds)
             servicesCost = services.sumOf { it.price }
-            logger.info("[PRICE_CALC] ШАГ 2: Выбраны доп. услуги (${services.size} шт.) на сумму: $servicesCost")
-        } else {
-            logger.info("[PRICE_CALC] ШАГ 2: Доп. услуги не выбраны (Сумма: 0.0)")
         }
 
-        // Считаем стоимость промежуточных точек
         val waypointsCost = waypointsCount * tariff.extraWaypointPrice
-        logger.info("[PRICE_CALC] ШАГ 2.1: Промежуточные точки ($waypointsCount шт.) на сумму: $waypointsCost")
 
-        // 2. Если ни полилайна, ни дистанции нет, считаем базу + услуги + точки + надбавка
         if (polyline.isNullOrEmpty() && totalDistanceMeters <= 0) {
-            val totalNoDist = max(tariff.basePrice, ceil(tariff.basePrice + servicesCost + safeAddedValue + waypointsCost))
-            logger.info("[PRICE_CALC] ШАГ 3: Полилайн и дистанция пусты. Возвращаем (База+Услуги+Точки+Надбавка) = $totalNoDist")
-            logger.info("[PRICE_CALC] === КОНЕЦ РАСЧЕТА ===")
-            return totalNoDist
+            return max(tariff.basePrice, ceil(tariff.basePrice + servicesCost + safeAddedValue + waypointsCost))
         }
 
-        // 3. Расчет по километражу (город/межгород)
-        logger.info("[PRICE_CALC] ШАГ 3: Запрос разбивки дистанции у GeometryUtils. Передано: $totalDistanceMeters м.")
         val citySectors = sectorService.getCitySectors()
         val (metersCity, metersOutCity) = if (!polyline.isNullOrEmpty()) {
             GeometryUtils.calculateRouteSplit(polyline, citySectors)
@@ -118,7 +128,6 @@ class OrderService(
         val totalKmCity = finalMetersCity / 1000.0
         val totalKmOutCity = finalMetersOutCity / 1000.0
 
-        // 4. Бесплатные километры (динамическое получение из глобальных настроек агрегатора Unit)
         val minDistanceSetting = appSettingRepository.findById("min_order_distance").orElse(null)
         val INCLUDED_KM = minDistanceSetting?.value?.toDoubleOrNull() ?: 3.0
         var remainingIncluded = INCLUDED_KM
@@ -140,10 +149,8 @@ class OrderService(
             }
         }
 
-        // 5. Итоговая сборка цены
         val routePrice = (billableKmCity * tariff.pricePerKm) + (billableKmOutCity * tariff.pricePerKmOutCity)
 
-        // ВРАХУВАННЯ ДИНАМІЧНИХ КОЕФІЦІЄНТІВ (Час + Погода)
         val (pickupLat, pickupLng) = if (originLat != null && originLng != null) {
             Pair(originLat, originLng)
         } else {
@@ -154,13 +161,8 @@ class OrderService(
         val surgedTripBase = (tariff.basePrice + routePrice) * surgeMultiplier
 
         var finalPrice = surgedTripBase + servicesCost + safeAddedValue + waypointsCost
-
-        logger.info("[PRICE_CALC] Збірка: (База + КМ)*Surge($surgeMultiplier) [Lat=$pickupLat, Lng=$pickupLng] + Послуги($servicesCost) + Точки($waypointsCost) + Надбавка($safeAddedValue) = $finalPrice")
-
         finalPrice = ceil(finalPrice)
-        val result = max(finalPrice, tariff.basePrice)
-
-        return result
+        return max(finalPrice, tariff.basePrice)
     }
 
     fun calculatePricesForRoute(
@@ -174,17 +176,12 @@ class OrderService(
         val allCachedTariffs = tariffAdminService.getAllTariffs()
         val activeTariffs = allCachedTariffs.filter { it.isActive }
 
-        // HIGH-LOAD ОПТИМИЗАЦИЯ: Запрашиваем скидки и промокоды клиента РОВНО 1 РАЗ перед циклом по тарифам (вместо 5-6 раз подряд!)
         val hasActiveDiscount = if (client != null) orderRepository.hasActiveOrderWithDiscount(client.id!!) else true
         val activePromoUsage = if (client != null && !hasActiveDiscount) promoCodeService.findActiveUsage(client) else null
         val isPromoValid = activePromoUsage != null && (activePromoUsage.expiresAt == null || !LocalDateTime.now().isAfter(activePromoUsage.expiresAt))
         val activeReward = if (client != null && !hasActiveDiscount && !isPromoValid) promoService.findActiveReward(client) else null
         val activeRegPlan = if (client != null && !hasActiveDiscount) promoService.findActiveRegistrationDiscountPlan(client) else null
         val activeFreeMinPlan = if (client != null && !hasActiveDiscount) promoService.findActiveFreeMinPlan(client) else null
-
-        if (client != null && hasActiveDiscount) {
-            logger.debug(">>> [Discount] Розрахунок цін для клієнта #${client.id} без знижки: вже є активне замовлення зі знижкою.")
-        }
 
         return activeTariffs.map { tariffDto ->
             var price = calculateExactTripPrice(
@@ -283,7 +280,6 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Тариф недоступний")
         }
 
-        // 1. Захист від подвійного кліку (Рейс-кондишн лок на 3 секунди для клієнта)
         val lockKey = "lock:create_order:${client.id}"
         val isLocked = redisTemplate.opsForValue().setIfAbsent(lockKey, "true", 3, java.util.concurrent.TimeUnit.SECONDS)
         if (isLocked == false) {
@@ -291,7 +287,6 @@ class OrderService(
         }
 
         try {
-            // 2. Перевірка ліміту активних замовлень із захистом від "мертвих душ"
             val clientActiveOrdersKey = "client:active_orders:${client.id}"
             var activeOrdersCount = redisTemplate.opsForSet().size(clientActiveOrdersKey) ?: 0L
 
@@ -317,7 +312,6 @@ class OrderService(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ви не можете мати більше 3 активних замовлень одночасно")
             }
 
-            // --- Валідація часу ---
             if (request.scheduledAt != null) {
                 val now = LocalDateTime.now()
                 val minValidTime = now.plusMinutes(40)
@@ -339,7 +333,6 @@ class OrderService(
 
             val waypointsCount = request.waypoints?.size ?: 0
 
-            // Защита от подмены нулевой дистанции клиентом (сверяем с прямой линией по Гаверсинусу)
             val minStraightMeters = if (
                 request.originLat != null && request.originLng != null &&
                 request.destLat != null && request.destLng != null &&
@@ -349,7 +342,6 @@ class OrderService(
             } else 0
             val verifiedDistanceMeters = maxOf(request.distanceMeters, minStraightMeters)
 
-            // --- Розрахунок базової ціни ---
             val calculatedPrice = calculateExactTripPrice(
                 tariffId = request.tariffId,
                 polyline = request.googleRoutePolyline,
@@ -417,17 +409,13 @@ class OrderService(
                         isPromoCodeUsedForThisOrder = false
                     }
                 }
-            } else {
-                logger.info(">>> [Discount] Создание заказа для клиента #${client.id} без скидки: уже есть активный заказ со скидкой.")
             }
 
             val fullPrice = calculatedPrice
-
             var clientPayAmount = fullPrice - discountAmount
             if (clientPayAmount < 1.0) {
                 clientPayAmount = 1.0
             }
-
             val actualDiscountApplied = fullPrice - clientPayAmount
 
             val destSector = if (request.destLat != null && request.destLng != null) {
@@ -495,7 +483,6 @@ class OrderService(
                 newOrder.stops.addAll(stopsList)
             }
 
-            // Сначала сохраняем заказ и при оплате CARD выполняем холд средств
             var savedOrder = orderRepository.save(newOrder)
 
             if (savedOrder.paymentMethod == "CARD") {
@@ -528,108 +515,8 @@ class OrderService(
                 return TaxiOrderDto(savedOrder)
             }
 
-            val rejectedIds = savedOrder.rejectedDriverIds
-            val pickupLat = savedOrder.originLat ?: 0.0
-            val pickupLng = savedOrder.originLng ?: 0.0
-
-            // 1. ЛАНЦЮГ (Chain)
-            val activeInProgressOrders = orderRepository.findAllByStatus(OrderStatus.IN_PROGRESS)
-            val chainDriver: Driver? = activeInProgressOrders.asSequence()
-                .mapNotNull { it.driver }
-                .filter { drv ->
-                    if (rejectedIds.contains(drv.id)) return@filter false
-
-                    val isTariffActive = if (drv.selectedTariffs.isEmpty()) {
-                        drv.allowedTariffs.contains(savedOrder.tariff)
-                    } else {
-                        drv.selectedTariffs.contains(savedOrder.tariff)
-                    }
-                    if (!isTariffActive) return@filter false
-
-                    val meta = redisTemplate.opsForHash<String, Any>().get("orders:active_drivers", drv.id.toString())
-                    if (meta == null) return@filter false
-
-                    val currentOrder = activeInProgressOrders.firstOrNull { it.driver?.id == drv.id } ?: return@filter false
-                    val distToPickup = GeometryUtils.calculateDistance(currentOrder.destLat ?: 0.0, currentOrder.destLng ?: 0.0, pickupLat, pickupLng)
-
-                    distToPickup <= drv.searchRadius
-                }
-                .minByOrNull { drv ->
-                    val currentOrder = activeInProgressOrders.first { it.driver?.id == drv.id }
-                    GeometryUtils.calculateDistance(currentOrder.destLat ?: 0.0, currentOrder.destLng ?: 0.0, pickupLat, pickupLng)
-                }
-
-            if (chainDriver != null) {
-                logger.info(">>> CHAIN driver found via Memory Pipeline: ${chainDriver.id}")
-                assignOrderToDriver(savedOrder, chainDriver)
-                savedOrder.assignmentType = "CHAIN"
-                savedOrder = orderRepository.save(savedOrder)
-                return TaxiOrderDto(savedOrder)
-            }
-
-            val nearbyDrivers = getEnrichedNearbyDrivers(pickupLat, pickupLng, maxRadiusKm = 10.0, tariff = savedOrder.tariff)
-
-            // 2. AUTO/CYCLE - УМНЫЙ ПОИСК
-            val autoDriver = findDriverByAutoFilter(savedOrder, nearbyDrivers)
-
-            if (autoDriver != null) {
-                logger.info(">>> FILTER driver selected via Memory Pipeline: ${autoDriver.id}")
-                val matchedFilter = filterRepository.findAllByDriverId(autoDriver.id!!).firstOrNull { it.isActive }
-                savedOrder.assignmentType = when {
-                    matchedFilter?.isCycle == true -> "CYCLE"
-                    matchedFilter?.fromType == "HOME" -> "HOME"
-                    else -> "AUTO"
-                }
-                assignOrderToDriver(savedOrder, autoDriver)
-                return TaxiOrderDto(savedOrder)
-            }
-
-            // 3. ETHER / SMART CANDIDATE
-            logger.info(">>> [OrderMatching] Найдено водителей поблизости (nearbyDrivers): ${nearbyDrivers.size}")
-            val candidates = nearbyDrivers.filter { drv ->
-                if (rejectedIds.contains(drv.id)) {
-                    logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: уже отклонял этот заказ")
-                    return@filter false
-                }
-                if (drv.activityScore <= -1) {
-                    logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: низкая активность (${drv.activityScore})")
-                    return@filter false
-                }
-
-                val dist = GeometryUtils.calculateDistance(drv.latitude ?: 0.0, drv.longitude ?: 0.0, pickupLat, pickupLng)
-                if (dist > drv.searchRadius) {
-                    logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: дистанция ${String.format("%.2f", dist)} км > радиуса поиска водителя (${drv.searchRadius} км)")
-                    return@filter false
-                }
-
-                val modeMatch = when (drv.searchMode) {
-                    com.taxiapp.server.model.enums.DriverSearchMode.CHAIN -> true
-                    com.taxiapp.server.model.enums.DriverSearchMode.HOME -> {
-                        drv.homeRidesLeft > 0 && drv.homeSectors.any { it.id == destSector?.id }
-                    }
-                    else -> false
-                }
-                if (!modeMatch) {
-                    logger.info(">>> [OrderMatching] Водитель #${drv.id} пропущен: режим поиска = ${drv.searchMode} (нужен CHAIN или HOME)")
-                }
-                modeMatch
-            }
-
-            if (candidates.isNotEmpty()) {
-                val bestDriver = candidates.minByOrNull { drv ->
-                    estimateDrivingTimeSeconds(drv.latitude!!, drv.longitude!!, pickupLat, pickupLng)
-                }!!
-                logger.info(">>> SMART Selection via Redis GEO: Winner ${bestDriver.id} from ${candidates.size} candidates.")
-                assignOrderToDriver(savedOrder, bestDriver)
-                savedOrder = orderRepository.save(savedOrder)
-            } else {
-                logger.info(">>> No candidates found via Redis. Sending directly to Ether.")
-                savedOrder.status = OrderStatus.REQUESTED
-                savedOrder.assignmentType = "ETHER"
-                savedOrder = orderRepository.save(savedOrder)
-                broadcastOrderChange(savedOrder, "ADD")
-            }
-
+            // Запускаем умный конвейер диспетчеризации (Chain -> AutoFilter -> Smart Candidate -> Ether)
+            savedOrder = dispatchOrderToNextCandidate(savedOrder)
             return TaxiOrderDto(savedOrder)
         } catch (ex: Exception) {
             redisTemplate.delete(lockKey)
@@ -637,12 +524,122 @@ class OrderService(
         }
     }
 
+    /**
+     * Единый конвейер подбора водителя (используется и при создании заказа, и при переназначении после отказа/таймаута).
+     */
+    private fun dispatchOrderToNextCandidate(order: TaxiOrder): TaxiOrder {
+        val rejectedIds = order.rejectedDriverIds
+        val pickupLat = order.originLat ?: 0.0
+        val pickupLng = order.originLng ?: 0.0
+        val destSector = order.destinationSector
+
+        // 1. ЛАНЦЮГ (Chain) — Ищем только поездки IN_PROGRESS, чей финиш находится в bounding-box вокруг подачи (~30 км)
+        if (pickupLat != 0.0 && pickupLng != 0.0) {
+            val latDelta = 0.28 // ~31 км
+            val lngDelta = 0.28 / max(0.2, cos(Math.toRadians(pickupLat)))
+            val candidateInProgressOrders = orderRepository.findChainCandidateOrdersInBounds(
+                minLat = pickupLat - latDelta,
+                maxLat = pickupLat + latDelta,
+                minLng = pickupLng - lngDelta,
+                maxLng = pickupLng + lngDelta
+            )
+
+            if (candidateInProgressOrders.isNotEmpty()) {
+                val activeDriverIdsStr = candidateInProgressOrders.mapNotNull { it.driver?.id?.toString() }
+                val activeDriverMetaList = if (activeDriverIdsStr.isNotEmpty()) {
+                    redisTemplate.opsForHash<String, Any>().multiGet("orders:active_drivers", activeDriverIdsStr)
+                } else emptyList()
+                val activeDriversInRedis = activeDriverIdsStr.zip(activeDriverMetaList)
+                    .filter { it.second != null }
+                    .mapNotNull { it.first.toLongOrNull() }
+                    .toSet()
+
+                val bestChainMatch = candidateInProgressOrders.asSequence()
+                    .mapNotNull { activeOrder ->
+                        val drv = activeOrder.driver ?: return@mapNotNull null
+                        if (drv.id == null || rejectedIds.contains(drv.id)) return@mapNotNull null
+                        if (drv.isBlocked || drv.photoControlRestricted || drv.activityScore <= 0) return@mapNotNull null
+                        if (!isDriverTariffMatching(drv, order.tariff)) return@mapNotNull null
+                        if (!activeDriversInRedis.contains(drv.id)) return@mapNotNull null
+
+                        val distToPickup = GeometryUtils.calculateDistance(
+                            activeOrder.destLat ?: 0.0,
+                            activeOrder.destLng ?: 0.0,
+                            pickupLat,
+                            pickupLng
+                        )
+                        if (distToPickup <= drv.searchRadius) Pair(drv, distToPickup) else null
+                    }
+                    .minByOrNull { it.second }
+
+                if (bestChainMatch != null) {
+                    val chainDriver = bestChainMatch.first
+                    logger.info(">>> CHAIN driver found via Spatial Pipeline: ${chainDriver.id}")
+                    order.assignmentType = "CHAIN"
+                    assignOrderToDriver(order, chainDriver)
+                    return orderRepository.save(order)
+                }
+            }
+        }
+
+        val nearbyDrivers = getEnrichedNearbyDrivers(pickupLat, pickupLng, maxRadiusKm = 10.0, tariff = order.tariff)
+
+        // 2. AUTO/CYCLE — Умный поиск по авто-фильтрам
+        val autoDriver = findDriverByAutoFilter(order, nearbyDrivers)
+        if (autoDriver != null) {
+            logger.info(">>> FILTER driver selected via Memory Pipeline: ${autoDriver.id}")
+            val matchedFilter = filterRepository.findAllByDriverId(autoDriver.id!!).firstOrNull { it.isActive }
+            order.assignmentType = when {
+                matchedFilter?.isCycle == true -> "CYCLE"
+                matchedFilter?.fromType == "HOME" -> "HOME"
+                else -> "AUTO"
+            }
+            assignOrderToDriver(order, autoDriver)
+            return orderRepository.save(order)
+        }
+
+        // 3. SMART CANDIDATE (CHAIN / HOME на свободном водителе)
+        val candidates = nearbyDrivers.filter { drv ->
+            if (rejectedIds.contains(drv.id)) return@filter false
+            if (drv.activityScore <= 0 || drv.photoControlRestricted) return@filter false
+
+            val dist = GeometryUtils.calculateDistance(drv.latitude ?: 0.0, drv.longitude ?: 0.0, pickupLat, pickupLng)
+            if (dist > drv.searchRadius) return@filter false
+
+            when (drv.searchMode) {
+                DriverSearchMode.CHAIN -> true
+                DriverSearchMode.HOME -> drv.homeRidesLeft > 0 && drv.homeSectors.any { it.id == destSector?.id }
+                else -> false
+            }
+        }
+
+        if (candidates.isNotEmpty()) {
+            val bestDriver = candidates.minByOrNull { drv ->
+                estimateDrivingTimeSeconds(drv.latitude!!, drv.longitude!!, pickupLat, pickupLng)
+            }!!
+            logger.info(">>> SMART Selection via Redis GEO: Winner ${bestDriver.id} from ${candidates.size} candidates.")
+            order.assignmentType = if (bestDriver.searchMode == DriverSearchMode.HOME) "HOME" else "CHAIN"
+            assignOrderToDriver(order, bestDriver)
+            return orderRepository.save(order)
+        }
+
+        // 4. ETHER — Если подходящих кандидатов больше не осталось, отправляем заказ в открытый Эфир
+        logger.info(">>> No candidates left for order #${order.id}. Sending to Ether.")
+        order.status = OrderStatus.REQUESTED
+        order.offeredDriver = null
+        order.offerExpiresAt = null
+        order.assignmentType = "ETHER"
+        val savedOrder = orderRepository.save(order)
+        broadcastOrderChange(savedOrder, "ADD")
+        return savedOrder
+    }
+
     private fun assignOrderToDriver(order: TaxiOrder, driver: Driver) {
         val dist = calculateDistanceKm(
             driver.latitude ?: 0.0,
             driver.longitude ?: 0.0,
-            order.originLat!!,
-            order.originLng!!
+            order.originLat ?: 0.0,
+            order.originLng ?: 0.0
         )
         logger.info(">>> Assigning order ${order.id} to driver ${driver.id} (Distance: ${String.format("%.2f", dist)} km)")
 
@@ -658,12 +655,6 @@ class OrderService(
         broadcastOrderChange(order, "UPDATE")
     }
 
-    private fun selectFastestDriver(drivers: List<Driver>, targetLat: Double, targetLng: Double): Driver {
-        return drivers.minByOrNull { driver ->
-            estimateDrivingTimeSeconds(driver.latitude!!, driver.longitude!!, targetLat, targetLng)
-        } ?: drivers.first()
-    }
-
     private fun estimateDrivingTimeSeconds(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val distKm = calculateDistanceKm(lat1, lon1, lat2, lon2)
         val realDistKm = distKm * 1.4
@@ -672,19 +663,22 @@ class OrderService(
     }
 
     private fun findDriverByAutoFilter(order: TaxiOrder, nearbyDrivers: List<Driver>): Driver? {
-        val driverIds = nearbyDrivers.mapNotNull { it.id }
+        val eligibleDrivers = nearbyDrivers.filter {
+            !order.rejectedDriverIds.contains(it.id) && it.activityScore > 0 && !it.photoControlRestricted
+        }
+        val driverIds = eligibleDrivers.mapNotNull { it.id }
         if (driverIds.isEmpty()) return null
 
+        val driversById = eligibleDrivers.associateBy { it.id }
         val activeFilters = filterRepository.findAllByDriverIdInAndIsActiveTrue(driverIds)
             .filter { it.isAuto || it.isCycle }
 
         val matchedFilter = activeFilters.firstOrNull { filter ->
-            val driver = nearbyDrivers.firstOrNull { it.id == filter.driver.id } ?: return@firstOrNull false
-            if (order.rejectedDriverIds.contains(driver.id)) return@firstOrNull false
+            val driver = driversById[filter.driver.id] ?: return@firstOrNull false
             matchesFilter(order, filter, driver)
         }
 
-        return matchedFilter?.driver
+        return matchedFilter?.let { driversById[it.driver.id] ?: it.driver }
     }
 
     private fun calculateDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
@@ -704,19 +698,23 @@ class OrderService(
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND) }
 
         if (order.status == OrderStatus.OFFERING && order.offeredDriver?.id == driver.id) {
-            logger.info("Водій ${driver.id} відхилив пропозицію ${order.id}")
+            logger.info("Водій ${driver.id} відхилив пропозицію ${order.id}. Шукаємо наступного водія...")
 
             redisTemplate.opsForZSet().remove("orders:expired_offers", order.id.toString())
 
             driverActivityService.updateScore(driver, -50, "Відмова від запропонованого замовлення #${order.id}")
 
             order.rejectedDriverIds.add(driver.id!!)
-            order.status = OrderStatus.REQUESTED
             order.offeredDriver = null
             order.offerExpiresAt = null
 
-            val saved = orderRepository.save(order)
-            broadcastOrderChange(saved, "ADD")
+            if (order.scheduledAt != null) {
+                order.status = OrderStatus.SCHEDULED
+                val saved = orderRepository.save(order)
+                broadcastOrderChange(saved, "ADD")
+            } else {
+                dispatchOrderToNextCandidate(order)
+            }
         }
     }
 
@@ -737,52 +735,64 @@ class OrderService(
             }
 
             val orderId = idClean.toLongOrNull() ?: continue
-            val order = orderRepository.findById(orderId).orElse(null) ?: continue
+            val order = orderRepository.findByIdWithLock(orderId).orElse(null) ?: continue
 
             if (order.status == OrderStatus.OFFERING) {
-                logger.info("Час пропозиції замовлення ${order.id} вичерпано (Redis ZSET). Штраф і переход в Ефір.")
+                logger.info("Час пропозиції замовлення ${order.id} вичерпано (Redis ZSET). Штраф і пошук наступного водія.")
 
                 order.offeredDriver?.let {
                     driverActivityService.updateScore(it, -50, "Пропущено замовлення #${order.id}")
                     order.rejectedDriverIds.add(it.id!!)
                 }
 
-                order.status = OrderStatus.REQUESTED
                 order.offeredDriver = null
                 order.offerExpiresAt = null
 
-                val saved = orderRepository.save(order)
-                broadcastOrderChange(saved, "ADD")
+                if (order.scheduledAt != null) {
+                    order.status = OrderStatus.REQUESTED
+                    val saved = orderRepository.save(order)
+                    broadcastOrderChange(saved, "ADD")
+                } else {
+                    dispatchOrderToNextCandidate(order)
+                }
             }
         }
     }
 
     fun broadcastOrderChange(order: TaxiOrder, action: String) {
+        invalidateEtherCache()
+
         val orderUuidStr = order.uuid.toString()
-        val orderDto = TaxiOrderDto(order)
+        val fullOrderDto = TaxiOrderDto(order)
 
-        val message = OrderSocketMessage(action, orderUuidStr, if (action == "REMOVE") null else orderDto)
+        val adminAndClientMessage = OrderSocketMessage(action, orderUuidStr, if (action == "REMOVE") null else fullOrderDto)
 
-        sendSocketAfterCommit("/topic/admin/orders", message)
-        sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", message)
+        sendSocketAfterCommit("/topic/admin/orders", adminAndClientMessage)
+        sendSocketAfterCommit("/topic/clients/${order.client.id}/orders", adminAndClientMessage)
 
         val isAvailableInEther = order.status == OrderStatus.REQUESTED ||
             (order.status == OrderStatus.SCHEDULED && order.driver == null && order.offeredDriver == null)
 
         if (isAvailableInEther && action != "REMOVE") {
-            sendSocketAfterCommit("/topic/drivers/ether", message)
+            // ЗАЩИТА ПЕРСОНАЛЬНЫХ ДАННЫХ: В публичном эфире скрываем номер телефона клиента (пустая строка для non-null String)
+            val publicEtherDto = fullOrderDto.copy(
+                client = fullOrderDto.client.copy(phoneNumber = "")
+            )
+            val etherMessage = OrderSocketMessage(action, orderUuidStr, publicEtherDto)
+            sendSocketAfterCommit("/topic/drivers/ether", etherMessage)
         } else {
             sendSocketAfterCommit("/topic/drivers/ether", OrderSocketMessage("REMOVE", orderUuidStr, null))
 
             val targetDriver = order.driver ?: order.offeredDriver
             targetDriver?.id?.let { driverId ->
-                sendSocketAfterCommit("/topic/drivers/$driverId/orders", message)
+                sendSocketAfterCommit("/topic/drivers/$driverId/orders", adminAndClientMessage)
             }
         }
     }
 
+    @Transactional(readOnly = true)
     fun getDriverHeatmap(): List<HeatmapZoneDto> {
-        val activeOrders = orderRepository.findAllByStatus(OrderStatus.REQUESTED)
+        val activeOrders = getCachedAvailableEtherOrders().filter { it.status == OrderStatus.REQUESTED }
         if (activeOrders.isEmpty()) return emptyList()
 
         val R = 0.0112
@@ -790,8 +800,8 @@ class OrderService(
         val HORIZ_BASE = Math.sqrt(3.0) * R
 
         val grouped = activeOrders.groupBy { order ->
-            val lat = order.originLat!!
-            val lng = order.originLng!!
+            val lat = order.originLat ?: 0.0
+            val lng = order.originLng ?: 0.0
             val row = Math.round(lat / VERT_STEP).toInt()
             val rowCenterLat = row * VERT_STEP
             val lngStep = HORIZ_BASE / Math.cos(Math.toRadians(rowCenterLat))
@@ -822,6 +832,7 @@ class OrderService(
         return zones
     }
 
+    @Transactional(readOnly = true)
     fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
         val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", driver.id.toString()) as? Map<*, *>
         val isOnlineRedis = (meta?.get("isOnline") as? String)?.toBoolean()
@@ -830,12 +841,10 @@ class OrderService(
 
         val isOnline = driver.isOnline || isOnlineRedis
         if (!isOnline) {
-            logger.info(">>> [ETHER] Водій #${driver.id} офлайн (DB=${driver.isOnline}, Redis=$isOnlineRedis). Ефір порожній.")
             return emptyList()
         }
 
         if (driver.activityScore <= 0) {
-            logger.info(">>> [ETHER] Водій #${driver.id} заблокований за низьку активність (${driver.activityScore}).")
             return emptyList()
         }
 
@@ -848,7 +857,8 @@ class OrderService(
             }
         }
 
-        val allOrders = orderRepository.findAllAvailableForEther()
+        val allOrders = getCachedAvailableEtherOrders()
+        if (allOrders.isEmpty()) return emptyList()
 
         val driverTariffIds = if (driver.selectedTariffs.isNotEmpty()) {
             driver.selectedTariffs.mapNotNull { it.id }.toSet()
@@ -865,15 +875,18 @@ class OrderService(
         val activeFilters = filterRepository.findAllByDriverId(driver.id!!)
             .filter { it.isActive && it.isEther }
 
-        if (activeFilters.isEmpty()) {
-            return availableOrdersByTariff.map { TaxiOrderDto(it) }
+        val resultOrders = if (activeFilters.isEmpty()) {
+            availableOrdersByTariff
+        } else {
+            availableOrdersByTariff.filter { order ->
+                activeFilters.any { filter -> matchesFilter(order, filter, driver) }
+            }
         }
 
-        val filtered = availableOrdersByTariff.filter { order ->
-            activeFilters.any { filter -> matchesFilter(order, filter, driver) }
+        return resultOrders.map { order ->
+            val dto = TaxiOrderDto(order)
+            dto.copy(client = dto.client.copy(phoneNumber = ""))
         }
-
-        return filtered.map { TaxiOrderDto(it) }
     }
 
     private fun matchesFilter(order: TaxiOrder, filter: DriverFilter, driver: Driver): Boolean {
@@ -890,18 +903,28 @@ class OrderService(
             }
         } else {
             if (filter.fromSectors.isNotEmpty()) {
-                val startSectors = sectorService.getCachedSectorEntities().filter { it.id in filter.fromSectors }
-                val isInStartSector = startSectors.any { sector ->
-                    GeometryUtils.isPointInPolygon(order.originLat ?: 0.0, order.originLng ?: 0.0, sector.points)
+                val originSectorId = order.originSector?.id
+                val isInStartSector = if (originSectorId != null) {
+                    originSectorId in filter.fromSectors
+                } else {
+                    val startSectors = sectorService.getCachedSectorEntities().filter { it.id in filter.fromSectors }
+                    startSectors.any { sector ->
+                        GeometryUtils.isPointInPolygon(order.originLat ?: 0.0, order.originLng ?: 0.0, sector.points)
+                    }
                 }
                 if (!isInStartSector) return false
             }
         }
 
         if (filter.toSectors.isNotEmpty()) {
-            val endSectors = sectorService.getCachedSectorEntities().filter { it.id in filter.toSectors }
-            val isInEndSector = endSectors.any { sector ->
-                GeometryUtils.isPointInPolygon(order.destLat ?: 0.0, order.destLng ?: 0.0, sector.points)
+            val destSectorId = order.destinationSector?.id
+            val isInEndSector = if (destSectorId != null) {
+                destSectorId in filter.toSectors
+            } else {
+                val endSectors = sectorService.getCachedSectorEntities().filter { it.id in filter.toSectors }
+                endSectors.any { sector ->
+                    GeometryUtils.isPointInPolygon(order.destLat ?: 0.0, order.destLng ?: 0.0, sector.points)
+                }
             }
             if (!isInEndSector) return false
         }
@@ -936,25 +959,16 @@ class OrderService(
         return true
     }
 
+    @Transactional(readOnly = true)
     fun findActiveOrderByDriver(driver: Driver): TaxiOrderDto? {
-        val activeStatuses = listOf(
-            OrderStatus.ACCEPTED,
-            OrderStatus.DRIVER_ARRIVED,
-            OrderStatus.IN_PROGRESS,
-            OrderStatus.SCHEDULED,
-            OrderStatus.ARRIVED_AT_WAYPOINT
-        )
-        val activeOrder = orderRepository.findAllByDriverId(driver.id!!)
-            .filter { it.status in activeStatuses }
-            .firstOrNull()
+        val driverId = driver.id ?: return null
 
+        val activeOrder = orderRepository.findActiveOrScheduledOrdersByDriverId(driverId).firstOrNull()
         if (activeOrder != null) {
             return TaxiOrderDto(activeOrder)
         }
 
-        val offeredOrder = orderRepository.findAllByStatus(OrderStatus.OFFERING)
-            .find { it.offeredDriver?.id == driver.id }
-
+        val offeredOrder = orderRepository.findOfferingOrdersByDriverId(driverId).firstOrNull()
         return if (offeredOrder != null) {
             if (offeredOrder.offerExpiresAt != null && LocalDateTime.now().isAfter(offeredOrder.offerExpiresAt)) {
                 null
@@ -966,16 +980,16 @@ class OrderService(
         }
     }
 
+    @Transactional(readOnly = true)
     fun findHistoryByDriver(driver: Driver): List<TaxiOrderDto> {
-        val orders = orderRepository.findAllByDriverId(driver.id!!)
-            .filter { it.status == OrderStatus.COMPLETED || it.status == OrderStatus.CANCELLED }
-            .sortedByDescending { it.id }
+        val driverId = driver.id ?: return emptyList()
 
+        val orders = orderRepository.findDriverHistoryOrders(driverId, PageRequest.of(0, 100))
         if (orders.isEmpty()) return emptyList()
 
         val orderIds = orders.mapNotNull { it.id }
 
-        val activityMap = activityHistoryRepository.findAllByDriverIdAndOrderIdIn(driver.id!!, orderIds)
+        val activityMap = activityHistoryRepository.findAllByDriverIdAndOrderIdIn(driverId, orderIds)
             .filter { it.orderId != null }
             .associateBy { it.orderId!! }
 
@@ -985,14 +999,22 @@ class OrderService(
         }
     }
 
+    @Transactional(readOnly = true)
     fun getOrderById(id: Long): TaxiOrderDto {
         val order = orderRepository.findById(id)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
         return TaxiOrderDto(order)
     }
 
+    @Transactional(readOnly = true)
+    fun getOrderEntityById(id: Long): TaxiOrder {
+        return orderRepository.findById(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+    }
+
+    @Transactional(readOnly = true)
     fun getClientHistory(client: Client, page: Int = 0, size: Int = 30): List<TaxiOrderDto> {
-        val pageable = org.springframework.data.domain.PageRequest.of(page, size)
+        val pageable = PageRequest.of(page, size)
         val orders = orderRepository.findAllOrdersForClientHistory(
             clientId = client.id!!,
             phone = client.userPhone,
@@ -1021,10 +1043,8 @@ class OrderService(
                 order.isSentToEvos = false
                 order.evosCancelPending = false
                 order.evosOrderUid = null
-                logger.info(">>> [EvoS] Заказ $evosUid успешно отменен в EvoS")
             } else {
                 order.evosCancelPending = true
-                logger.warn(">>> [EvoS] Партнер не подтвердил отмену $evosUid. Заказ помечен для Retry-отмены.")
             }
         }
 
@@ -1039,12 +1059,9 @@ class OrderService(
             val now = LocalDateTime.now()
 
             if (acceptedTime == null || ChronoUnit.MINUTES.between(acceptedTime, now) < 3) {
-                logger.info("Клиент отменил вовремя или машина не найдена. Полный возврат холда.")
                 liqPayService.voidFunds(paymentOrderId)
             } else {
                 val penaltyAmount = order.tariff.basePrice
-                logger.info("Прошло больше 3 минут. Списываем стоимость подачи: $penaltyAmount UAH")
-
                 liqPayService.captureFunds(paymentOrderId, penaltyAmount)
 
                 val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
@@ -1069,8 +1086,6 @@ class OrderService(
             order.authorizedAmount = 0.0
         }
 
-        // ✅ ИСПРАВЛЕНО: Во время OFFERING водитель находится в order.offeredDriver (а order.driver == null)!
-        // Теперь пуш ORDER_CANCEL гарантированно уходит водителю и во время 20-секундного оффера, и во время поездки.
         val targetDriver = order.driver ?: order.offeredDriver
         if (targetDriver != null && (
                 order.status == OrderStatus.OFFERING ||
@@ -1080,7 +1095,6 @@ class OrderService(
                 order.status == OrderStatus.ARRIVED_AT_WAYPOINT
             )
         ) {
-            logger.info(">>> [CancelOrder] Отправляем сигнал отмены заказа #${order.id} водителю #${targetDriver.id} (статус был: ${order.status})")
             notificationService.sendOrderCancelToDriver(targetDriver, order)
         }
 
@@ -1126,8 +1140,6 @@ class OrderService(
         }
 
         if (order.status == OrderStatus.SCHEDULED) {
-            logger.info("Driver ${driver.id} rejected SCHEDULED order #${order.id}. Returning to Ether.")
-
             val adaptivePenalty = if (order.isDriverConfirmed == true) 50 else 30
             val adaptiveText = if (order.isDriverConfirmed == true) {
                 "$reasonText (Скасовано підтверджене заплановане)"
@@ -1149,12 +1161,10 @@ class OrderService(
             return TaxiOrderDto(saved)
         }
 
-        // КРИТИЧЕСКИЙ ФИКС: Если водитель отменяет заказ с оплатой картой — размораживаем холд клиента в LiqPay!
         if (order.paymentMethod == "CARD" && order.authorizedAmount > 0.0) {
             val paymentOrderId = "ride_${order.id}"
             liqPayService.voidFunds(paymentOrderId)
             order.authorizedAmount = 0.0
-            logger.info(">>> [DriverCancel] Холд картки клієнта розблоковано для замовлення #${order.id}")
         }
 
         order.cancellationReason = reasonText
@@ -1209,7 +1219,6 @@ class OrderService(
 
         val evosUid = order.evosOrderUid
         if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
-            logger.info(">>> [OrderService] Водитель #${driver.id} принимает заказ #${order.id}. Отзываем из EvoS (UID: $evosUid)...")
             val cancelledInEvos = evoSService.cancelOrderInEvoS(evosUid)
             if (cancelledInEvos) {
                 order.isSentToEvos = false
@@ -1217,7 +1226,6 @@ class OrderService(
                 order.evosOrderUid = null
             } else {
                 order.evosCancelPending = true
-                logger.warn(">>> [OrderService] EvoS не подтвердил отмену $evosUid. Передан в фоновый Retry.")
             }
         }
 
@@ -1236,13 +1244,11 @@ class OrderService(
 
         if (order.status != OrderStatus.SCHEDULED) {
             order.status = OrderStatus.ACCEPTED
-        } else {
-            logger.info("Driver ${driver.id} reserved scheduled order ${order.id}")
         }
         val saved = orderRepository.save(order)
 
         if (saved.status != OrderStatus.SCHEDULED) {
-            redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), saved.uuid.toString())
+            redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), "${saved.id}|${saved.uuid}")
         }
 
         broadcastOrderChange(saved, "UPDATE")
@@ -1300,13 +1306,10 @@ class OrderService(
                         return null
                     }
                     if (finishedOrder.status == OrderStatus.CANCELLED) {
-                        // Отмененный водителем заказ показываем один раз и сразу убираем из Redis
                         redisTemplate.delete(lastFinishedKey)
                         return TaxiOrderDto(finishedOrder)
                     }
                     if (finishedOrder.status == OrderStatus.COMPLETED) {
-                        // НЕ удаляем ключ при GET-чтении! Он удалится при вызове /dismiss или после оценки,
-                        // чтобы повторный syncActiveOrder() в onResume не затер экран завершения через 204 No Content.
                         return TaxiOrderDto(finishedOrder)
                     }
                 }
@@ -1318,13 +1321,7 @@ class OrderService(
     }
 
     fun dismissCompletedOrder(client: Client, orderId: Long) {
-        val lastFinishedIdStr = redisTemplate.opsForValue().get("client:last_completed_order:${client.id}")?.toString()
-        val targetId = if (orderId != 0L) orderId else (lastFinishedIdStr?.toLongOrNull() ?: 0L)
-
         redisTemplate.delete("client:last_completed_order:${client.id}")
-        logger.info(">>> [OrderService] Завершене замовлення #$targetId очищено з Redis для клієнта #${client.id}")
-        // ВАЖНО: Не ставим здесь order.isRatedByClient = true, так как после нажатия "Зрозуміло"
-        // у клиента открывается диалог оценки водителя (POST /api/v1/client/rate).
     }
 
     @Transactional
@@ -1381,8 +1378,6 @@ class OrderService(
 
                 order.waitingPrice = extraCost
                 order.price += extraCost
-
-                logger.info("Paid waiting applied for Order ${order.id}: $paidMinutes mins. Extra cost: $extraCost")
             }
         }
 
@@ -1400,10 +1395,6 @@ class OrderService(
         return TaxiOrderDto(savedOrder)
     }
 
-    /**
-     * Построение полного маршрута через OSRM (с поддержкой промежуточных остановок waypoints,
-     * точных координат без смещения точек и кэшированием результата в Redis на 10 минут).
-     */
     fun fetchRouteFromOsrm(request: RouteRequestDto): RouteResponseDto? {
         val allPoints = mutableListOf<RoutePointDto>()
         allPoints.add(RoutePointDto(request.originLat, request.originLng))
@@ -1419,7 +1410,6 @@ class OrderService(
         }
         if (!isValid) return null
 
-        // Ключ кэша Redis с точностью 5 знаков после запятой (~1.1 метра)
         val cacheKey = "osrm:route:v1:" + allPoints.joinToString(";") {
             String.format(java.util.Locale.US, "%.5f,%.5f", it.lat, it.lng)
         }
@@ -1433,7 +1423,6 @@ class OrderService(
                     val dur = parts[1].toIntOrNull()
                     val poly = parts[2]
                     if (dist != null && dur != null && poly.isNotBlank()) {
-                        logger.debug(">>> [OSRM Cache HIT] Маршрут взят из Redis: $cacheKey")
                         return RouteResponseDto(
                             polyline = poly,
                             distanceMeters = dist,
@@ -1447,14 +1436,13 @@ class OrderService(
         }
 
         return try {
-            // В сам OSRM передаем 100% точные координаты без округления (формат OSRM: lng,lat;lng,lat)
             val coordsQuery = allPoints.joinToString(";") { "${it.lng},${it.lat}" }
             val osrmUrl = "https://router.project-osrm.org/route/v1/driving/$coordsQuery?overview=full&geometries=polyline"
 
             val connection = java.net.URL(osrmUrl).openConnection() as java.net.HttpURLConnection
             connection.requestMethod = "GET"
-            connection.connectTimeout = 4500
-            connection.readTimeout = 4500
+            connection.connectTimeout = 2000
+            connection.readTimeout = 2000
             connection.setRequestProperty("User-Agent", "UnitTaxiServer/1.0")
 
             if (connection.responseCode == 200) {
@@ -1476,19 +1464,13 @@ class OrderService(
                         try {
                             val valueToCache = "${result.distanceMeters}|||${result.durationSeconds}|||${result.polyline}"
                             redisTemplate.opsForValue().set(cacheKey, valueToCache, 10, java.util.concurrent.TimeUnit.MINUTES)
-                        } catch (e: Exception) {
-                            logger.warn(">>> [OSRM Cache] Помилка запису в Redis: ${e.message}")
-                        }
-                        logger.info(">>> [OSRM Router] Маршрут згенеровано: dist=${result.distanceMeters}m, dur=${result.durationSeconds}s, points=${allPoints.size}")
+                        } catch (_: Exception) {}
                         result
                     } else null
                 } else null
-            } else {
-                logger.warn(">>> [OSRM Router] Помилка відповіді OSRM: код ${connection.responseCode}")
-                null
-            }
+            } else null
         } catch (e: Exception) {
-            logger.error(">>> [OSRM Router] Помилка запиту до OSRM: ${e.message}")
+            logger.warn(">>> [OSRM Router] Таймаут або помилка OSRM: ${e.message}")
             null
         }
     }
@@ -1516,15 +1498,11 @@ class OrderService(
             return TaxiOrderDto(order)
         }
 
-        logger.info("Driver ${driver.id} CONFIRMED scheduled order #${order.id}")
-
         order.isDriverConfirmed = true
         order.status = OrderStatus.ACCEPTED
 
         val saved = orderRepository.save(order)
-
-        // ФИКС: Замовлення активоване, записуємо активного водія в Redis Hash (було помилкове .delete)
-        redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), saved.uuid.toString())
+        redisTemplate.opsForHash<String, Any>().put("orders:active_drivers", driver.id.toString(), "${saved.id}|${saved.uuid}")
 
         broadcastOrderChange(saved, "ADD")
         return TaxiOrderDto(saved)
@@ -1547,9 +1525,6 @@ class OrderService(
         var cardCapturedAmount = 0.0
         var unpaidCashDelta = 0.0
 
-        // =======================================================
-        // 💳 ФИНАНСОВЫЙ БЛОК: ЗАКРЫТИЕ ХОЛДА И ДОСПИСАНИЕ ПРОСТОЯ
-        // =======================================================
         if (order.paymentMethod == "CARD") {
             val paymentOrderId = "ride_${order.id}"
 
@@ -1563,7 +1538,6 @@ class OrderService(
                     throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка завершення платежу. Спосіб змінено на ГОТІВКУ.")
                 }
                 cardCapturedAmount = currentClientPayAmount
-                logger.info(">>> SUCCESS: Capture processed for exact client amount: $currentClientPayAmount")
             } else {
                 val isCaptureSuccess = liqPayService.captureFunds(paymentOrderId, order.authorizedAmount)
 
@@ -1573,7 +1547,6 @@ class OrderService(
                     broadcastOrderChange(order, "UPDATE")
                     throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Помилка списання базової суми холда. Переведено на ГОТІВКУ.")
                 }
-                // Базовый холд УСПЕШНО списан с карты клиента! Фиксируем эту сумму!
                 cardCapturedAmount = order.authorizedAmount
 
                 val delta = currentClientPayAmount - order.authorizedAmount
@@ -1591,11 +1564,7 @@ class OrderService(
 
                 if (isDeltaSuccess) {
                     cardCapturedAmount += delta
-                    logger.info(">>> SUCCESS: Hold captured and excess delta ($delta UAH) charged successfully!")
                 } else {
-                    // ФИКС ПОТЕРИ ДЕНЕГ: Не затираем order.price = delta!
-                    // Завершаем заказ штатно, начисляем водителю уже списанный cardCapturedAmount (authorizedAmount),
-                    // а разницу за простой (delta) водитель берет с клиента наличными.
                     unpaidCashDelta = delta
                     order.comment = ((order.comment ?: "") + " [Доплата готівкою за простій: $delta грн]").trim()
 
@@ -1621,14 +1590,25 @@ class OrderService(
         }
 
         driver.completedRides += 1
+
+        if (order.assignmentType == "HOME" || driver.searchMode == DriverSearchMode.HOME) {
+            val now = LocalDateTime.now()
+            val lastUsage = driver.lastHomeUsageDate
+            if (lastUsage == null || lastUsage.toLocalDate() != now.toLocalDate()) {
+                driver.homeRidesLeft = 2
+            }
+            driver.homeRidesLeft = (driver.homeRidesLeft - 1).coerceAtLeast(0)
+            driver.lastHomeUsageDate = now
+            if (driver.homeRidesLeft <= 0 && driver.searchMode == DriverSearchMode.HOME) {
+                driver.searchMode = DriverSearchMode.MANUAL
+            }
+        }
+
         driverActivityService.processOrderCompletion(driver, order)
         order.client.tripsCount += 1
         order.client.totalCompletedOrders += 1
         clientRepository.save(order.client)
 
-        // =======================================================
-        // 💰 РАСЧЕТ И СПИСАНИЕ КОМИССИИ ВОДИТЕЛЯ (С ПОЛНОЙ СУММЫ)
-        // =======================================================
         val commissionSetting = appSettingRepository.findById("driver_commission_percent").orElse(null)
         val commissionPercent = commissionSetting?.value?.toDoubleOrNull() ?: 10.0
 
@@ -1668,9 +1648,6 @@ class OrderService(
         )
         walletTransactionRepository.save(transaction)
 
-        // =======================================================
-        // 🎁 МАРКЕТИНГОВАЯ ДОПЛАТА ВОДИТЕЛЮ ЗА СКИДКУ
-        // =======================================================
         if (order.appliedDiscount > 0.0) {
             val marketingWalletSetting = appSettingRepository.findById("company_marketing_balance").orElse(null)
             val marketingBalance = marketingWalletSetting?.value?.toDoubleOrNull() ?: 0.0
@@ -1701,7 +1678,6 @@ class OrderService(
                 }
 
                 walletTransactionRepository.save(compensationTx)
-                logger.info(">>> MARKETING COMPENSATION: Paid ${order.appliedDiscount} UAH to driver ${driver.id}")
             } else {
                 val pendingTx = com.taxiapp.server.model.finance.WalletTransaction(
                     driver = driver,
@@ -1714,7 +1690,6 @@ class OrderService(
                 }
 
                 walletTransactionRepository.save(pendingTx)
-                logger.warn(">>> MARKETING FUNDS DEPLETED: Compensation of ${order.appliedDiscount} UAH is PENDING for driver ${driver.id}")
             }
         }
 
@@ -1777,7 +1752,6 @@ class OrderService(
             if (order.scheduledAt == null) continue
 
             if (order.isSentToEvos && order.isEvosDriverAssigned) {
-                logger.info(">>> [OrderService] Заплановане замовлення #${order.id} вже закріплене за водієм EvoS (${order.evosDriverCarInfo})")
                 if (order.scheduledAt!!.isBefore(now.plusMinutes(30)) && order.status == OrderStatus.SCHEDULED) {
                     order.status = OrderStatus.ACCEPTED
                     orderRepository.save(order)
@@ -1787,7 +1761,6 @@ class OrderService(
             }
 
             if (order.scheduledAt!!.isBefore(now.minusHours(1))) {
-                logger.warn("Scheduled order ${order.id} expired. Cancelling.")
                 if (order.paymentMethod == "CARD" && order.authorizedAmount > 0.0) {
                     liqPayService.voidFunds("ride_${order.id}")
                     order.authorizedAmount = 0.0
@@ -1817,15 +1790,11 @@ class OrderService(
                 }
 
                 if (order.confirmationRequestedAt == null) {
-                    logger.info("Asking confirmation for order #${order.id}")
                     order.confirmationRequestedAt = LocalDateTime.now()
                     orderRepository.save(order)
-
                     notificationService.sendConfirmationRequest(order.driver!!, order)
                 } else {
                     if (now.isAfter(order.confirmationRequestedAt!!.plusMinutes(1))) {
-                        logger.warn("Driver ${order.driver!!.id} failed to confirm order #${order.id}. PENALTY applied.")
-
                         driverActivityService.processOrderCancellation(order.driver!!, order.id!!, 50, "Не підтвердив заплановане")
 
                         order.rejectedDriverIds.add(order.driver!!.id!!)
@@ -1838,18 +1807,18 @@ class OrderService(
                     }
                 }
             } else {
-                logger.info("Searching driver for scheduled order #${order.id}")
-
                 val scheduledNearby = getEnrichedNearbyDrivers(order.originLat ?: 0.0, order.originLng ?: 0.0, maxRadiusKm = 10.0, tariff = order.tariff)
 
                 val bestDriver = scheduledNearby.filter { drv ->
-                    !order.rejectedDriverIds.contains(drv.id) && drv.searchMode != com.taxiapp.server.model.enums.DriverSearchMode.OFFLINE
+                    !order.rejectedDriverIds.contains(drv.id) &&
+                    drv.activityScore > 0 &&
+                    !drv.photoControlRestricted &&
+                    drv.searchMode != DriverSearchMode.OFFLINE
                 }.minByOrNull { drv ->
                     estimateDrivingTimeSeconds(drv.latitude!!, drv.longitude!!, order.originLat ?: 0.0, order.originLng ?: 0.0)
                 }
 
                 if (bestDriver != null) {
-                    logger.info("Offering scheduled order #${order.id} to ${bestDriver.id}")
                     order.status = OrderStatus.OFFERING
                     order.offeredDriver = bestDriver
                     val expiresAt = LocalDateTime.now().plusSeconds(20)
@@ -1878,6 +1847,8 @@ class OrderService(
         maxRadiusKm: Double = 10.0,
         tariff: com.taxiapp.server.model.order.CarTariff? = null
     ): List<Driver> {
+        if (pickupLat == 0.0 && pickupLng == 0.0) return emptyList()
+
         val circle = org.springframework.data.geo.Circle(
             org.springframework.data.geo.Point(pickupLng, pickupLat),
             org.springframework.data.geo.Distance(maxRadiusKm, org.springframework.data.geo.Metrics.KILOMETERS)
@@ -1892,32 +1863,29 @@ class OrderService(
             null
         }
 
-        val driversWithActiveOffers = orderRepository.findAllByStatus(OrderStatus.OFFERING)
-            .mapNotNull { it.offeredDriver?.id }
-            .toSet()
-
-        val activeOrderDriverIds = orderRepository.findAllByStatusIn(
-            listOf(OrderStatus.ACCEPTED, OrderStatus.DRIVER_ARRIVED, OrderStatus.IN_PROGRESS, OrderStatus.ARRIVED_AT_WAYPOINT)
-        ).mapNotNull { it.driver?.id }.toSet()
+        val driversWithActiveOffers = orderRepository.findDriverIdsWithActiveOffers()
+        val activeOrderDriverIds = orderRepository.findDriverIdsWithActiveOrders()
 
         val geoContent = geoResults?.content ?: emptyList()
         val driverIds = geoContent.mapNotNull { "${it.content.name}".toLongOrNull() }
 
-        // ✅ ИСПРАВЛЕНО: Если в Redis GEO пусто (например, телефон стоял на месте и запись истекла),
-        // делаем страховочную выборку онлайн-водителей из БД и восстанавливаем их в Redis!
         if (driverIds.isEmpty()) {
-            val dbOnlineDrivers = driverRepository.findAll().filter { drv ->
-                drv.isOnline &&
-                !drv.isBlocked &&
+            val latDelta = maxRadiusKm / 111.0
+            val lngDelta = maxRadiusKm / (111.0 * max(0.2, cos(Math.toRadians(pickupLat))))
+
+            val dbOnlineDrivers = orderRepository.findOnlineDriversInBounds(
+                minLat = pickupLat - latDelta,
+                maxLat = pickupLat + latDelta,
+                minLng = pickupLng - lngDelta,
+                maxLng = pickupLng + lngDelta
+            ).filter { drv ->
                 drv.latitude != null && drv.longitude != null &&
-                drv.latitude != 0.0 && drv.longitude != 0.0 &&
                 !driversWithActiveOffers.contains(drv.id) &&
                 !activeOrderDriverIds.contains(drv.id) &&
                 GeometryUtils.calculateDistance(drv.latitude!!, drv.longitude!!, pickupLat, pickupLng) <= maxRadiusKm
             }
 
             if (dbOnlineDrivers.isNotEmpty()) {
-                logger.info(">>> [OrderMatching] Redis GEO був порожній, відновлено ${dbOnlineDrivers.size} онлайн-водіїв з БД")
                 for (drv in dbOnlineDrivers) {
                     val drvIdStr = drv.id.toString()
                     redisTemplate.opsForGeo().add("drivers:geo", org.springframework.data.geo.Point(drv.longitude!!, drv.latitude!!), drvIdStr)
@@ -1941,6 +1909,14 @@ class OrderService(
 
         val driversFromDb = driverRepository.findAllById(driverIds).associateBy { it.id }
 
+        val driverIdStrings = driverIds.map { it.toString() }
+        val metaList = try {
+            redisTemplate.opsForHash<String, Any>().multiGet("drivers:meta", driverIdStrings)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val metaByDriverId = driverIds.zip(metaList).toMap()
+
         return geoContent.mapNotNull { result ->
             val id = "${result.content.name}".toLongOrNull() ?: return@mapNotNull null
 
@@ -1952,11 +1928,10 @@ class OrderService(
             if (driver.isBlocked) return@mapNotNull null
 
             if (!isDriverTariffMatching(driver, tariff)) {
-                logger.info(">>> [OrderMatching] Водій #$id пропущений через фільтр тарифу (${tariff?.name})")
                 return@mapNotNull null
             }
 
-            val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", id.toString()) as? Map<*, *>
+            val meta = metaByDriverId[id] as? Map<*, *>
             if (meta != null) {
                 val isOnlineRedis = (meta["isOnline"] as? String)?.toBoolean() ?: driver.isOnline
                 if (!isOnlineRedis && !driver.isOnline) return@mapNotNull null
@@ -1965,8 +1940,6 @@ class OrderService(
                 driver.latitude = result.content.point.y
                 driver.longitude = result.content.point.x
                 driver.bearing = (meta["bearing"] as? String)?.toFloatOrNull() ?: 0f
-                // ✅ ИСПРАВЛЕНО: Берем searchMode из БД (driver.searchMode), так как POST /api/v1/driver/search-settings
-                // сохраняет актуальный режим в БД!
             } else if (!driver.isOnline) {
                 return@mapNotNull null
             }
@@ -1986,8 +1959,6 @@ class OrderService(
                tariff.name.equals("Стандарт", ignoreCase = true) ||
                tariff.name.equals("Cтандарт", ignoreCase = true)
     }
-
-    private fun blockCoordinateRounding(v: Double): Double = v
 
     @Transactional
     fun updatePaymentMethod(user: User, orderId: Long, method: String) {
@@ -2010,7 +1981,6 @@ class OrderService(
             return
         }
 
-        // 1. Если переключаемся НА оплату картой (CARD) — проверяем токен и холдируем средства
         if (normalizedMethod == "CARD" && order.authorizedAmount <= 0.0) {
             val token = order.client.cardToken
             if (token.isNullOrEmpty()) {
@@ -2028,13 +1998,10 @@ class OrderService(
                 throw ResponseStatusException(HttpStatus.PAYMENT_REQUIRED, "Недостатньо коштів на картці або помилка банку")
             }
             order.authorizedAmount = clientPayAmount
-        }
-        // 2. Если переключаемся С карты (CARD) на наличные (CASH) или на карту водителю (DRIVER_CARD) — снимаем холд
-        else if (previousMethod == "CARD" && normalizedMethod != "CARD" && order.authorizedAmount > 0.0) {
+        } else if (previousMethod == "CARD" && normalizedMethod != "CARD" && order.authorizedAmount > 0.0) {
             val paymentOrderId = "ride_${order.id}"
             liqPayService.voidFunds(paymentOrderId)
             order.authorizedAmount = 0.0
-            logger.info(">>> [PaymentSwitch] Холд картки розблоковано при зміні оплати на $normalizedMethod (Замовлення #${order.id})")
         }
 
         order.paymentMethod = normalizedMethod
@@ -2058,8 +2025,6 @@ class OrderService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ціну можна змінювати тільки під час пошуку авто")
         }
 
-        // Разрешаем клиенту как увеличивать надбавку, так и возвращать ее обратно (вплоть до 0.0 — базовой цены маршрута),
-        // пока заказ находится в поиске и еще не принят водителем.
         val basePriceWithoutExtra = order.price - order.addedValue
         order.addedValue = addedValue
         order.price = max(order.tariff.basePrice, basePriceWithoutExtra + addedValue)
@@ -2078,6 +2043,7 @@ class OrderService(
         broadcastOrderChange(savedOrder, "UPDATE")
     }
 
+    @Transactional(readOnly = true)
     fun getActiveOrdersForDispatcher(): List<TaxiOrderDto> {
         val activeStatuses = listOf(
             OrderStatus.REQUESTED,
@@ -2090,7 +2056,7 @@ class OrderService(
         )
         return orderRepository.findAllByStatusIn(activeStatuses)
             .map { TaxiOrderDto(it) }
-            .sortedByDescending { it.id }
+            .sortedByDescending { it.idLong }
     }
 
     private fun sendSocketAfterCommit(destination: String, message: Any) {
@@ -2154,7 +2120,6 @@ class OrderService(
 
                 order.waitingPrice += extraCost
                 order.price += extraCost
-                logger.info("[WAYPOINT_WAITING] Заказ ${order.id}: платное ожидание $paidMinutes мин. Добавлено: $extraCost UAH")
             }
         }
 

@@ -2,16 +2,19 @@ package com.taxiapp.server.controller
 
 import com.taxiapp.server.dto.driver.HeatmapZoneDto
 import com.taxiapp.server.dto.order.TaxiOrderDto
+import com.taxiapp.server.model.enums.OrderStatus
 import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.repository.DriverRepository
+import com.taxiapp.server.repository.TaxiOrderRepository
 import com.taxiapp.server.service.OrderService
 import org.springframework.http.HttpStatus
-import org.springframework.security.access.prepost.PreAuthorize
-import com.taxiapp.server.model.enums.OrderStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.security.access.prepost.PreAuthorize
+import org.springframework.security.core.Authentication
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
+import java.util.UUID
 
 @RestController
 @RequestMapping("/api/v1/driver/orders")
@@ -19,18 +22,17 @@ import java.security.Principal
 class DriverOrderController(
     private val orderService: OrderService,
     private val driverRepository: DriverRepository,
-    private val taxiOrderRepository: com.taxiapp.server.repository.TaxiOrderRepository // <-- ДОБАВИЛИ РЕПОЗИТОРИЙ
+    private val taxiOrderRepository: TaxiOrderRepository
 ) {
 
-    // Вспомогательный метод для получения внутреннего Long ID
-    private fun getInternalId(uuid: java.util.UUID): Long {
+    private fun getInternalId(uuid: UUID): Long {
         return taxiOrderRepository.findByUuid(uuid)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
             .id ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не має внутрішнього ID")
     }
 
     @PostMapping("/{id}/accept")
-    fun acceptOrder(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun acceptOrder(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         val order = orderService.acceptOrder(driver, internalId)
@@ -38,7 +40,7 @@ class DriverOrderController(
     }
 
     @PostMapping("/{id}/reject")
-    fun rejectOrder(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<Void> {
+    fun rejectOrder(@PathVariable id: UUID, principal: Principal): ResponseEntity<Void> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         orderService.rejectOffer(driver, internalId)
@@ -46,7 +48,7 @@ class DriverOrderController(
     }
 
     @PostMapping("/{id}/arrive")
-    fun driverArrived(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun driverArrived(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         val order = orderService.driverArrived(driver, internalId)
@@ -54,7 +56,7 @@ class DriverOrderController(
     }
 
     @PostMapping("/{id}/start")
-    fun startTrip(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun startTrip(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         val order = orderService.startTrip(driver, internalId)
@@ -62,7 +64,7 @@ class DriverOrderController(
     }
 
     @PostMapping("/{id}/complete")
-    fun completeOrder(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun completeOrder(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         val order = orderService.completeOrder(driver, internalId)
@@ -71,7 +73,7 @@ class DriverOrderController(
 
     @PostMapping("/{id}/confirm")
     fun confirmScheduledOrder(
-        @PathVariable id: java.util.UUID,
+        @PathVariable id: UUID,
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
@@ -82,8 +84,8 @@ class DriverOrderController(
 
     @PostMapping("/{id}/cancel")
     fun cancelOrder(
-        @PathVariable id: java.util.UUID, 
-        @RequestParam(required = false) reasonId: Long?, 
+        @PathVariable id: UUID,
+        @RequestParam(required = false) reasonId: Long?,
         principal: Principal
     ): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
@@ -92,38 +94,47 @@ class DriverOrderController(
         return ResponseEntity.ok(order)
     }
 
-    // ДОБАВЬ ЭТОТ НОВЫЙ ЭНДПОИНТ В DriverOrderController.kt
-
     @GetMapping("/{id}")
-    fun getOrderById(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun getOrderById(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val internalId = getInternalId(id)
-        
-        val order = orderService.getOrderById(internalId)
-        
-        // 🛡️ СТРОГАЯ ЗАЩИТА (IDOR): Запрещаем любой доступ, если ID водителя не совпадает
-        if (order.driver?.id != driver.id) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ до чужого замовлення заборонено")
-        }
-        
-        return ResponseEntity.ok(order)
+        val orderEntity = taxiOrderRepository.findByUuid(id)
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
+
+        return ResponseEntity.ok(validateAndMapOrderForDriver(orderEntity, driver))
     }
 
     @GetMapping("/by-internal-id/{internalId}")
     fun getOrderByInternalId(@PathVariable internalId: Long, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val order = orderService.getOrderById(internalId)
-        
-        // 🛡️ СТРОГАЯ ЗАЩИТА (IDOR): Жестко блокируем попытки перебора чужих ID
-        if (order.driver?.id != driver.id) {
+        val orderEntity = orderService.getOrderEntityById(internalId)
+
+        return ResponseEntity.ok(validateAndMapOrderForDriver(orderEntity, driver))
+    }
+
+    private fun validateAndMapOrderForDriver(
+        orderEntity: com.taxiapp.server.model.order.TaxiOrder,
+        driver: Driver
+    ): TaxiOrderDto {
+        val isAssignedDriver = orderEntity.driver?.id == driver.id
+        val isOfferedDriver = orderEntity.status == OrderStatus.OFFERING && orderEntity.offeredDriver?.id == driver.id
+        val isPublicEtherOrder = orderEntity.status == OrderStatus.REQUESTED ||
+            (orderEntity.status == OrderStatus.SCHEDULED && orderEntity.driver == null && orderEntity.offeredDriver == null)
+
+        if (!isAssignedDriver && !isOfferedDriver && !isPublicEtherOrder) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ до чужого замовлення заборонено")
         }
-        
-        return ResponseEntity.ok(order)
+
+        val dto = TaxiOrderDto(orderEntity)
+        return if (isAssignedDriver) {
+            dto
+        } else {
+            // До фактического принятия заказа телефон клиента скрыт (пустая строка для non-null String)
+            dto.copy(client = dto.client.copy(phoneNumber = ""))
+        }
     }
 
     @PostMapping("/{id}/waypoint/arrive")
-    fun arriveAtWaypoint(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun arriveAtWaypoint(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         val order = orderService.arriveAtWaypoint(driver, internalId)
@@ -131,12 +142,13 @@ class DriverOrderController(
     }
 
     @PostMapping("/{id}/waypoint/resume")
-    fun resumeTrip(@PathVariable id: java.util.UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
+    fun resumeTrip(@PathVariable id: UUID, principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
         val internalId = getInternalId(id)
         val order = orderService.resumeTrip(driver, internalId)
         return ResponseEntity.ok(order)
     }
+
     @GetMapping("/history")
     fun getOrderHistory(principal: Principal): ResponseEntity<List<TaxiOrderDto>> {
         val driver = getDriverFromPrincipal(principal)
@@ -146,7 +158,7 @@ class DriverOrderController(
     @GetMapping("/active")
     fun getActiveOrder(principal: Principal): ResponseEntity<TaxiOrderDto> {
         val driver = getDriverFromPrincipal(principal)
-        val activeOrder = orderService.findActiveOrderByDriver(driver) 
+        val activeOrder = orderService.findActiveOrderByDriver(driver)
             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Активних замовлень немає")
         return ResponseEntity.ok(activeOrder)
     }
@@ -164,10 +176,14 @@ class DriverOrderController(
     }
 
     private fun getDriverFromPrincipal(principal: Principal): Driver {
-        val username = principal.name 
-        val driver = driverRepository.findByUserLogin(username)
-            ?: driverRepository.findByUserPhone(username)
-            ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ заборонено: Ви не водій")
+        val auth = principal as? Authentication
+        val cachedDriver = auth?.principal as? Driver
+        val driver = cachedDriver ?: run {
+            val username = principal.name
+            driverRepository.findByUserLogin(username)
+                ?: driverRepository.findByUserPhone(username)
+                ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Доступ заборонено: Ви не водій")
+        }
 
         if (driver.isBlocked) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ваш акаунт заблоковано")
