@@ -18,6 +18,7 @@ import com.taxiapp.server.model.user.Driver
 import com.taxiapp.server.model.user.User
 import com.taxiapp.server.repository.*
 import com.taxiapp.server.utils.GeometryUtils
+import org.hibernate.Hibernate
 import org.slf4j.LoggerFactory
 import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
@@ -70,6 +71,34 @@ class OrderService(
 
     @Volatile
     private var etherCacheExpiresAtMs: Long = 0L
+
+    /**
+     * Загружает актуальную managed-сущность водителя внутри текущей транзакции Hibernate
+     * и гарантирует инициализацию коллекций тарифов и автомобиля (защита от LazyInitializationException
+     * при передаче detached-сущности из JwtAuthFilter).
+     */
+    private fun getManagedDriver(driverParam: Driver): Driver {
+        val driverId = driverParam.id ?: return driverParam
+        val managed = driverRepository.findById(driverId).orElse(driverParam)
+        Hibernate.initialize(managed.allowedTariffs)
+        Hibernate.initialize(managed.selectedTariffs)
+        Hibernate.initialize(managed.car)
+
+        if (managed.latitude == null || managed.longitude == null || managed.latitude == 0.0) {
+            val meta = try {
+                redisTemplate.opsForHash<String, Any>().get("drivers:meta", driverId.toString()) as? Map<*, *>
+            } catch (_: Exception) {
+                null
+            }
+            val rLat = (meta?.get("lat") as? String)?.toDoubleOrNull() ?: (meta?.get("lat") as? Double)
+            val rLng = (meta?.get("lng") as? String)?.toDoubleOrNull() ?: (meta?.get("lng") as? Double)
+            if (rLat != null && rLng != null && rLat != 0.0 && rLng != 0.0) {
+                managed.latitude = rLat
+                managed.longitude = rLng
+            }
+        }
+        return managed
+    }
 
     private fun invalidateEtherCache() {
         etherCacheExpiresAtMs = 0L
@@ -1117,7 +1146,8 @@ class OrderService(
     }
 
     @Transactional
-    fun driverCancelOrder(driver: Driver, orderId: Long, reasonId: Long?): TaxiOrderDto {
+    fun driverCancelOrder(driverParam: Driver, orderId: Long, reasonId: Long?): TaxiOrderDto {
+        val driver = getManagedDriver(driverParam)
         val order = orderRepository.findByIdWithLock(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
 
@@ -1191,7 +1221,9 @@ class OrderService(
     }
 
     @Transactional
-    fun acceptOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+    fun acceptOrder(driverParam: Driver, orderId: Long): TaxiOrderDto {
+        val driver = getManagedDriver(driverParam)
+
         if (driver.photoControlRestricted) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ви обмежені в роботі до успішного фотоконтролю")
         }
@@ -1220,14 +1252,10 @@ class OrderService(
 
         val evosUid = order.evosOrderUid
         if (order.isSentToEvos && !evosUid.isNullOrEmpty()) {
-            val cancelledInEvos = evoSService.cancelOrderInEvoS(evosUid)
-            if (cancelledInEvos) {
-                order.isSentToEvos = false
-                order.evosCancelPending = false
-                order.evosOrderUid = null
-            } else {
-                order.evosCancelPending = true
-            }
+            // Не блокируем транзакцию принятия заказа синхронным HTTP-вызовом в EvoS (особенно при таймаутах):
+            // снимаем флаг опроса EvoS и передаем отмену фоновому планировщику EvoSScheduler.retryCancelPendingEvosOrders()
+            order.isSentToEvos = false
+            order.evosCancelPending = true
         }
 
         order.driver = driver
@@ -1510,7 +1538,8 @@ class OrderService(
     }
 
     @Transactional(noRollbackFor = [ResponseStatusException::class])
-    fun completeOrder(driver: Driver, orderId: Long): TaxiOrderDto {
+    fun completeOrder(driverParam: Driver, orderId: Long): TaxiOrderDto {
+        val driver = getManagedDriver(driverParam)
         val order = orderRepository.findByIdWithLock(orderId)
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Замовлення не знайдено") }
 

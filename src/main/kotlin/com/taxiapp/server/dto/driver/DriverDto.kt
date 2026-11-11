@@ -2,7 +2,7 @@ package com.taxiapp.server.dto.driver
 
 import com.taxiapp.server.dto.tariff.CarTariffDto
 import com.taxiapp.server.model.user.Driver
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder
+import org.hibernate.Hibernate
 import java.time.LocalDateTime
 
 data class DriverDto(
@@ -26,19 +26,18 @@ data class DriverDto(
     val isOnline: Boolean,
     val isBlocked: Boolean,
     val tempBlockExpiresAt: LocalDateTime?,
-    
-    // !!! ИСПРАВЛЕНИЕ ТУТ: Убрали "= driver.rating"
+
     val rating: Double,
-    
+
     val ratingCount: Int,
-    val latitude: Double?, 
+    val latitude: Double?,
     val longitude: Double?,
-    
-    val car: CarDto?,         
-    val cars: List<CarDto>?, 
-    
+
+    val car: CarDto?,
+    val cars: List<CarDto>?,
+
     val allowedTariffs: List<CarTariffDto>,
-    val photoUrl: String?,    
+    val photoUrl: String?,
     val activityScore: Int,
     val registrationStatus: String,
     val balance: Double,
@@ -51,10 +50,9 @@ data class DriverDto(
         email = driver.email,
         rnokpp = driver.rnokpp,
         driverLicense = driver.driverLicense,
-        
+
         driverLicenseFront = generateUrl(driver.driverLicenseFront, isThumbnail = true),
         driverLicenseBack = generateUrl(driver.driverLicenseBack, isThumbnail = true),
-        
 
         // Маппинг новых полей
         hasMovementIssue = driver.hasMovementIssue,
@@ -65,26 +63,34 @@ data class DriverDto(
         isOnline = driver.isOnline,
         isBlocked = driver.isBlocked,
         tempBlockExpiresAt = driver.tempBlockExpiresAt,
-        
-        // Значение присваивается здесь, поэтому в шапке класса дефолт не нужен
+
         rating = driver.rating,
-        
+
         ratingCount = driver.ratingCount,
         latitude = driver.latitude,
         longitude = driver.longitude,
-        
-        car = driver.car?.let { CarDto(it) },
-        cars = driver.cars.map { CarDto(it) },
 
-        allowedTariffs = driver.allowedTariffs.map { CarTariffDto(it) },
-        selectedTariffIds = if (driver.selectedTariffs.isEmpty()) {
-            // Если настроек нет — по умолчанию активны ВСЕ разрешенные диспетчером тарифы
+        car = if (driver.car != null && Hibernate.isInitialized(driver.car)) CarDto(driver.car!!) else null,
+        cars = if (Hibernate.isInitialized(driver.cars)) {
+            driver.cars.map { CarDto(it) }
+        } else {
+            listOfNotNull(if (driver.car != null && Hibernate.isInitialized(driver.car)) CarDto(driver.car!!) else null)
+        },
+
+        allowedTariffs = if (Hibernate.isInitialized(driver.allowedTariffs)) {
+            driver.allowedTariffs.filter { Hibernate.isInitialized(it) }.map { CarTariffDto(it) }
+        } else {
+            emptyList()
+        },
+        selectedTariffIds = if (Hibernate.isInitialized(driver.selectedTariffs) && driver.selectedTariffs.isNotEmpty()) {
+            driver.selectedTariffs.mapNotNull { it.id }
+        } else if (Hibernate.isInitialized(driver.allowedTariffs)) {
             driver.allowedTariffs.mapNotNull { it.id }
         } else {
-            driver.selectedTariffs.mapNotNull { it.id }
-        }, // 👈 ВОТ СЮДА ДОБАВЬ ЗАПЯТУЮ!
+            emptyList()
+        },
         photoUrl = generateUrl(driver.photoUrl, isThumbnail = true),
-        
+
         activityScore = driver.activityScore,
         registrationStatus = driver.registrationStatus.name,
         balance = driver.balance,
@@ -95,11 +101,11 @@ data class DriverDto(
         fun generateUrl(filename: String?, isThumbnail: Boolean = false): String? {
             if (filename.isNullOrBlank()) return null
             if (filename.startsWith("http://") || filename.startsWith("https://")) return filename
-            
+
             val clean = filename.trimStart('/')
             val rawName = if (clean.contains("/")) clean.substringAfterLast('/') else clean
             val baseName = if (rawName.startsWith("thumb_")) rawName.substringAfter("thumb_") else rawName
-            
+
             val finalName = if (isThumbnail) "thumb_$baseName" else baseName
             return "/images/$finalName"
         }

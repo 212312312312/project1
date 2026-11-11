@@ -1,6 +1,7 @@
 package com.taxiapp.server.model.order
 
 import jakarta.persistence.*
+import org.hibernate.Hibernate
 import java.time.LocalDateTime
 
 @Entity
@@ -11,7 +12,7 @@ data class CarTariff(
     val id: Long = 0,
 
     @Column(nullable = false)
-var name: String,
+    var name: String,
 
     @Column(name = "body_type", nullable = true)
     var bodyType: String? = null,
@@ -21,7 +22,6 @@ var name: String,
 
     @Column(name = "evos_tariff_name", nullable = true)
     var evosTariffName: String? = null,
-    
 
     @Column(nullable = false)
     var isBeta: Boolean = false,
@@ -37,7 +37,7 @@ var name: String,
 
     // --- НОВОЕ ПОЛЕ: Цена за городом ---
     @Column(nullable = false)
-    var pricePerKmOutCity: Double = 0.0, // Дефолтное значение
+    var pricePerKmOutCity: Double = 0.0,
     // -----------------------------------
 
     @Column(nullable = false)
@@ -57,4 +57,20 @@ var name: String,
 
     @Column(nullable = false, updatable = false)
     val createdAt: LocalDateTime = LocalDateTime.now()
-)
+) {
+    /**
+     * Безопасная реализация equals/hashCode для JPA/Hibernate 6:
+     * исключает прямое обращение к backing-полю `this.name` на неинициализированных
+     * HibernateProxy при добавлении тарифов в PersistentSet / HashSet.
+     */
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other == null || Hibernate.getClass(this) != Hibernate.getClass(other)) return false
+        other as CarTariff
+        return id != 0L && id == other.id
+    }
+
+    override fun hashCode(): Int = Hibernate.getClass(this).hashCode()
+
+    override fun toString(): String = "${Hibernate.getClass(this).simpleName}(id=$id)"
+}

@@ -116,8 +116,14 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
     fun findAllByEvosCancelPendingTrue(): List<TaxiOrder>
 
     @Query("""
-        SELECT DISTINCT o FROM TaxiOrder o 
-        WHERE o.client.id = :clientId 
+        SELECT DISTINCT o FROM TaxiOrder o
+        LEFT JOIN FETCH o.client
+        LEFT JOIN FETCH o.tariff
+        LEFT JOIN FETCH o.originSector
+        LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
+        WHERE o.client.id = :clientId
            OR (o.client.userPhone = :phone AND :phone IS NOT NULL AND :phone != '')
         ORDER BY o.id DESC
     """)
@@ -199,6 +205,8 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         LEFT JOIN FETCH o.tariff
         LEFT JOIN FETCH o.originSector
         LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.offeredDriver od
+        LEFT JOIN FETCH od.car
         WHERE o.offeredDriver.id = :driverId
           AND o.status = 'OFFERING'
         ORDER BY o.id DESC
@@ -211,6 +219,8 @@ interface TaxiOrderRepository : JpaRepository<TaxiOrder, Long> {
         LEFT JOIN FETCH o.tariff
         LEFT JOIN FETCH o.originSector
         LEFT JOIN FETCH o.destinationSector
+        LEFT JOIN FETCH o.driver d
+        LEFT JOIN FETCH d.car
         WHERE o.driver.id = :driverId
           AND o.status IN ('COMPLETED', 'CANCELLED')
         ORDER BY o.id DESC

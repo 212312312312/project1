@@ -8,13 +8,15 @@ import com.taxiapp.server.model.order.CarTariff
 import com.taxiapp.server.model.order.TaxiOrder
 import com.taxiapp.server.model.sector.Sector
 import jakarta.persistence.*
+import org.hibernate.annotations.Fetch
+import org.hibernate.annotations.FetchMode
 import java.time.LocalDateTime
 
 @Entity
 @Table(name = "drivers")
 @PrimaryKeyJoinColumn(name = "id")
 class Driver : User() {
-    
+
     @Column(nullable = false)
     var isOnline: Boolean = false
 
@@ -87,7 +89,7 @@ class Driver : User() {
 
     var tempBlockExpiresAt: LocalDateTime? = null
 
-    @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false)
+    @OneToOne(cascade = [CascadeType.ALL], orphanRemoval = false, fetch = FetchType.EAGER)
     @JoinColumn(name = "car_id", referencedColumnName = "id")
     var car: Car? = null
 
@@ -97,8 +99,9 @@ class Driver : User() {
 
     @OneToMany(mappedBy = "driver")
     val orders: List<TaxiOrder> = emptyList()
-    
-    @ManyToMany(fetch = FetchType.LAZY)
+
+    @ManyToMany(fetch = FetchType.EAGER)
+    @Fetch(FetchMode.SUBSELECT)
     @JoinTable(
         name = "driver_tariffs",
         joinColumns = [JoinColumn(name = "driver_id")],
@@ -107,19 +110,20 @@ class Driver : User() {
     var allowedTariffs: MutableSet<CarTariff> = mutableSetOf()
 
     @ManyToMany(fetch = FetchType.EAGER)
-@JoinTable(
-    name = "driver_selected_tariffs",
-    joinColumns = [JoinColumn(name = "driver_id")],
-    inverseJoinColumns = [JoinColumn(name = "tariff_id")]
-)
-var selectedTariffs: MutableSet<CarTariff> = mutableSetOf()
+    @Fetch(FetchMode.SUBSELECT)
+    @JoinTable(
+        name = "driver_selected_tariffs",
+        joinColumns = [JoinColumn(name = "driver_id")],
+        inverseJoinColumns = [JoinColumn(name = "tariff_id")]
+    )
+    var selectedTariffs: MutableSet<CarTariff> = mutableSetOf()
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, columnDefinition = "varchar(20) default 'OFFLINE'")
     var searchMode: DriverSearchMode = DriverSearchMode.OFFLINE
 
     @Column(nullable = false, columnDefinition = "double precision default 3.0")
-    var searchRadius: Double = 3.0 
+    var searchRadius: Double = 3.0
 
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(
@@ -130,11 +134,11 @@ var selectedTariffs: MutableSet<CarTariff> = mutableSetOf()
     var homeSectors: MutableSet<Sector> = mutableSetOf()
 
     @Column(nullable = false, columnDefinition = "integer default 2")
-    var homeRidesLeft: Int = 2 
+    var homeRidesLeft: Int = 2
 
     @Column(nullable = true)
-    var lastHomeUsageDate: LocalDateTime? = null 
-    
+    var lastHomeUsageDate: LocalDateTime? = null
+
     @OneToMany(mappedBy = "driver", cascade = [CascadeType.ALL], fetch = FetchType.LAZY)
     var activityHistory: MutableList<DriverActivityHistory> = mutableListOf()
 
