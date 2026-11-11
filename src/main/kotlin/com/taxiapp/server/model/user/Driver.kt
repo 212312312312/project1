@@ -106,7 +106,7 @@ class Driver : User() {
     )
     var allowedTariffs: MutableSet<CarTariff> = mutableSetOf()
 
-    @ManyToMany(fetch = FetchType.LAZY)
+    @ManyToMany(fetch = FetchType.EAGER)
 @JoinTable(
     name = "driver_selected_tariffs",
     joinColumns = [JoinColumn(name = "driver_id")],

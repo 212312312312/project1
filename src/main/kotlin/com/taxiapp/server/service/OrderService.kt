@@ -833,7 +833,8 @@ class OrderService(
     }
 
     @Transactional(readOnly = true)
-    fun getFilteredOrdersForDriver(driver: Driver): List<TaxiOrderDto> {
+    fun getFilteredOrdersForDriver(driverParam: Driver): List<TaxiOrderDto> {
+        val driver = driverRepository.findById(driverParam.id!!).orElse(driverParam)
         val meta = redisTemplate.opsForHash<String, Any>().get("drivers:meta", driver.id.toString()) as? Map<*, *>
         val isOnlineRedis = (meta?.get("isOnline") as? String)?.toBoolean()
             ?: (meta?.get("isOnline") as? Boolean)
